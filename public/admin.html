@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sportio Live - Admin</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    body { background-color: #49626d; color: #e6e6e6; }
+    .glass { background: rgba(59, 77, 88, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(230, 230, 230, 0.1); }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+  <a href="/" class="fixed top-4 right-4 flex items-center gap-2 bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2 px-4 rounded-lg transition z-40">
+    <i class="fa-solid fa-house"></i>
+    Home
+  </a>
+
+  <div id="admin-login-section" class="flex-1 flex items-center justify-center px-4">
+    <div class="glass rounded-xl p-6 shadow-2xl max-w-sm w-full">
+      <h1 class="text-lg font-bold text-center mb-4">Admin Login</h1>
+      <div class="space-y-3">
+        <input type="text" id="admin-username" placeholder="Username" autocomplete="off" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-4 py-2.5 text-sm focus:border-[#3b8fc4] focus:outline-none">
+        <input type="password" id="admin-password" placeholder="Password" autocomplete="off" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-4 py-2.5 text-sm focus:border-[#3b8fc4] focus:outline-none">
+        <div id="admin-login-error" class="hidden text-xs text-[#e56a6a] font-semibold"></div>
+        <button onclick="adminLogin()" class="w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2.5 rounded-lg text-sm transition">
+          Log In
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div id="admin-panel-section" class="hidden flex-1 px-4 py-8">
+    <div class="max-w-5xl mx-auto w-full">
+      <h1 class="text-lg font-bold mb-6">Sportio Live - Admin</h1>
+
+      <div class="glass rounded-xl p-4 mb-4">
+        <h2 class="text-sm font-bold mb-3">M3U Refresh Schedule</h2>
+        <p class="text-xs text-[#e6e6e6]/55 mb-4">Which days, and at what time(s) on those days, the shared M3U playlist/EPG cache refreshes in the background. Takes effect on the next scheduled run - no restart needed.</p>
+
+        <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Days</label>
+        <div id="m3u-days-row" class="flex flex-wrap gap-2 mb-4"></div>
+
+        <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Times (24-hour, in the timezone below)</label>
+        <div id="m3u-times-list" class="flex flex-wrap gap-2 mb-2"></div>
+        <div class="flex items-center gap-2 mb-4">
+          <input type="time" id="m3u-new-time" class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+          <button onclick="addM3uTime()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2 px-3 rounded-lg transition">
+            <i class="fa-solid fa-plus"></i> Add time
+          </button>
+        </div>
+
+        <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Timezone</label>
+        <div id="m3u-timezone-selected" class="text-xs text-[#5aa8d1] font-semibold mb-2"></div>
+        <div class="relative mb-2 max-w-sm">
+          <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-xs text-[#e6e6e6]/55"></i>
+          <input type="text" id="m3u-timezone-search" oninput="renderM3uTimezoneList()" placeholder="Search by city or region..." class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg pl-8 pr-3 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none text-[#e6e6e6]/90">
+        </div>
+        <div id="m3u-timezone-list" class="max-h-48 overflow-y-auto bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-2 space-y-1 mb-4 max-w-sm"></div>
+
+        <div class="flex items-center gap-3">
+          <button onclick="saveM3uSettings()" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2 px-4 rounded-lg text-xs transition">
+            Save
+          </button>
+          <div id="m3u-settings-saved" class="hidden text-xs text-[#a8e0ac] font-semibold"></div>
+        </div>
+      </div>
+
+      <div class="glass rounded-xl p-4 mb-4 flex flex-wrap items-end gap-3">
+        <div>
+          <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">Filter by</label>
+          <select id="filter-field" class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+            <option value="createdAt">Created Date</option>
+            <option value="lastAccessedAt">Last Accessed</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">From</label>
+          <input type="date" id="filter-from" class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+        </div>
+        <div>
+          <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">To</label>
+          <input type="date" id="filter-to" class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+        </div>
+        <button onclick="applyDateFilter()" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2 px-4 rounded-lg text-xs transition">
+          Apply
+        </button>
+        <button onclick="clearDateFilter()" class="bg-[#56707d] hover:bg-[#66818f] font-bold py-2 px-4 rounded-lg text-xs transition">
+          Clear
+        </button>
+        <div class="ml-auto text-xs text-[#e6e6e6]/55" id="user-count"></div>
+      </div>
+
+      <div class="glass rounded-xl overflow-hidden">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-[#e6e6e6]/15 text-left">
+              <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55">UUID</th>
+              <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55">Type</th>
+              <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55 cursor-pointer hover:text-[#e6e6e6] select-none" onclick="sortBy('createdAt')">
+                Created <i id="sort-icon-createdAt" class="fa-solid fa-sort ml-1"></i>
+              </th>
+              <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55 cursor-pointer hover:text-[#e6e6e6] select-none" onclick="sortBy('lastAccessedAt')">
+                Last Accessed <i id="sort-icon-lastAccessedAt" class="fa-solid fa-sort ml-1"></i>
+              </th>
+              <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55 text-right">Action</th>
+            </tr>
+          </thead>
+          <tbody id="admin-user-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div id="admin-status-message" class="hidden fixed top-4 right-4 z-50 max-w-sm rounded-lg p-4 text-sm font-semibold shadow-2xl"></div>
+
+  <script>
+    // Credentials are kept in memory only, re-sent on every admin request -
+    // the same stateless pattern the rest of this app uses (no server-side
+    // sessions anywhere), rather than a session cookie/token.
+    let adminCreds = null;
+    let allUsers = [];
+    let visibleUsers = [];
+    let currentSort = { field: null, direction: 'asc' };
+
+    async function adminLogin() {
+      const username = document.getElementById('admin-username').value.trim();
+      const password = document.getElementById('admin-password').value.trim();
+      const errorEl = document.getElementById('admin-login-error');
+      errorEl.classList.add('hidden');
+
+      try {
+        const res = await fetch('/api/admin/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+        const data = await res.json();
+        if (data.success) {
+          adminCreds = { username, password };
+          document.getElementById('admin-login-section').classList.add('hidden');
+          document.getElementById('admin-panel-section').classList.remove('hidden');
+          loadUsers();
+          loadM3uSettings();
+        } else {
+          errorEl.textContent = data.error || 'Login failed.';
+          errorEl.classList.remove('hidden');
+        }
+      } catch (err) {
+        errorEl.textContent = 'Network error while logging in.';
+        errorEl.classList.remove('hidden');
+      }
+    }
+
+    // --- Timezone picker - ported directly from the main dashboard's
+    // wizard timezone picker (public/index.html), same functions, same
+    // behavior, just operating on this page's own element ids. Kept as a
+    // straight port rather than a from-scratch rebuild, since that
+    // implementation is already tested and working.
+    let allTimezones = [];
+    function getAllTimezones() {
+      if (allTimezones.length === 0) {
+        try {
+          allTimezones = Intl.supportedValuesOf('timeZone');
+        } catch (err) {
+          allTimezones = ['America/New_York', 'America/Chicago', 'America/Denver', 'America/Phoenix', 'America/Los_Angeles', 'UTC'];
+        }
+      }
+      return allTimezones;
+    }
+    function getTimezoneOffsetLabel(tz) {
+      try {
+        const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'short' }).formatToParts(new Date());
+        const offsetPart = parts.find(p => p.type === 'timeZoneName');
+        return offsetPart ? offsetPart.value : '';
+      } catch (err) {
+        return '';
+      }
+    }
+    const timezoneSearchTextCache = new Map();
+    function getTimezoneSearchText(tz) {
+      if (timezoneSearchTextCache.has(tz)) return timezoneSearchTextCache.get(tz);
+      let result = tz.toLowerCase().replace(/_/g, ' ');
+      try {
+        const year = new Date().getFullYear();
+        const getAbbr = (date) => {
+          const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'short' }).formatToParts(date);
+          const part = parts.find(p => p.type === 'timeZoneName');
+          return part ? part.value.toLowerCase() : '';
+        };
+        result += ` ${getAbbr(new Date(Date.UTC(year, 0, 15)))} ${getAbbr(new Date(Date.UTC(year, 6, 15)))}`;
+      } catch (err) { /* search still works on the name alone */ }
+      timezoneSearchTextCache.set(tz, result);
+      return result;
+    }
+
+    let m3uTimezone = 'America/New_York';
+    function renderM3uTimezoneList() {
+      const term = document.getElementById('m3u-timezone-search').value.toLowerCase();
+      const filtered = term
+        ? getAllTimezones().filter(tz => getTimezoneSearchText(tz).includes(term))
+        : getAllTimezones();
+      const list = document.getElementById('m3u-timezone-list');
+      if (filtered.length === 0) {
+        list.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-2">No matching timezones found.</p>';
+        return;
+      }
+      list.innerHTML = filtered.map(tz => {
+        const isSelected = tz === m3uTimezone;
+        const classes = isSelected ? 'bg-[#3b8fc4] text-white' : 'bg-[#2f3e47] text-[#e6e6e6]/75 hover:bg-[#3b4d58]';
+        return `<button type="button" onclick="selectM3uTimezone('${tz}')" class="w-full text-left px-3 py-2 rounded-lg text-xs transition ${classes}">${tz.replace(/_/g, ' ')} <span class="opacity-70">(${getTimezoneOffsetLabel(tz)})</span></button>`;
+      }).join('');
+    }
+    function selectM3uTimezone(tz) {
+      m3uTimezone = tz;
+      renderM3uTimezoneList();
+      updateM3uTimezoneSelectedLabel();
+    }
+    function updateM3uTimezoneSelectedLabel() {
+      document.getElementById('m3u-timezone-selected').textContent = `Selected: ${m3uTimezone.replace(/_/g, ' ')} (${getTimezoneOffsetLabel(m3uTimezone)})`;
+    }
+
+    // --- Days of week ---
+    const DAY_OPTIONS = [['sun','Sun'], ['mon','Mon'], ['tue','Tue'], ['wed','Wed'], ['thu','Thu'], ['fri','Fri'], ['sat','Sat']];
+    let m3uDaysOfWeek = new Set();
+
+    function renderM3uDaysRow() {
+      document.getElementById('m3u-days-row').innerHTML = DAY_OPTIONS.map(([value, label]) => {
+        const isOn = m3uDaysOfWeek.has(value);
+        const classes = isOn
+          ? 'bg-[#3b8fc4] text-white'
+          : 'bg-[#2f3e47] text-[#e6e6e6]/60 hover:bg-[#3b4d58]';
+        return `<button type="button" onclick="toggleM3uDay('${value}')" class="px-3 py-1.5 rounded-lg text-xs font-bold transition ${classes}">${label}</button>`;
+      }).join('');
+    }
+    function toggleM3uDay(value) {
+      if (m3uDaysOfWeek.has(value)) m3uDaysOfWeek.delete(value); else m3uDaysOfWeek.add(value);
+      renderM3uDaysRow();
+    }
+
+    // --- Times ---
+    let m3uTimes = [];
+
+    function renderM3uTimesList() {
+      const list = document.getElementById('m3u-times-list');
+      if (m3uTimes.length === 0) {
+        list.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic">No times added yet.</p>';
+        return;
+      }
+      list.innerHTML = [...m3uTimes].sort().map(t => `
+        <span class="inline-flex items-center gap-1.5 bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-2.5 py-1 text-xs">
+          ${t}
+          <button type="button" onclick="removeM3uTime('${t}')" class="text-[#e6e6e6]/55 hover:text-[#e56a6a] transition"><i class="fa-solid fa-xmark"></i></button>
+        </span>
+      `).join('');
+    }
+    function addM3uTime() {
+      const input = document.getElementById('m3u-new-time');
+      const value = input.value;
+      if (!value) return;
+      if (!m3uTimes.includes(value)) m3uTimes.push(value);
+      input.value = '';
+      renderM3uTimesList();
+    }
+    function removeM3uTime(value) {
+      m3uTimes = m3uTimes.filter(t => t !== value);
+      renderM3uTimesList();
+    }
+
+    async function loadM3uSettings() {
+      try {
+        const res = await fetch('/api/admin/m3u-settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(adminCreds)
+        });
+        const data = await res.json();
+        if (data.success) {
+          m3uDaysOfWeek = new Set(data.settings.daysOfWeek);
+          m3uTimes = [...data.settings.times];
+          m3uTimezone = data.settings.timeZone;
+          renderM3uDaysRow();
+          renderM3uTimesList();
+          document.getElementById('m3u-timezone-search').value = '';
+          renderM3uTimezoneList();
+          updateM3uTimezoneSelectedLabel();
+        }
+      } catch (err) {
+        console.error('Failed to load M3U settings:', err.message);
+      }
+    }
+
+    async function saveM3uSettings() {
+      const savedEl = document.getElementById('m3u-settings-saved');
+      savedEl.classList.add('hidden');
+
+      if (m3uDaysOfWeek.size === 0) {
+        return showAdminStatus('Select at least one day.', true);
+      }
+      if (m3uTimes.length === 0) {
+        return showAdminStatus('Add at least one time.', true);
+      }
+
+      try {
+        const res = await fetch('/api/admin/m3u-settings/update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...adminCreds, daysOfWeek: [...m3uDaysOfWeek], times: m3uTimes, timeZone: m3uTimezone })
+        });
+        const data = await res.json();
+        if (data.success) {
+          savedEl.textContent = 'Saved.';
+          savedEl.classList.remove('hidden');
+          setTimeout(() => savedEl.classList.add('hidden'), 3000);
+        } else {
+          showAdminStatus(data.error || 'Failed to save settings.', true);
+        }
+      } catch (err) {
+        showAdminStatus('Network error while saving settings.', true);
+      }
+    }
+
+    async function loadUsers() {
+      try {
+        const res = await fetch('/api/admin/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(adminCreds)
+        });
+        const data = await res.json();
+        if (data.success) {
+          allUsers = data.users;
+          visibleUsers = [...allUsers];
+          renderTable();
+        } else {
+          showAdminStatus(data.error || 'Failed to load users.', true);
+        }
+      } catch (err) {
+        showAdminStatus('Network error while loading users.', true);
+      }
+    }
+
+    function formatDate(iso) {
+      if (!iso) return 'Unknown';
+      const d = new Date(iso);
+      return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+        + ' ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    }
+
+    function renderTable() {
+      const tbody = document.getElementById('admin-user-table-body');
+      tbody.innerHTML = visibleUsers.map(user => {
+        const isM3u = user.connectionType === 'm3u';
+        const badge = isM3u
+          ? '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#3b8fc4]/20 text-[#5aa8d1]">M3U</span>'
+          : '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#4a9d52]/20 text-[#a8e0ac]">Xtream</span>';
+        return `
+        <tr class="border-b border-[#e6e6e6]/10 hover:bg-[#3b4d58]/40">
+          <td class="px-4 py-3 font-mono text-xs text-[#e6e6e6]/75">${user.uuid}</td>
+          <td class="px-4 py-3 text-xs">${badge}</td>
+          <td class="px-4 py-3 text-xs text-[#e6e6e6]/75">${formatDate(user.createdAt)}</td>
+          <td class="px-4 py-3 text-xs text-[#e6e6e6]/75">${formatDate(user.lastAccessedAt)}</td>
+          <td class="px-4 py-3 text-right">
+            <button onclick="deleteUser('${user.uuid}')" class="bg-[#c0392b] hover:bg-[#d8483a] text-white text-xs font-bold py-1.5 px-3 rounded-lg transition">
+              <i class="fa-solid fa-trash"></i>
+            </button>
+          </td>
+        </tr>
+      `;
+      }).join('');
+      document.getElementById('user-count').textContent = `${visibleUsers.length} of ${allUsers.length} accounts`;
+    }
+
+    function sortBy(field) {
+      if (currentSort.field === field) {
+        currentSort.direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
+      } else {
+        currentSort.field = field;
+        currentSort.direction = 'asc';
+      }
+
+      ['createdAt', 'lastAccessedAt'].forEach(f => {
+        document.getElementById(`sort-icon-${f}`).className = 'fa-solid fa-sort ml-1';
+      });
+      document.getElementById(`sort-icon-${field}`).className = currentSort.direction === 'asc'
+        ? 'fa-solid fa-sort-up ml-1'
+        : 'fa-solid fa-sort-down ml-1';
+
+      // Accounts with no recorded date (pre-existing accounts from before
+      // this feature, or ones never yet accessed) always sort last,
+      // regardless of direction - "unknown" isn't meaningfully the
+      // earliest or the latest.
+      visibleUsers.sort((a, b) => {
+        const aVal = a[field];
+        const bVal = b[field];
+        if (!aVal && !bVal) return 0;
+        if (!aVal) return 1;
+        if (!bVal) return -1;
+        const cmp = new Date(aVal) - new Date(bVal);
+        return currentSort.direction === 'asc' ? cmp : -cmp;
+      });
+      renderTable();
+    }
+
+    function applyDateFilter() {
+      const field = document.getElementById('filter-field').value;
+      const from = document.getElementById('filter-from').value;
+      const to = document.getElementById('filter-to').value;
+
+      if (!from && !to) {
+        visibleUsers = [...allUsers];
+        renderTable();
+        return;
+      }
+
+      const fromTime = from ? new Date(from).getTime() : -Infinity;
+      // End of day for "to", so the selected day itself is fully included.
+      const toTime = to ? new Date(to).getTime() + (24 * 60 * 60 * 1000 - 1) : Infinity;
+
+      // An account with no recorded date for the field being filtered on
+      // can't be said to fall within any specific range, so it's excluded
+      // while a filter is active - more honest than showing it regardless.
+      visibleUsers = allUsers.filter(user => {
+        const val = user[field];
+        if (!val) return false;
+        const time = new Date(val).getTime();
+        return time >= fromTime && time <= toTime;
+      });
+      renderTable();
+    }
+
+    function clearDateFilter() {
+      document.getElementById('filter-from').value = '';
+      document.getElementById('filter-to').value = '';
+      visibleUsers = [...allUsers];
+      renderTable();
+    }
+
+    async function deleteUser(targetUuid) {
+      if (!confirm(`Permanently delete account ${targetUuid}? This cannot be undone.`)) {
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/admin/user/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...adminCreds, targetUuid })
+        });
+        const data = await res.json();
+        if (data.success) {
+          allUsers = allUsers.filter(u => u.uuid !== targetUuid);
+          visibleUsers = visibleUsers.filter(u => u.uuid !== targetUuid);
+          renderTable();
+          showAdminStatus('Account deleted.');
+        } else {
+          showAdminStatus(data.error || 'Failed to delete account.', true);
+        }
+      } catch (err) {
+        showAdminStatus('Network error while deleting account.', true);
+      }
+    }
+
+    function showAdminStatus(message, isError = false) {
+      const el = document.getElementById('admin-status-message');
+      el.textContent = message;
+      el.className = `fixed top-4 right-4 z-50 max-w-sm rounded-lg p-4 text-sm font-semibold shadow-2xl ${isError ? 'bg-[#3a1f1f]/50 text-[#f0b8b8] border border-[#c0392b]' : 'bg-[#1f3a21]/50 text-[#a8e0ac] border border-[#4a9d52]'}`;
+      setTimeout(() => el.classList.add('hidden'), 4000);
+    }
+  </script>
+</body>
+</html>

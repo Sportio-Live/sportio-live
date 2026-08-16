@@ -1,0 +1,16 @@
+{
+  "name": "sportio-live",
+  "version": "1.0.0",
+  "description": "Sportio Live - Live sports, powered by your own IPTV",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "axios": "^1.6.0",
+    "bcryptjs": "^2.4.3",
+    "uuid": "^9.0.1"
+  }
+}

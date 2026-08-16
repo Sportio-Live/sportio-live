@@ -1,0 +1,2074 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SPORTIO LIVE - Configurator</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    body { background-color: #49626d; color: #e6e6e6; }
+    .glass { background: rgba(59, 77, 88, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(230, 230, 230, 0.1); }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+  <!-- Header (hidden on the landing screen, shown everywhere else) -->
+  <div id="site-header" class="max-w-4xl mx-auto px-4 pt-8 w-full hidden">
+    <header class="text-center mb-8">
+      <img src="/sportio_logo.png" alt="Sportio Live" class="mx-auto h-20 w-auto">
+      <p class="text-[#e6e6e6]/55 text-sm mt-2">Live sports addon for Stremio/Nuvio. Powered by your IPTV.</p>
+    </header>
+  </div>
+
+  <!-- Centered landing/auth area -->
+  <div id="center-wrapper" class="flex-1 flex items-center justify-center px-4 w-full">
+    <div class="max-w-4xl w-full">
+
+      <!-- First-run setup: admin password not configured yet at all -->
+      <div id="admin-setup-section" class="hidden glass rounded-xl p-6 shadow-2xl mb-8 max-w-[480px] mx-auto w-full">
+        <h3 class="text-lg font-bold text-[#e6e6e6] mb-2">Welcome to Sportio Live</h3>
+        <p class="text-xs text-[#e6e6e6]/55 mb-4">This looks like a fresh install - set an admin username and password to get started. You can change these later from the environment config if you'd prefer.</p>
+        <div class="space-y-4 mb-4">
+          <input type="text" id="admin-setup-username" autocomplete="off" placeholder="Admin username" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-4 py-2.5 text-sm focus:border-[#3b8fc4] focus:outline-none">
+          <input type="password" id="admin-setup-password" autocomplete="new-password" placeholder="Admin password (min 8 characters)" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-4 py-2.5 text-sm focus:border-[#3b8fc4] focus:outline-none">
+        </div>
+        <div id="admin-setup-error" class="hidden text-xs text-[#e56a6a] font-semibold mb-3"></div>
+        <button onclick="submitAdminSetup()" class="w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2.5 rounded-lg text-sm transition">
+          Set Admin Password
+        </button>
+      </div>
+
+      <!-- First-run setup: admin password is set, but no encryption key yet -->
+      <div id="encryption-setup-section" class="hidden glass rounded-xl p-6 shadow-2xl mb-8 max-w-[520px] mx-auto w-full">
+        <h3 class="text-lg font-bold text-[#e6e6e6] mb-2">One more step: set an encryption key</h3>
+        <p class="text-xs text-[#e6e6e6]/55 mb-4">This key protects saved Xtream/M3U credentials at rest. Unlike the admin password, this can't be set through the app itself - it has to go in your environment config and the container needs a restart, since it's only ever read once at startup. Account creation and login stay disabled until this is done.</p>
+        <button onclick="generateEncryptionKey()" class="w-full bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 font-bold py-2.5 rounded-lg text-sm transition mb-3">
+          <i class="fa-solid fa-key mr-2"></i>Generate a Key
+        </button>
+        <div id="encryption-key-result" class="hidden">
+          <p class="text-xs text-[#e6e6e6]/55 mb-1.5">Copy this into <code class="text-[#5aa8d1]">docker-compose.yml</code>, under this service's environment section, as <code class="text-[#5aa8d1]">ENCRYPTION_KEY=&lt;value&gt;</code> - then restart the container.</p>
+          <div class="flex items-center gap-2 mb-3">
+            <input type="text" id="encryption-key-value" readonly class="flex-1 bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none">
+            <button onclick="copyEncryptionKey()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 font-bold py-2 px-3 rounded-lg text-xs transition">
+              <i class="fa-solid fa-copy"></i>
+            </button>
+          </div>
+        </div>
+        <button onclick="recheckSetupStatus()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-sm transition">
+          I've restarted the container - check again
+        </button>
+      </div>
+
+      <!-- Landing: choose Setup or Login -->
+      <div id="landing-section" class="py-6 mb-8">
+        <a id="admin-page-link" href="/admin.html" class="hidden fixed top-4 right-4 flex items-center gap-2 bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2 px-4 rounded-lg transition z-40">
+          <i class="fa-solid fa-user-shield"></i>
+          Admin
+        </a>
+        <div class="text-center">
+          <img src="/sportio_logo.png" alt="Sportio Live" class="mx-auto h-28 w-auto">
+          <p class="text-[#e6e6e6]/55 text-sm mt-3">Live sports addon for Stremio/Nuvio. Powered by your IPTV.</p>
+          <div class="flex items-center justify-center gap-3 mt-6">
+            <button onclick="startSetupWizard()" class="flex items-center justify-center gap-2 bg-[#ed1c24] hover:bg-[#f13842] active:scale-95 transition-all duration-150 shadow-lg font-bold py-2 px-4 rounded-lg text-sm">
+              <i class="fa-solid fa-wand-magic-sparkles"></i>
+              Setup
+            </button>
+            <button onclick="showView('login')" class="flex items-center justify-center gap-2 bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 shadow-lg font-bold py-2 px-4 rounded-lg text-sm">
+              <i class="fa-solid fa-right-to-bracket"></i>
+              Login
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Login Form -->
+      <div id="auth-section" class="glass rounded-xl p-6 shadow-2xl mb-8 max-w-[590px] mx-auto w-full hidden">
+        <button onclick="showView('landing')" class="text-xs text-[#e6e6e6]/55 hover:text-[#e6e6e6] mb-5 flex items-center gap-1.5 transition">
+          <i class="fa-solid fa-arrow-left"></i> Back
+        </button>
+
+        <form id="form-login" onsubmit="handleLogin(event)" class="space-y-4">
+          <div>
+            <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">UUID:</label>
+            <input type="text" id="login-uuid" autocomplete="off" required placeholder="e.g. 550e8400-e29b-41d4-a716-446655440000" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-4 py-2.5 text-sm focus:border-[#3b8fc4] focus:outline-none">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">Password:</label>
+            <input type="password" id="login-password" autocomplete="off" required placeholder="Enter your password" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-4 py-2.5 text-sm focus:border-[#3b8fc4] focus:outline-none">
+          </div>
+          <button type="submit" class="w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2.5 rounded-lg text-sm transition">
+            Login
+          </button>
+        </form>
+      </div>
+
+      <!-- Setup Wizard Step 1: Choose your leagues -->
+      <div id="wizard-leagues" class="glass rounded-xl p-6 shadow-2xl mb-8 max-w-[590px] mx-auto w-full hidden">
+        <button onclick="showView('landing')" class="text-xs text-[#e6e6e6]/55 hover:text-[#e6e6e6] mb-5 flex items-center gap-1.5 transition">
+          <i class="fa-solid fa-arrow-left"></i> Back
+        </button>
+        <h3 class="text-lg font-bold text-[#e6e6e6] mb-4">Choose your leagues</h3>
+        <div id="wizard-league-grid" class="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6"></div>
+        <button id="wizard-leagues-next" onclick="wizardGoToTimezone()" disabled class="w-full bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-sm transition cursor-not-allowed">
+          Next
+        </button>
+      </div>
+
+      <!-- Setup Wizard Step 2: Select your timezone -->
+      <div id="wizard-timezone" class="glass rounded-xl p-6 shadow-2xl mb-8 max-w-[590px] mx-auto w-full hidden">
+        <h3 class="text-lg font-bold text-[#e6e6e6] mb-4">Select your timezone</h3>
+        <div id="wizard-timezone-selected" class="text-xs text-[#5aa8d1] font-semibold mb-2"></div>
+        <div class="relative mb-2">
+          <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-xs text-[#e6e6e6]/55"></i>
+          <input type="text" id="wizard-timezone-search" oninput="renderWizardTimezoneList()" placeholder="Search by city or region..." class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg pl-8 pr-3 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none text-[#e6e6e6]/90">
+        </div>
+        <div id="wizard-timezone-list" class="max-h-64 overflow-y-auto bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-2 space-y-1 mb-6"></div>
+        <button onclick="wizardGoToConnectionType()" class="w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2.5 rounded-lg text-sm transition">
+          Next
+        </button>
+      </div>
+
+      <!-- Setup Wizard Step 3: Choose how to connect -->
+      <div id="wizard-connection-type" class="glass rounded-xl p-6 shadow-2xl mb-8 max-w-[590px] mx-auto w-full hidden">
+        <h3 class="text-lg font-bold text-[#e6e6e6] mb-4">How do you want to connect?</h3>
+        <div class="space-y-3">
+          <button onclick="wizardGoToXtream()" class="w-full text-left bg-[#2f3e47] hover:bg-[#3b4d58] border border-[#e6e6e6]/15 hover:border-[#3b8fc4]/50 rounded-lg px-4 py-3.5 transition">
+            <div class="font-bold text-sm text-[#e6e6e6]">Xtream</div>
+            <div class="text-xs text-[#e6e6e6]/55 mt-0.5">Server URL, username, and password</div>
+          </button>
+          <button onclick="wizardGoToM3u()" class="w-full text-left bg-[#2f3e47] hover:bg-[#3b4d58] border border-[#e6e6e6]/15 hover:border-[#3b8fc4]/50 rounded-lg px-4 py-3.5 transition">
+            <div class="font-bold text-sm text-[#e6e6e6]">M3U</div>
+            <div class="text-xs text-[#e6e6e6]/55 mt-0.5">A playlist URL and an EPG URL</div>
+          </button>
+        </div>
+      </div>
+
+      <!-- Setup Wizard Step 3a: Enter Xtream login information -->
+      <div id="wizard-xtream" class="glass rounded-xl p-6 shadow-2xl mb-8 max-w-[590px] mx-auto w-full hidden">
+        <h3 class="text-lg font-bold text-[#e6e6e6] mb-4">Enter Xtream login information</h3>
+        <div class="space-y-4 mb-4">
+          <input type="text" id="wizard-xtream-url" autocomplete="off" oninput="updateWizardTestButton()" placeholder="Server URL (http://...)" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-4 py-2.5 text-sm focus:border-[#3b8fc4] focus:outline-none">
+          <input type="text" id="wizard-xtream-username" autocomplete="off" oninput="updateWizardTestButton()" placeholder="Username" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-4 py-2.5 text-sm focus:border-[#3b8fc4] focus:outline-none">
+          <input type="password" id="wizard-xtream-password" autocomplete="new-password" oninput="updateWizardTestButton()" placeholder="Password" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-4 py-2.5 text-sm focus:border-[#3b8fc4] focus:outline-none">
+        </div>
+        <div id="wizard-xtream-error" class="hidden text-xs text-[#e56a6a] font-semibold mb-3"></div>
+        <button id="wizard-xtream-btn" onclick="testWizardXtream()" disabled class="w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-sm transition cursor-not-allowed">
+          <i class="fa-solid fa-plug"></i>
+          Test
+        </button>
+        <div id="wizard-xtream-success" class="hidden text-xs text-[#a8e0ac] font-semibold mt-3"></div>
+      </div>
+
+      <!-- Setup Wizard Step 3b: Enter M3U playlist + EPG URLs -->
+      <div id="wizard-m3u" class="glass rounded-xl p-6 shadow-2xl mb-8 max-w-[590px] mx-auto w-full hidden">
+        <h3 class="text-lg font-bold text-[#e6e6e6] mb-4">Enter your M3U URLs</h3>
+        <div class="space-y-4 mb-4">
+          <input type="text" id="wizard-m3u-playlist-url" autocomplete="off" oninput="updateWizardM3uButton()" placeholder="Playlist URL (http://...)" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-4 py-2.5 text-sm focus:border-[#3b8fc4] focus:outline-none">
+          <input type="text" id="wizard-m3u-epg-url" autocomplete="off" oninput="updateWizardM3uButton()" placeholder="EPG URL (http://...)" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-4 py-2.5 text-sm focus:border-[#3b8fc4] focus:outline-none">
+        </div>
+        <div id="wizard-m3u-error" class="hidden text-xs text-[#e56a6a] font-semibold mb-3"></div>
+        <div id="wizard-m3u-importing" class="hidden text-xs text-[#5aa8d1] font-semibold mb-3 flex items-center gap-2">
+          <i class="fa-solid fa-spinner fa-spin"></i>
+          Importing. Please wait.
+        </div>
+        <button id="wizard-m3u-btn" onclick="importWizardM3u()" disabled class="w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-sm transition cursor-not-allowed">
+          Continue
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+
+  <!-- Dashboard + status (normal top-aligned flow, not vertically centered) -->
+  <div class="max-w-4xl mx-auto px-4 pb-8 w-full">
+
+    <!-- Setup Wizard Step 4: Select category folders (filtered to chosen leagues) -->
+    <div id="wizard-categories" class="glass rounded-xl p-6 shadow-2xl mb-8 hidden">
+      <h3 class="text-lg font-bold text-[#e6e6e6] mb-1">Category Search</h3>
+      <p class="text-xs text-[#e6e6e6]/55 mb-4">Which categories should be searched when finding streams? Use Global to assign to all leagues.</p>
+      <div id="wizard-sports-config-container" class="space-y-6"></div>
+      <div class="mt-8 border-t border-[#e6e6e6]/15 pt-6">
+        <button onclick="wizardGoToPassword()" class="w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-3 rounded-lg text-sm transition">
+          Next
+        </button>
+      </div>
+    </div>
+
+    <!-- Setup Wizard Step 5: Set your password (new account creation) -->
+    <div id="wizard-password" class="glass rounded-xl p-6 shadow-2xl mb-8 max-w-[590px] mx-auto w-full hidden">
+      <h3 class="text-lg font-bold text-[#e6e6e6] mb-4">Set your password</h3>
+      <div class="space-y-4 mb-4">
+        <input type="password" id="wizard-password-input" placeholder="Password" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-4 py-2.5 text-sm focus:border-[#3b8fc4] focus:outline-none">
+        <input type="password" id="wizard-password-confirm" placeholder="Confirm password" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-4 py-2.5 text-sm focus:border-[#3b8fc4] focus:outline-none">
+      </div>
+      <div id="wizard-password-error" class="hidden text-xs text-[#e56a6a] font-semibold mb-3"></div>
+      <button onclick="finishWizardSetup()" class="w-full bg-[#4a9d52] hover:bg-[#5cb164] font-bold py-2.5 rounded-lg text-sm transition">
+        Save
+      </button>
+    </div>
+
+    <!-- Active User Dashboard (Hidden by default) -->
+    <div id="dashboard-section" class="glass rounded-xl p-6 shadow-2xl mb-8 hidden">
+      <div class="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-[#e6e6e6]/15 pb-4 mb-6 gap-4">
+        <div>
+          <span class="text-xs text-[#e6e6e6]/55 uppercase tracking-wider">UUID:</span>
+          <div id="active-uuid-display" class="font-mono text-sm text-[#5aa8d1] font-bold"></div>
+        </div>
+        <div class="flex items-center gap-2">
+          <button onclick="refreshCategories()" class="bg-[#c9992e] hover:bg-[#dba93e] text-[#1a1a1a] text-xs font-bold py-2 px-4 rounded-lg transition flex items-center">
+            <i class="fa-solid fa-rotate mr-2"></i>Refresh Categories
+          </button>
+          <button id="copy-link-btn" onclick="handleCopyLinkButton()" class="bg-[#4a6fa5] hover:bg-[#5a82bc] text-xs font-bold py-2 px-4 rounded-lg transition flex items-center">
+            <i class="fa-solid fa-copy mr-2"></i>Copy Install Link
+          </button>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="font-bold text-sm text-[#e6e6e6]/75">Category Search</h3>
+        <button id="expand-all-btn" onclick="toggleAllAccordions()" class="text-xs font-bold text-[#5aa8d1] hover:text-[#6bb5dd] flex items-center gap-1.5 transition">
+          <i class="fa-solid fa-expand"></i>
+          Expand All
+        </button>
+      </div>
+
+      <div id="sports-config-container" class="space-y-6">
+        <!-- Dynamically injected sports inputs -->
+      </div>
+
+      <!-- Shared action row -->
+      <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-2 mt-6">Settings</h3>
+      <div class="grid grid-cols-3 gap-3 mb-4">
+        <button id="edit-xtream-trigger-btn" onclick="toggleEditXtreamPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
+          <i class="fa-solid fa-pen-to-square"></i>
+          Edit Xtream
+        </button>
+        <button id="edit-m3u-trigger-btn" onclick="toggleEditM3uPanel()" class="hidden bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition items-center justify-center gap-2">
+          <i class="fa-solid fa-pen-to-square"></i>
+          Edit M3U
+        </button>
+        <button id="manage-sports-btn" onclick="toggleManageSportsPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
+          <i class="fa-solid fa-sliders"></i>
+          Add/Remove Leagues
+        </button>
+        <button id="change-timezone-btn" onclick="toggleChangeTimezonePanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
+          <i class="fa-solid fa-clock"></i>
+          Change Timezone
+        </button>
+      </div>
+
+      <!-- Xtream Credentials (collapsed until Edit Xtream is clicked) -->
+      <div id="edit-xtream-panel" class="hidden bg-[#3b4d58]/60 border border-[#e6e6e6]/15 rounded-lg p-4 mb-6 space-y-3">
+        <input type="text" id="edit-xtream-url" oninput="updateEditXtreamButton()" placeholder="Server URL (http://...)" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+        <input type="text" id="edit-xtream-username" oninput="updateEditXtreamButton()" placeholder="Username" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+        <input type="password" id="edit-xtream-password" oninput="updateEditXtreamButton()" placeholder="Password" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+        <div id="edit-xtream-error" class="hidden text-xs text-[#e56a6a] font-semibold"></div>
+        <div class="grid grid-cols-2 gap-3">
+          <button onclick="cancelEditXtream()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">
+            Cancel
+          </button>
+          <button id="edit-xtream-btn" onclick="testEditXtream()" disabled class="w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-xs cursor-not-allowed">
+            <i class="fa-solid fa-plug"></i>
+            Test
+          </button>
+        </div>
+      </div>
+
+      <!-- M3U URLs (collapsed until Edit M3U is clicked) -->
+      <div id="edit-m3u-panel" class="hidden bg-[#3b4d58]/60 border border-[#e6e6e6]/15 rounded-lg p-4 mb-6 space-y-3">
+        <input type="text" id="edit-m3u-playlist-url" oninput="updateEditM3uButton()" placeholder="Playlist URL (http://...)" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+        <input type="text" id="edit-m3u-epg-url" oninput="updateEditM3uButton()" placeholder="EPG URL (http://...)" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+        <div id="edit-m3u-error" class="hidden text-xs text-[#e56a6a] font-semibold"></div>
+        <div id="edit-m3u-importing" class="hidden text-xs text-[#5aa8d1] font-semibold flex items-center gap-2">
+          <i class="fa-solid fa-spinner fa-spin"></i>
+          Importing. Please wait.
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <button onclick="cancelEditM3u()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">
+            Cancel
+          </button>
+          <button id="edit-m3u-btn" onclick="importEditM3u()" disabled class="w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-xs cursor-not-allowed">
+            <i class="fa-solid fa-file-import"></i>
+            Import
+          </button>
+        </div>
+      </div>
+
+      <!-- Change Timezone (collapsed until Change Timezone is clicked) -->
+      <div id="change-timezone-panel" class="hidden bg-[#3b4d58]/60 border border-[#e6e6e6]/15 rounded-lg p-4 mb-6">
+        <div id="dashboard-timezone-selected" class="text-xs text-[#5aa8d1] font-semibold mb-2"></div>
+        <div class="relative mb-2">
+          <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-xs text-[#e6e6e6]/55"></i>
+          <input type="text" id="dashboard-timezone-search" oninput="renderDashboardTimezoneList()" placeholder="Search by city or region..." class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg pl-8 pr-3 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none text-[#e6e6e6]/90">
+        </div>
+        <div id="dashboard-timezone-list" class="max-h-64 overflow-y-auto bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-2 space-y-1 mb-3"></div>
+        <div class="grid grid-cols-2 gap-3">
+          <button onclick="cancelChangeTimezone()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">
+            Cancel
+          </button>
+          <button onclick="saveChangeTimezone()" class="w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2.5 rounded-lg text-xs transition">
+            Confirm
+          </button>
+        </div>
+      </div>
+
+      <!-- Sport Configuration Sections -->
+      <div id="manage-sports-panel" class="hidden bg-[#3b4d58]/60 border border-[#e6e6e6]/15 rounded-lg p-4 mb-6">
+        <h4 class="font-bold text-sm text-[#e6e6e6]/75 mb-3">Choose your leagues</h4>
+        <div id="manage-sports-grid" class="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4"></div>
+        <div class="grid grid-cols-2 gap-3">
+          <button onclick="cancelManageSports()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-sm transition">
+            Cancel
+          </button>
+          <button onclick="saveManagedSports()" class="w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2.5 rounded-lg text-sm transition">
+            Done
+          </button>
+        </div>
+      </div>
+
+      <!-- Deliberately pushed well away from the routine settings above and
+           styled brighter/more alarming, to make an accidental click here
+           genuinely difficult -->
+      <button onclick="toggleDeleteAccountPanel()" class="w-full bg-[#c0392b] hover:bg-[#d8483a] border border-[#e56a6a]/50 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2 text-white mt-12 mb-4">
+        <i class="fa-solid fa-trash"></i>
+        Delete
+      </button>
+
+      <!-- Delete Account (collapsed until Delete is clicked) -->
+      <div id="delete-account-panel" class="hidden bg-[#3b4d58]/60 border border-[#c0392b]/40 rounded-lg p-4 mb-6">
+        <div class="flex items-start gap-2 mb-3">
+          <i class="fa-solid fa-triangle-exclamation text-[#e56a6a] mt-0.5"></i>
+          <p class="text-xs text-[#e56a6a] font-semibold">This permanently deletes your account - your Xtream credentials, selected leagues, category mappings, timezone, and manifest link all get wiped completely. This cannot be undone.</p>
+        </div>
+        <input type="text" id="delete-confirm-input" oninput="updateDeleteButton()" placeholder="Type DELETE to confirm" class="w-full bg-[#2f3e47] border border-[#c0392b]/40 rounded-lg px-3 py-2 text-xs focus:border-[#c0392b] focus:outline-none mb-3">
+        <div class="grid grid-cols-2 gap-3">
+          <button onclick="cancelDeleteAccount()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">
+            Cancel
+          </button>
+          <button id="delete-account-btn" onclick="confirmDeleteAccount()" disabled class="w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-xs cursor-not-allowed">
+            <i class="fa-solid fa-bomb"></i>
+            DELETE
+          </button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Status Messages -->
+    <div id="status-message" class="hidden fixed top-4 right-4 z-50 max-w-sm rounded-lg p-4 text-sm font-semibold shadow-2xl"></div>
+
+  </div>
+
+  <script>
+    const SPORTS = ['NBA', 'NFL', 'MLB', 'WNBA', 'NHL', 'NCAAFB', 'NCAAMB', 'NCAAWB', 'EPL', 'LALIGA', 'MLS', 'WORLDCUP', 'UFC'];
+    const SPORT_LABELS = {
+      GLOBAL: 'Global',
+      NCAAMB: 'College Basketball (Mens)',
+      NCAAWB: 'College Basketball (Womens)',
+      NCAAFB: 'College Football',
+      EPL: 'Premier League',
+      MLS: 'MLS',
+      LALIGA: 'La Liga',
+      WORLDCUP: 'FIFA World Cup',
+      UFC: 'UFC'
+    };
+    const SPORT_ICONS = {
+      GLOBAL: 'fa-globe',
+      MLB: 'fa-baseball',
+      NBA: 'fa-basketball',
+      NFL: 'fa-football',
+      NHL: 'fa-hockey-puck',
+      WNBA: 'fa-basketball',
+      NCAAMB: 'fa-basketball',
+      NCAAWB: 'fa-basketball',
+      NCAAFB: 'fa-football',
+      EPL: 'fa-futbol',
+      MLS: 'fa-futbol',
+      LALIGA: 'fa-futbol',
+      WORLDCUP: 'fa-futbol',
+      UFC: 'fa-hand-fist'
+    };
+    let activeUser = null;
+    let fetchedCategories = [];
+
+    // Setup wizard state (new-account creation only)
+    let wizardSelectedSports = [];
+    let wizardTimezone = 'America/New_York';
+    let wizardXtream = null;
+    let wizardCategories = {};
+    let wizardSportOrder = [];
+
+    // Views that should sit vertically centered in the space below the header.
+    // Single source of truth for every view showView() can switch to - id
+    // (the DOM element to show) and centered (whether it uses the
+    // vertically-centered layout). Previously this was three separate,
+    // independent lists that all had to be kept in sync by hand - adding
+    // a new wizard step meant remembering to update all three, and
+    // missing just one (as happened when the M3U connection-type step was
+    // added) causes a view to hide everything and show nothing back, with
+    // no error at all. Now there's exactly one place to add a new view.
+    const VIEW_CONFIG = {
+      'admin-setup': { id: 'admin-setup-section', centered: true },
+      'encryption-setup': { id: 'encryption-setup-section', centered: true },
+      landing: { id: 'landing-section', centered: true },
+      login: { id: 'auth-section', centered: true },
+      'wizard-leagues': { id: 'wizard-leagues', centered: true },
+      'wizard-timezone': { id: 'wizard-timezone', centered: true },
+      'wizard-connection-type': { id: 'wizard-connection-type', centered: true },
+      'wizard-xtream': { id: 'wizard-xtream', centered: true },
+      'wizard-m3u': { id: 'wizard-m3u', centered: true },
+      'wizard-categories': { id: 'wizard-categories', centered: false },
+      'wizard-password': { id: 'wizard-password', centered: false },
+      dashboard: { id: 'dashboard-section', centered: false }
+    };
+
+    function showView(view) {
+      Object.values(VIEW_CONFIG).forEach(({ id }) => document.getElementById(id).classList.add('hidden'));
+
+      const siteHeader = document.getElementById('site-header');
+      if (view === 'landing') {
+        siteHeader.classList.add('hidden');
+      } else {
+        siteHeader.classList.remove('hidden');
+      }
+
+      // Never show whatever was typed on a previous visit to this form,
+      // whether from browser autofill or just still sitting in the DOM
+      // from earlier in this same page session.
+      if (view === 'login') {
+        document.getElementById('login-uuid').value = '';
+        document.getElementById('login-password').value = '';
+      }
+
+      const centerWrapper = document.getElementById('center-wrapper');
+      const config = VIEW_CONFIG[view];
+      if (config && config.centered) {
+        centerWrapper.classList.add('flex-1', 'flex', 'items-center', 'justify-center');
+      } else {
+        centerWrapper.classList.remove('flex-1', 'flex', 'items-center', 'justify-center');
+      }
+
+      if (config) document.getElementById(config.id).classList.remove('hidden');
+    }
+
+    function showStatus(msg, isError = false) {
+      const el = document.getElementById('status-message');
+      el.textContent = msg;
+      el.className = `fixed top-4 right-4 z-50 max-w-sm rounded-lg p-4 text-sm font-semibold shadow-2xl ${isError ? 'bg-[#3a1f1f]/50 text-[#f0b8b8] border border-[#c0392b]' : 'bg-[#1f3a21]/50 text-[#a8e0ac] border border-[#4a9d52]'}`;
+      el.classList.remove('hidden');
+      setTimeout(() => el.classList.add('hidden'), 5000);
+    }
+
+    // --- Setup Wizard: Step 1, Choose your leagues ---
+
+    function startSetupWizard() {
+      wizardSelectedSports = [];
+      wizardTimezone = 'America/New_York';
+      wizardXtream = null;
+      wizardCategories = {};
+      wizardSportOrder = [];
+
+      // Clearing the JS tracking variable above isn't enough on its own -
+      // the actual input elements keep whatever was typed during an
+      // earlier run of the wizard within this same page session, since
+      // nothing else ever resets their DOM values.
+      document.getElementById('wizard-xtream-url').value = '';
+      document.getElementById('wizard-xtream-username').value = '';
+      document.getElementById('wizard-xtream-password').value = '';
+      document.getElementById('wizard-xtream-error').classList.add('hidden');
+      document.getElementById('wizard-xtream-success').classList.add('hidden');
+      const xtreamBtn = document.getElementById('wizard-xtream-btn');
+      xtreamBtn.dataset.mode = '';
+      xtreamBtn.onclick = testWizardXtream;
+      xtreamBtn.innerHTML = '<i class="fa-solid fa-plug"></i> Test';
+      xtreamBtn.disabled = true;
+      xtreamBtn.className = 'w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-sm cursor-not-allowed';
+
+      renderWizardLeagueGrid();
+      updateWizardLeaguesNextButton();
+      showView('wizard-leagues');
+    }
+
+    // Shared by both the wizard's league picker and the dashboard's Manage
+    // Sports panel, so this markup only exists in one place.
+    function renderLeagueGrid(gridId, selectionArray, toggleFnName) {
+      const grid = document.getElementById(gridId);
+      grid.innerHTML = SPORTS.map(sport => {
+        const label = SPORT_LABELS[sport] || sport;
+        const icon = SPORT_ICONS[sport] || 'fa-trophy';
+        const selected = selectionArray.includes(sport);
+        const stateClasses = selected
+          ? 'bg-[#3b8fc4] border-[#3b8fc4] text-white'
+          : 'bg-[#2f3e47] border-[#e6e6e6]/15 text-[#e6e6e6]/75 hover:border-[#e6e6e6]/40';
+        return `
+          <button type="button" onclick="${toggleFnName}('${sport}')" class="flex flex-col items-center justify-center gap-2 border rounded-lg py-4 px-2 text-xs font-semibold transition ${stateClasses}">
+            <i class="fa-solid ${icon} text-xl"></i>
+            <span>${label}</span>
+          </button>
+        `;
+      }).join('');
+    }
+
+    function toggleSportInArray(arr, sport) {
+      const idx = arr.indexOf(sport);
+      if (idx === -1) arr.push(sport); else arr.splice(idx, 1);
+    }
+
+    function renderWizardLeagueGrid() {
+      renderLeagueGrid('wizard-league-grid', wizardSelectedSports, 'toggleWizardSport');
+    }
+
+    function toggleWizardSport(sport) {
+      toggleSportInArray(wizardSelectedSports, sport);
+      renderWizardLeagueGrid();
+      updateWizardLeaguesNextButton();
+    }
+
+    function updateWizardLeaguesNextButton() {
+      const btn = document.getElementById('wizard-leagues-next');
+      if (wizardSelectedSports.length > 0) {
+        btn.disabled = false;
+        btn.className = 'w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 font-bold py-2.5 rounded-lg text-sm';
+      } else {
+        btn.disabled = true;
+        btn.className = 'w-full bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-sm cursor-not-allowed';
+      }
+    }
+
+    // --- Setup Wizard: Step 2, Select your timezone ---
+
+    // --- Shared timezone picker utilities (used by both the wizard and the
+    // dashboard's Change Timezone editor) ---
+
+    let allTimezones = [];
+
+    function getAllTimezones() {
+      if (allTimezones.length === 0) {
+        try {
+          allTimezones = Intl.supportedValuesOf('timeZone');
+        } catch (err) {
+          // Very old browsers without Intl.supportedValuesOf support.
+          allTimezones = ['America/New_York', 'America/Chicago', 'America/Denver', 'America/Phoenix', 'America/Los_Angeles', 'UTC'];
+        }
+      }
+      return allTimezones;
+    }
+
+    function getTimezoneOffsetLabel(tz) {
+      try {
+        const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'short' }).formatToParts(new Date());
+        const offsetPart = parts.find(p => p.type === 'timeZoneName');
+        return offsetPart ? offsetPart.value : '';
+      } catch (err) {
+        return '';
+      }
+    }
+
+    // Letter abbreviations (like "MST") only exist via Intl for the exact
+    // moment being formatted, and many US zones alternate between a
+    // standard and daylight abbreviation across the year (EST vs EDT) - so
+    // this computes both, cached per timezone, so a search for either one
+    // works correctly regardless of the actual current season.
+    const timezoneSearchTextCache = new Map();
+
+    function getTimezoneSearchText(tz) {
+      if (timezoneSearchTextCache.has(tz)) return timezoneSearchTextCache.get(tz);
+
+      let result = tz.toLowerCase().replace(/_/g, ' ');
+      try {
+        const year = new Date().getFullYear();
+        const getAbbr = (date) => {
+          const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'short' }).formatToParts(date);
+          const part = parts.find(p => p.type === 'timeZoneName');
+          return part ? part.value.toLowerCase() : '';
+        };
+        const winterAbbr = getAbbr(new Date(Date.UTC(year, 0, 15)));
+        const summerAbbr = getAbbr(new Date(Date.UTC(year, 6, 15)));
+        result += ` ${winterAbbr} ${summerAbbr}`;
+      } catch (err) {
+        // Search still works on the name alone if abbreviation lookup fails.
+      }
+
+      timezoneSearchTextCache.set(tz, result);
+      return result;
+    }
+
+    function renderTimezoneList(listId, selectedTz, onSelectFnName, filterText) {
+      const list = document.getElementById(listId);
+      const term = (filterText || '').toLowerCase();
+      const filtered = term
+        ? getAllTimezones().filter(tz => getTimezoneSearchText(tz).includes(term))
+        : getAllTimezones();
+
+      if (filtered.length === 0) {
+        list.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-2">No matching timezones found.</p>';
+        return;
+      }
+
+      list.innerHTML = filtered.map(tz => {
+        const isSelected = tz === selectedTz;
+        const classes = isSelected
+          ? 'bg-[#3b8fc4] text-white'
+          : 'bg-[#2f3e47] text-[#e6e6e6]/75 hover:bg-[#3b4d58]';
+        return `
+          <button type="button" onclick="${onSelectFnName}('${tz}')" class="w-full text-left px-3 py-2 rounded-lg text-xs transition ${classes}">
+            ${tz.replace(/_/g, ' ')} <span class="opacity-70">(${getTimezoneOffsetLabel(tz)})</span>
+          </button>
+        `;
+      }).join('');
+    }
+
+    function wizardGoToTimezone() {
+      document.getElementById('wizard-timezone-search').value = '';
+      renderWizardTimezoneList();
+      updateWizardTimezoneSelectedLabel();
+      showView('wizard-timezone');
+    }
+
+    function renderWizardTimezoneList() {
+      renderTimezoneList('wizard-timezone-list', wizardTimezone, 'selectWizardTimezone', document.getElementById('wizard-timezone-search').value);
+    }
+
+    function selectWizardTimezone(tz) {
+      wizardTimezone = tz;
+      renderWizardTimezoneList();
+      updateWizardTimezoneSelectedLabel();
+    }
+
+    function updateWizardTimezoneSelectedLabel() {
+      document.getElementById('wizard-timezone-selected').textContent = `Selected: ${wizardTimezone.replace(/_/g, ' ')} (${getTimezoneOffsetLabel(wizardTimezone)})`;
+    }
+
+    function wizardGoToConnectionType() {
+      showView('wizard-connection-type');
+    }
+
+    function wizardGoToXtream() {
+      showView('wizard-xtream');
+    }
+
+    // --- Setup Wizard: Step 3b, M3U playlist + EPG URLs ---
+    // Deliberately no separate "Test" step the way Xtream has - there's no
+    // auth to confirm here, the fetch+parse IS the test. A brand-new
+    // source has no cache to fall back on yet, so this really is a
+    // genuine, unavoidable wait - matches what direct testing confirmed
+    // (~6.5 seconds for a real, full-size source), hence the explicit
+    // "Importing. Please wait." messaging rather than pretending it's instant.
+    let wizardM3u = null;
+
+    function wizardGoToM3u() {
+      showView('wizard-m3u');
+    }
+
+    function updateWizardM3uButton() {
+      const btn = document.getElementById('wizard-m3u-btn');
+      const playlistUrl = document.getElementById('wizard-m3u-playlist-url').value.trim();
+      const epgUrl = document.getElementById('wizard-m3u-epg-url').value.trim();
+
+      if (playlistUrl && epgUrl) {
+        btn.disabled = false;
+        btn.className = 'w-full flex items-center justify-center gap-2 bg-white text-[#c0392b] hover:bg-[#f0f0f0] active:scale-95 transition-all duration-150 font-bold py-2.5 rounded-lg text-sm';
+      } else {
+        btn.disabled = true;
+        btn.className = 'w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-sm cursor-not-allowed';
+      }
+    }
+
+    async function importWizardM3u() {
+      const playlistUrl = document.getElementById('wizard-m3u-playlist-url').value.trim();
+      const epgUrl = document.getElementById('wizard-m3u-epg-url').value.trim();
+      const errorEl = document.getElementById('wizard-m3u-error');
+      const importingEl = document.getElementById('wizard-m3u-importing');
+      const btn = document.getElementById('wizard-m3u-btn');
+
+      errorEl.classList.add('hidden');
+      importingEl.classList.remove('hidden');
+      btn.disabled = true;
+
+      try {
+        const res = await fetch('/api/m3u/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ playlistUrl, epgUrl })
+        });
+        const data = await res.json();
+        importingEl.classList.add('hidden');
+
+        if (data.success) {
+          wizardM3u = { playlistUrl, epgUrl };
+          // Same {category_id, category_name} shape Xtream categories use,
+          // so the entire downstream Category Search UI works unchanged -
+          // a group-title string serves as both the id and the display
+          // name here, since M3U has no separate numeric-id concept.
+          fetchedCategories = data.categories.map(c => ({ category_id: c.name, category_name: c.name }));
+          wizardGoToCategories();
+        } else {
+          // Indicate which URL was the problem where the backend could
+          // tell, rather than a generic failure message.
+          let message = data.error || "Couldn't import. Please check both URLs.";
+          errorEl.textContent = message;
+          errorEl.classList.remove('hidden');
+          btn.disabled = false;
+          updateWizardM3uButton();
+        }
+      } catch (err) {
+        importingEl.classList.add('hidden');
+        errorEl.textContent = "Couldn't import. Please check both URLs.";
+        errorEl.classList.remove('hidden');
+        btn.disabled = false;
+        updateWizardM3uButton();
+      }
+    }
+
+    // --- Setup Wizard: Step 3, Enter Xtream login information ---
+
+    function updateWizardTestButton() {
+      const btn = document.getElementById('wizard-xtream-btn');
+      if (btn.dataset.mode === 'next') return;
+
+      const url = document.getElementById('wizard-xtream-url').value.trim();
+      const username = document.getElementById('wizard-xtream-username').value.trim();
+      const password = document.getElementById('wizard-xtream-password').value.trim();
+
+      if (url && username && password) {
+        btn.disabled = false;
+        btn.className = 'w-full flex items-center justify-center gap-2 bg-white text-[#c0392b] hover:bg-[#f0f0f0] active:scale-95 transition-all duration-150 font-bold py-2.5 rounded-lg text-sm';
+      } else {
+        btn.disabled = true;
+        btn.className = 'w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-sm cursor-not-allowed';
+      }
+    }
+
+    async function testWizardXtream() {
+      const url = document.getElementById('wizard-xtream-url').value.trim();
+      const username = document.getElementById('wizard-xtream-username').value.trim();
+      const password = document.getElementById('wizard-xtream-password').value.trim();
+      const errorEl = document.getElementById('wizard-xtream-error');
+      const successEl = document.getElementById('wizard-xtream-success');
+      const btn = document.getElementById('wizard-xtream-btn');
+
+      errorEl.classList.add('hidden');
+      successEl.classList.add('hidden');
+
+      try {
+        const res = await fetch('/api/xtream/categories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, username, password })
+        });
+        const data = await res.json();
+        if (data.success) {
+          wizardXtream = { url, username, password };
+          fetchedCategories = data.categories;
+          btn.dataset.mode = 'next';
+          btn.innerHTML = 'Next';
+          btn.onclick = wizardGoToCategories;
+          btn.className = 'w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 font-bold py-2.5 rounded-lg text-sm';
+          successEl.textContent = 'Connection success. Click next.';
+          successEl.classList.remove('hidden');
+        } else {
+          errorEl.textContent = "Couldn't connect. Please check credentials.";
+          errorEl.classList.remove('hidden');
+        }
+      } catch (err) {
+        errorEl.textContent = "Couldn't connect. Please check credentials.";
+        errorEl.classList.remove('hidden');
+      }
+    }
+
+    // --- Setup Wizard: Step 4, category folder selection (filtered) ---
+
+    function wizardGoToCategories() {
+      renderWizardCategoriesConfig();
+      showView('wizard-categories');
+    }
+
+    function renderWizardCategoriesConfig() {
+      renderCategoryConfig(wizardSelectedSports, 'wizard-sports-config-container', 'wizard-', () => [], () => [], wizardSportOrder, (newOrder) => { wizardSportOrder = newOrder; });
+    }
+
+    // Shared by both the wizard's category step and the dashboard's save
+    // action, so this logic only exists in one place. For every sport
+    // except GLOBAL itself, disabled checkboxes (categories forced on via
+    // Global) are excluded - they're already captured under the GLOBAL key,
+    // no need to also duplicate them into each individual sport's list.
+    function collectCheckedCategories(sportsList, containerId) {
+      const sportCategories = {};
+      sportsList.forEach(sport => {
+        const selector = sport === 'GLOBAL'
+          ? `#${containerId} input[data-sport="${sport}"]:checked`
+          : `#${containerId} input[data-sport="${sport}"]:checked:not(:disabled)`;
+        sportCategories[sport] = Array.from(document.querySelectorAll(selector)).map(cb => cb.value);
+      });
+      return sportCategories;
+    }
+
+    function wizardCollectCategories() {
+      return collectCheckedCategories(['GLOBAL', ...wizardSelectedSports], 'wizard-sports-config-container');
+    }
+
+    function wizardGoToPassword() {
+      wizardCategories = wizardCollectCategories();
+      showView('wizard-password');
+    }
+
+    // --- Setup Wizard: Step 5, set your password and create the account ---
+
+    async function finishWizardSetup() {
+      const password = document.getElementById('wizard-password-input').value;
+      const confirmPassword = document.getElementById('wizard-password-confirm').value;
+      const errorEl = document.getElementById('wizard-password-error');
+      errorEl.classList.add('hidden');
+
+      if (!password || !confirmPassword) {
+        errorEl.textContent = 'Please enter and confirm your password.';
+        errorEl.classList.remove('hidden');
+        return;
+      }
+      if (password !== confirmPassword) {
+        errorEl.textContent = 'Passwords do not match.';
+        errorEl.classList.remove('hidden');
+        return;
+      }
+
+      try {
+        // wizardM3u is only ever populated if the user actually completed
+        // the M3U import step - its presence (not some separately-tracked
+        // flag) is what determines which path was taken, since the two
+        // are mutually exclusive by construction (the wizard only lets you
+        // walk one path or the other).
+        const connectionType = wizardM3u ? 'm3u' : 'xtream';
+        const res = await fetch('/api/user/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            password,
+            timeZone: wizardTimezone,
+            connectionType,
+            xtream: connectionType === 'xtream' ? wizardXtream : undefined,
+            m3u: connectionType === 'm3u' ? wizardM3u : undefined,
+            // Now used to pre-filter the new dashboard to exactly what was
+            // chosen in the wizard, rather than showing all 11 sports.
+            selectedSports: wizardSelectedSports,
+            sportCategories: wizardCategories,
+            sportOrder: wizardSportOrder
+          })
+        });
+        const data = await res.json();
+        if (data.success) {
+          activeUser = {
+            uuid: data.uuid,
+            password,
+            connectionType,
+            xtream: connectionType === 'xtream' ? wizardXtream : undefined,
+            m3u: connectionType === 'm3u' ? wizardM3u : undefined,
+            selectedSports: wizardSelectedSports,
+            sportCategories: wizardCategories,
+            timeZone: wizardTimezone
+          };
+          document.getElementById('active-uuid-display').textContent = data.uuid;
+          renderSportsConfig();
+          showView('dashboard');
+        } else {
+          errorEl.textContent = data.error || 'Failed to create account.';
+          errorEl.classList.remove('hidden');
+        }
+      } catch (err) {
+        errorEl.textContent = 'Network error while creating account.';
+        errorEl.classList.remove('hidden');
+      }
+    }
+
+    async function handleLogin(e) {
+      e.preventDefault();
+      const uuid = document.getElementById('login-uuid').value.trim();
+      const password = document.getElementById('login-password').value;
+
+      try {
+        const res = await fetch('/api/user/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uuid, password })
+        });
+        const data = await res.json();
+        if (data.success) {
+          activeUser = { uuid, password, ...data };
+          document.getElementById('active-uuid-display').textContent = uuid;
+          showView('dashboard');
+
+          const x = activeUser.xtream;
+          const m = activeUser.m3u;
+          const hasXtream = x && x.url && x.username && x.password;
+          const hasM3u = m && m.playlistUrl && m.epgUrl;
+          if (hasXtream || hasM3u) {
+            await refreshCategories();
+          } else {
+            renderSportsConfig();
+            showStatus('Successfully authenticated!');
+          }
+        } else {
+          showStatus(data.error || 'Login failed.', true);
+        }
+      } catch (err) {
+        showStatus('Network error during login.', true);
+      }
+    }
+
+    async function fetchCategories() {
+      if (!activeUser || !activeUser.xtream || !activeUser.xtream.url) {
+        return showStatus('No Xtream credentials saved yet. Click Edit Xtream to add them.', true);
+      }
+      const { url, username, password } = activeUser.xtream;
+
+      showStatus('Fetching categories from Xtream server...');
+
+      try {
+        const res = await fetch('/api/xtream/categories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, username, password })
+        });
+        const data = await res.json();
+        if (data.success) {
+          fetchedCategories = data.categories;
+          showStatus(`Fetched ${fetchedCategories.length} categories!`);
+          renderSportsConfig();
+        } else {
+          showStatus(data.error || 'Failed to fetch categories.', true);
+        }
+      } catch (err) {
+        showStatus('Network error while connecting to Xtream API.', true);
+      }
+    }
+
+    // Companion to fetchCategories() above, for M3U accounts - reads from
+    // the scheduler's already-fresh cache (via /api/m3u/categories)
+    // rather than re-importing the account's URLs from scratch, since
+    // that's a real, multi-second operation with no reason to repeat it
+    // just to view already-selected categories.
+    async function fetchM3uCategories() {
+      if (!activeUser || !activeUser.m3u || !activeUser.m3u.playlistUrl) {
+        return showStatus('No M3U URLs saved yet. Click Edit M3U to add them.', true);
+      }
+
+      showStatus('Loading categories...');
+
+      try {
+        const res = await fetch('/api/m3u/categories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password })
+        });
+        const data = await res.json();
+        if (data.success) {
+          fetchedCategories = data.categories.map(c => ({ category_id: c.name, category_name: c.name }));
+          if (data.notReady) {
+            showStatus('M3U data is still loading in the background - try again shortly.', true);
+          } else {
+            showStatus(`Loaded ${fetchedCategories.length} categories!`);
+          }
+          renderSportsConfig();
+        } else {
+          showStatus(data.error || 'Failed to load categories.', true);
+        }
+      } catch (err) {
+        showStatus('Network error while loading M3U categories.', true);
+      }
+    }
+
+    // Single entry point for both the login flow and the dashboard's
+    // "Refresh Categories" button - branches by connectionType once, here,
+    // rather than duplicating that same branch at every call site.
+    async function refreshCategories() {
+      if (activeUser && activeUser.connectionType === 'm3u') {
+        await fetchM3uCategories();
+      } else {
+        await fetchCategories();
+      }
+    }
+
+    // --- Edit Xtream panel: credentials are hidden by default and only
+    // become editable/visible here, gated behind a connection test before
+    // they can be saved. This save is deliberately separate from the main
+    // "Save" button below, which only touches category selections.
+
+    let editXtreamOriginalValues = null;
+
+    let editXtreamTestedCredentials = null;
+
+    const UNSAVED_CHANGES_WARNING = 'You have unsaved category changes that will be lost if you continue. Continue anyway?';
+
+    // Reflects which settings panel (if any) is currently open onto its
+    // trigger button's own styling - reads the actual DOM state of each
+    // panel rather than tracking a separate variable, so it stays correct
+    // regardless of which specific action opened or closed a panel.
+    function updateSettingsButtonStates() {
+      const pairs = [
+        ['edit-xtream-trigger-btn', 'edit-xtream-panel'],
+        ['edit-m3u-trigger-btn', 'edit-m3u-panel'],
+        ['manage-sports-btn', 'manage-sports-panel'],
+        ['change-timezone-btn', 'change-timezone-panel']
+      ];
+      pairs.forEach(([btnId, panelId]) => {
+        const btn = document.getElementById(btnId);
+        const panel = document.getElementById(panelId);
+        if (!btn || !panel) return;
+        // Preserve whichever hidden/flex state renderSportsConfig() set
+        // based on connectionType - this function only cares about the
+        // open/closed color styling, and must never accidentally re-show
+        // a trigger button (Edit Xtream or Edit M3U) that isn't relevant
+        // to this account. Rewriting className wholesale, as this used to
+        // do, would silently undo that hidden state on every single
+        // settings-panel toggle.
+        const wasHidden = btn.classList.contains('hidden');
+        const isOpen = !panel.classList.contains('hidden');
+        btn.className = isOpen
+          ? 'bg-[#3b8fc4] border border-[#5aa8d1] text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2'
+          : 'bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2';
+        if (wasHidden) btn.classList.add('hidden');
+      });
+    }
+
+    function toggleEditXtreamPanel() {
+      const panel = document.getElementById('edit-xtream-panel');
+      if (panel.classList.contains('hidden')) {
+        closeEditM3uPanelSilently();
+        closeManageSportsPanelSilently();
+        closeChangeTimezonePanelSilently();
+        closeDeleteAccountPanelSilently();
+        const x = (activeUser && activeUser.xtream) || {};
+        editXtreamOriginalValues = { url: x.url || '', username: x.username || '', password: x.password || '' };
+        document.getElementById('edit-xtream-url').value = editXtreamOriginalValues.url;
+        document.getElementById('edit-xtream-username').value = editXtreamOriginalValues.username;
+        document.getElementById('edit-xtream-password').value = editXtreamOriginalValues.password;
+        document.getElementById('edit-xtream-error').classList.add('hidden');
+        resetEditXtreamState();
+        panel.classList.remove('hidden');
+      } else {
+        cancelEditXtream();
+      }
+      updateSettingsButtonStates();
+    }
+
+    // Closes the Xtream editor as if Cancel were clicked, but without any
+    // extra side effects - used when the Manage Sports panel needs to take
+    // over, so only one editor is ever open at a time.
+    function closeEditXtreamPanelSilently() {
+      const panel = document.getElementById('edit-xtream-panel');
+      if (!panel.classList.contains('hidden')) {
+        revertEditXtreamFields();
+        panel.classList.add('hidden');
+        resetEditXtreamState();
+      }
+      updateSettingsButtonStates();
+    }
+
+    // Back to the initial single "Test" button state, with no pending
+    // (tested-but-not-yet-confirmed) credentials.
+    function resetEditXtreamState() {
+      editXtreamTestedCredentials = null;
+      const btn = document.getElementById('edit-xtream-btn');
+      btn.onclick = testEditXtream;
+      btn.innerHTML = '<i class="fa-solid fa-plug"></i> Test';
+      updateEditXtreamButton();
+    }
+
+    function revertEditXtreamFields() {
+      if (!editXtreamOriginalValues) return;
+      document.getElementById('edit-xtream-url').value = editXtreamOriginalValues.url;
+      document.getElementById('edit-xtream-username').value = editXtreamOriginalValues.username;
+      document.getElementById('edit-xtream-password').value = editXtreamOriginalValues.password;
+      updateEditXtreamButton();
+    }
+
+    function updateEditXtreamButton() {
+      const btn = document.getElementById('edit-xtream-btn');
+
+      // Editing a field after a successful test invalidates that test - drop
+      // back to Test mode so a stale, already-tested credential set can
+      // never be confirmed without re-verifying the currently-typed values.
+      if (editXtreamTestedCredentials) {
+        resetEditXtreamState();
+        return;
+      }
+
+      const url = document.getElementById('edit-xtream-url').value.trim();
+      const username = document.getElementById('edit-xtream-username').value.trim();
+      const password = document.getElementById('edit-xtream-password').value.trim();
+
+      if (url && username && password) {
+        btn.disabled = false;
+        btn.className = 'w-full flex items-center justify-center gap-2 bg-white text-[#c0392b] hover:bg-[#f0f0f0] active:scale-95 transition-all duration-150 font-bold py-2.5 rounded-lg text-xs';
+      } else {
+        btn.disabled = true;
+        btn.className = 'w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-xs cursor-not-allowed';
+      }
+    }
+
+    // Tests the entered credentials. On success, the Test button morphs
+    // in-place into Confirm (Cancel stays put beside it the whole time) -
+    // nothing is saved until Confirm is actually clicked. On failure, the
+    // fields revert to whatever was saved before this edit.
+    async function testEditXtream() {
+      const url = document.getElementById('edit-xtream-url').value.trim();
+      const username = document.getElementById('edit-xtream-username').value.trim();
+      const password = document.getElementById('edit-xtream-password').value.trim();
+      const errorEl = document.getElementById('edit-xtream-error');
+      errorEl.classList.add('hidden');
+
+      try {
+        const res = await fetch('/api/xtream/categories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, username, password })
+        });
+        const data = await res.json();
+        if (data.success) {
+          // Hold onto both the verified credentials and the categories this
+          // test already fetched, so Confirm doesn't need to hit the API again.
+          editXtreamTestedCredentials = { url, username, password };
+          fetchedCategories = data.categories;
+          const btn = document.getElementById('edit-xtream-btn');
+          btn.onclick = confirmEditXtream;
+          btn.innerHTML = 'Confirm';
+          btn.className = 'w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 font-bold py-2.5 rounded-lg text-xs';
+          showStatus('Connection successful!');
+        } else {
+          revertEditXtreamFields();
+          errorEl.textContent = "Couldn't connect. Please check credentials.";
+          errorEl.classList.remove('hidden');
+        }
+      } catch (err) {
+        revertEditXtreamFields();
+        errorEl.textContent = "Couldn't connect. Please check credentials.";
+        errorEl.classList.remove('hidden');
+      }
+    }
+
+    function cancelEditXtream() {
+      revertEditXtreamFields();
+      document.getElementById('edit-xtream-panel').classList.add('hidden');
+      resetEditXtreamState();
+    }
+
+    // --- Dashboard: Edit M3U ---
+    // Mirrors Edit Xtream's Test/Confirm two-step exactly, for the same
+    // reason: this is an EXISTING account with saved state that could be
+    // overwritten, unlike the wizard's brand-new-account context (where
+    // Continue proceeds in one step, since there's nothing yet to
+    // protect). Import morphs in-place into Confirm on success - nothing
+    // is staged into activeUser.m3u until Confirm is actually clicked.
+    let editM3uOriginalValues = null;
+    let editM3uImportedValues = null;
+
+    function toggleEditM3uPanel() {
+      const panel = document.getElementById('edit-m3u-panel');
+      if (panel.classList.contains('hidden')) {
+        closeEditXtreamPanelSilently();
+        closeManageSportsPanelSilently();
+        closeChangeTimezonePanelSilently();
+        closeDeleteAccountPanelSilently();
+        const m = (activeUser && activeUser.m3u) || {};
+        editM3uOriginalValues = { playlistUrl: m.playlistUrl || '', epgUrl: m.epgUrl || '' };
+        document.getElementById('edit-m3u-playlist-url').value = editM3uOriginalValues.playlistUrl;
+        document.getElementById('edit-m3u-epg-url').value = editM3uOriginalValues.epgUrl;
+        document.getElementById('edit-m3u-error').classList.add('hidden');
+        resetEditM3uState();
+        panel.classList.remove('hidden');
+      } else {
+        cancelEditM3u();
+      }
+      updateSettingsButtonStates();
+    }
+
+    function closeEditM3uPanelSilently() {
+      const panel = document.getElementById('edit-m3u-panel');
+      if (!panel.classList.contains('hidden')) {
+        revertEditM3uFields();
+        panel.classList.add('hidden');
+        resetEditM3uState();
+      }
+      updateSettingsButtonStates();
+    }
+
+    function resetEditM3uState() {
+      editM3uImportedValues = null;
+      const btn = document.getElementById('edit-m3u-btn');
+      btn.onclick = importEditM3u;
+      btn.innerHTML = '<i class="fa-solid fa-file-import"></i> Import';
+      updateEditM3uButton();
+    }
+
+    function revertEditM3uFields() {
+      if (!editM3uOriginalValues) return;
+      document.getElementById('edit-m3u-playlist-url').value = editM3uOriginalValues.playlistUrl;
+      document.getElementById('edit-m3u-epg-url').value = editM3uOriginalValues.epgUrl;
+      updateEditM3uButton();
+    }
+
+    function updateEditM3uButton() {
+      const btn = document.getElementById('edit-m3u-btn');
+
+      // Editing a field after a successful import invalidates that import -
+      // same reasoning as Xtream: a stale, already-verified URL pair
+      // should never be confirmable without re-verifying whatever's
+      // currently typed.
+      if (editM3uImportedValues) {
+        resetEditM3uState();
+        return;
+      }
+
+      const playlistUrl = document.getElementById('edit-m3u-playlist-url').value.trim();
+      const epgUrl = document.getElementById('edit-m3u-epg-url').value.trim();
+
+      if (playlistUrl && epgUrl) {
+        btn.disabled = false;
+        btn.className = 'w-full flex items-center justify-center gap-2 bg-white text-[#c0392b] hover:bg-[#f0f0f0] active:scale-95 transition-all duration-150 font-bold py-2.5 rounded-lg text-xs';
+      } else {
+        btn.disabled = true;
+        btn.className = 'w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-xs cursor-not-allowed';
+      }
+    }
+
+    async function importEditM3u() {
+      const playlistUrl = document.getElementById('edit-m3u-playlist-url').value.trim();
+      const epgUrl = document.getElementById('edit-m3u-epg-url').value.trim();
+      const errorEl = document.getElementById('edit-m3u-error');
+      const importingEl = document.getElementById('edit-m3u-importing');
+      const btn = document.getElementById('edit-m3u-btn');
+
+      errorEl.classList.add('hidden');
+      importingEl.classList.remove('hidden');
+      btn.disabled = true;
+
+      try {
+        const res = await fetch('/api/m3u/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ playlistUrl, epgUrl })
+        });
+        const data = await res.json();
+        importingEl.classList.add('hidden');
+
+        if (data.success) {
+          editM3uImportedValues = { playlistUrl, epgUrl };
+          fetchedCategories = data.categories.map(c => ({ category_id: c.name, category_name: c.name }));
+          btn.onclick = confirmEditM3u;
+          btn.innerHTML = 'Confirm';
+          btn.className = 'w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 font-bold py-2.5 rounded-lg text-xs';
+          showStatus('Import successful!');
+        } else {
+          revertEditM3uFields();
+          errorEl.textContent = data.error || "Couldn't import. Please check both URLs.";
+          errorEl.classList.remove('hidden');
+        }
+      } catch (err) {
+        importingEl.classList.add('hidden');
+        revertEditM3uFields();
+        errorEl.textContent = "Couldn't import. Please check both URLs.";
+        errorEl.classList.remove('hidden');
+      }
+    }
+
+    function cancelEditM3u() {
+      revertEditM3uFields();
+      document.getElementById('edit-m3u-panel').classList.add('hidden');
+      resetEditM3uState();
+    }
+
+    // Stages the imported URLs for this session only - nothing is sent to
+    // the server here. The actual save happens only when "Save and Copy
+    // Link" is clicked, same as every other setting on this page,
+    // matching confirmEditXtream exactly.
+    function confirmEditM3u() {
+      if (!editM3uImportedValues) return;
+      if (dashboardHasUnsavedChanges && !confirm(UNSAVED_CHANGES_WARNING)) {
+        return;
+      }
+
+      activeUser.m3u = editM3uImportedValues;
+      document.getElementById('edit-m3u-panel').classList.add('hidden');
+      resetEditM3uState();
+      renderSportsConfig();
+      markDashboardDirty();
+      showStatus('M3U URLs updated for this session - click Save and Copy Link to save.');
+    }
+
+    // Stages the tested credentials for this session only - nothing is
+    // sent to the server here. The actual save happens only when "Save and
+    // Copy Link" is clicked, same as every other setting on this page.
+    function confirmEditXtream() {
+      if (!editXtreamTestedCredentials) return;
+      if (dashboardHasUnsavedChanges && !confirm(UNSAVED_CHANGES_WARNING)) {
+        return;
+      }
+
+      activeUser.xtream = editXtreamTestedCredentials;
+      document.getElementById('edit-xtream-panel').classList.add('hidden');
+      resetEditXtreamState();
+      renderSportsConfig();
+      markDashboardDirty();
+      showStatus('Xtream credentials updated for this session - click Save and Copy Link to save.');
+    }
+
+    // Shared by both the real dashboard and the setup wizard's category step,
+    // so the two never drift out of sync with each other. idPrefix keeps each
+    // context's element IDs/classes distinct ('' for the dashboard, 'wizard-'
+    // for the wizard), and getPreSelected supplies which categories should
+    // already be checked (existing saved config for the dashboard, none yet
+    // for a brand-new wizard setup). Each sport renders as a collapsible
+    // accordion section (collapsed by default) so a long sport list doesn't
+    // turn into an endless scroll of fully-expanded folder pickers.
+    // Builds the checkbox list for one sport's categories, sorted so
+    // currently-checked categories always appear first ("sticky to the
+    // top"), rather than staying wherever they happened to be in the raw
+    // Xtream category order. For any sport other than GLOBAL itself,
+    // categories checked under Global render as checked, disabled, and
+    // globe-marked - there's no separate on/off state to toggle from
+    // within an individual league's view, only from Global itself.
+    function buildCategoryCheckboxesHtml(sport, idPrefix, checkedIds, globalCheckedIds = []) {
+      if (fetchedCategories.length === 0) {
+        return '<p class="text-xs text-[#e6e6e6]/55 italic">No categories loaded yet.</p>';
+      }
+
+      const isGlobalSection = sport === 'GLOBAL';
+
+      const sorted = [...fetchedCategories].sort((a, b) => {
+        const aChecked = checkedIds.includes(a.category_id) || (!isGlobalSection && globalCheckedIds.includes(a.category_id));
+        const bChecked = checkedIds.includes(b.category_id) || (!isGlobalSection && globalCheckedIds.includes(b.category_id));
+        if (aChecked === bChecked) return 0;
+        return aChecked ? -1 : 1;
+      });
+
+      return sorted.map(cat => {
+        const isGloballyForced = !isGlobalSection && globalCheckedIds.includes(cat.category_id);
+        const isChecked = isGloballyForced || checkedIds.includes(cat.category_id);
+        const disabledAttr = isGloballyForced ? 'disabled' : '';
+        const globeMarker = isGloballyForced ? ' <i class="fa-solid fa-globe text-[10px] opacity-60" title="Applied to every league via Global"></i>' : '';
+        const textClass = isGloballyForced ? 'text-[#e6e6e6]/45' : 'text-[#e6e6e6]/75 hover:text-[#e6e6e6]';
+        return `
+          <label class="${idPrefix}category-item-${sport} flex items-center space-x-2 text-xs ${textClass} cursor-pointer py-1" data-name="${escapeHtml(cat.category_name)}">
+            <input type="checkbox" data-sport="${sport}" value="${cat.category_id}" ${isChecked ? 'checked' : ''} ${disabledAttr} onchange="handleCategoryToggle('${idPrefix}', '${sport}')" class="rounded bg-[#3b4d58] border-[#e6e6e6]/15 text-[#3b8fc4] focus:ring-0">
+            <span>${escapeHtml(cat.category_name)}</span>${globeMarker}
+          </label>
+        `;
+      }).join('');
+    }
+
+    // Removes any lingering drop-position indicator from every draggable
+    // section in a container - called before applying a new one and on
+    // drag end/leave, so at most one section ever shows an indicator at
+    // a time.
+    function clearAllDropIndicators(container) {
+      container.querySelectorAll('[data-sport]').forEach(el => {
+        el.style.borderTop = '';
+        el.style.borderBottom = '';
+      });
+    }
+
+    function renderCategoryConfig(sportsList, containerId, idPrefix, getPreSelected, getGlobalSelected, existingOrder, onReorder) {
+      const container = document.getElementById(containerId);
+      container.innerHTML = '';
+
+      // Sorted by the user's own drag-and-drop order if one exists yet,
+      // otherwise alphabetically by display label - "FIFA World Cup"
+      // sorts under F, not its WORLDCUP key. Anything not yet present in
+      // existingOrder (e.g. a league added after the order was last set)
+      // falls back to alphabetical, sorting after everything explicitly
+      // ordered - same fallback logic the manifest itself uses.
+      const alphaSort = (a, b) => (SPORT_LABELS[a] || a).localeCompare(SPORT_LABELS[b] || b);
+      const sortedSportsList = (existingOrder && existingOrder.length > 0)
+        ? [...sportsList].sort((a, b) => {
+            const idxA = existingOrder.indexOf(a);
+            const idxB = existingOrder.indexOf(b);
+            if (idxA === -1 && idxB === -1) return alphaSort(a, b);
+            if (idxA === -1) return 1;
+            if (idxB === -1) return -1;
+            return idxA - idxB;
+          })
+        : [...sportsList].sort(alphaSort);
+
+      // Global always sits first, regardless of which real leagues are
+      // selected - it functions exactly like any other league's section,
+      // just with a globe icon instead of a sport icon. It's also never
+      // draggable, for the same reason - its position is fixed by design,
+      // not something the user reorders.
+      const fullList = ['GLOBAL', ...sortedSportsList];
+      const globalSelected = getGlobalSelected();
+
+      fullList.forEach(sport => {
+        const isGlobalSection = sport === 'GLOBAL';
+        const preSelected = isGlobalSection ? globalSelected : getPreSelected(sport);
+        const icon = isGlobalSection ? 'fa-globe' : (SPORT_ICONS[sport] || 'fa-trophy');
+        const sectionLabel = isGlobalSection ? 'Global' : (SPORT_LABELS[sport] || sport);
+
+        const section = document.createElement('div');
+        section.className = 'bg-[#3b4d58]/40 border border-[#e6e6e6]/15 rounded-lg overflow-hidden';
+
+        const categoryCheckboxesHtml = buildCategoryCheckboxesHtml(sport, idPrefix, preSelected, isGlobalSection ? [] : globalSelected);
+
+        // Effective count for a real league includes whatever's checked
+        // under Global too, since those categories are searched for every
+        // league regardless of that league's own selections.
+        const effectiveCount = isGlobalSection ? preSelected.length : preSelected.length + globalSelected.length;
+        const badgeClass = effectiveCount > 0 ? 'bg-[#3b8fc4] text-white' : 'bg-[#3b4d58] text-[#e6e6e6]/55';
+        const instructionText = isGlobalSection
+          ? 'Categories checked here are automatically searched for every league, in addition to that league\'s own selections.'
+          : 'Please choose which categories should be searched when sourcing game streams.';
+        const dragHandle = isGlobalSection ? '' : '<i class="fa-solid fa-grip-vertical text-[#e6e6e6]/40 text-sm cursor-grab active:cursor-grabbing"></i>';
+
+        section.innerHTML = `
+          <button type="button" onclick="toggleAccordionSection('${idPrefix}', '${sport}')" class="w-full flex items-center justify-between px-4 py-3 hover:bg-[#3b4d58]/40 transition text-left">
+            <div class="flex items-center gap-3">
+              ${dragHandle}
+              <i class="fa-solid ${icon} text-[#5aa8d1] text-base w-5 text-center"></i>
+              <span class="font-bold text-sm text-[#e6e6e6]">${sectionLabel}</span>
+            </div>
+            <div class="flex items-center gap-3">
+              <span id="${idPrefix}badge-${sport}" class="text-xs font-semibold px-2 py-0.5 rounded-full ${badgeClass}">${effectiveCount} selected</span>
+              <i id="${idPrefix}chevron-${sport}" class="fa-solid fa-chevron-down text-[#e6e6e6]/55 text-xs transition-transform"></i>
+            </div>
+          </button>
+          <div id="${idPrefix}body-${sport}" class="hidden px-4 pb-4">
+            <p class="text-xs text-[#e6e6e6]/55 mb-3">${instructionText}</p>
+            <div class="relative mb-2">
+              <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-xs text-[#e6e6e6]/55"></i>
+              <input type="text" id="${idPrefix}search-${sport}" onkeyup="filterCategoriesGeneric('${sport}', '${idPrefix}')" placeholder="Filter ${sectionLabel} categories..." class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg pl-8 pr-3 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none text-[#e6e6e6]/90">
+            </div>
+            <div id="${idPrefix}checklist-${sport}" class="max-h-96 overflow-y-auto bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3 space-y-1">
+              ${categoryCheckboxesHtml}
+            </div>
+          </div>
+        `;
+
+        if (!isGlobalSection) {
+          section.dataset.sport = sport;
+          section.draggable = true;
+
+          section.addEventListener('dragstart', (e) => {
+            // The "empty slot" left behind while dragging - dashed border
+            // and low opacity read clearly as "this is being moved", not
+            // just a generic dimmed state. Inline styles rather than
+            // Tailwind classes here, same reasoning as the drop indicator
+            // below - these are applied purely at runtime via JS, with no
+            // static text anywhere in the page's HTML for Tailwind's CDN
+            // JIT scanner to have already picked up.
+            section.style.opacity = '0.15';
+            section.style.border = '2px dashed rgba(230,230,230,0.3)';
+
+            // Native drag-and-drop's default cursor-following image is
+            // just a flat snapshot of the element - CSS transitions on the
+            // original don't affect it. Supplying a styled clone instead
+            // gives a genuine "picked up" look: slightly larger, tilted,
+            // with a strong shadow.
+            const dragImage = section.cloneNode(true);
+            dragImage.style.position = 'fixed';
+            dragImage.style.top = '-9999px';
+            dragImage.style.width = `${section.offsetWidth}px`;
+            dragImage.style.transform = 'scale(1.05) rotate(2deg)';
+            dragImage.style.boxShadow = '0 20px 40px rgba(0,0,0,0.5)';
+            dragImage.style.opacity = '1';
+            document.body.appendChild(dragImage);
+            e.dataTransfer.setDragImage(dragImage, e.clientX - section.getBoundingClientRect().left, e.clientY - section.getBoundingClientRect().top);
+            setTimeout(() => dragImage.remove(), 0);
+
+            e.dataTransfer.setData('text/plain', sport);
+            e.dataTransfer.effectAllowed = 'move';
+          });
+          section.addEventListener('dragend', () => {
+            section.style.opacity = '';
+            section.style.border = '';
+            clearAllDropIndicators(container);
+          });
+          section.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+
+            // Live preview of where the item would land if dropped right
+            // now - a highlighted line on whichever edge (top/bottom) the
+            // cursor is currently closer to. Inline styles here rather
+            // than Tailwind classes, since these are applied purely via
+            // classList/style at runtime - safer than relying on the
+            // Tailwind CDN's JIT scanner picking up classes that never
+            // appear as literal text anywhere in the page's HTML.
+            clearAllDropIndicators(container);
+            const rect = section.getBoundingClientRect();
+            const insertBefore = (e.clientY - rect.top) < rect.height / 2;
+            section.style.borderTop = insertBefore ? '3px solid #3b8fc4' : '';
+            section.style.borderBottom = insertBefore ? '' : '3px solid #3b8fc4';
+          });
+          section.addEventListener('dragleave', () => {
+            section.style.borderTop = '';
+            section.style.borderBottom = '';
+          });
+          section.addEventListener('drop', (e) => {
+            e.preventDefault();
+            clearAllDropIndicators(container);
+            const draggedSport = e.dataTransfer.getData('text/plain');
+            if (!draggedSport || draggedSport === sport) return;
+            const draggedEl = container.querySelector(`[data-sport="${draggedSport}"]`);
+            if (!draggedEl) return;
+
+            const rect = section.getBoundingClientRect();
+            const insertBefore = (e.clientY - rect.top) < rect.height / 2;
+            container.insertBefore(draggedEl, insertBefore ? section : section.nextSibling);
+
+            const newOrder = Array.from(container.querySelectorAll('[data-sport]')).map(el => el.dataset.sport);
+            if (onReorder) onReorder(newOrder);
+          });
+        }
+
+        container.appendChild(section);
+      });
+    }
+
+    // Rebuilds just one section's checkbox list in its newly-sorted,
+    // checked-first order, then reapplies whatever's currently typed in
+    // that section's search box (untouched, so its value survives).
+    // Reads whatever's currently checked in the Global section directly
+    // from the DOM, so other sections always reflect the live state
+    // without needing separate state tracking.
+    function getCurrentGlobalCheckedIds(idPrefix) {
+      const containerId = `${idPrefix}sports-config-container`;
+      return Array.from(document.querySelectorAll(`#${containerId} input[data-sport="GLOBAL"]:checked`)).map(cb => cb.value);
+    }
+
+    function resortCategorySection(idPrefix, sport) {
+      const containerId = `${idPrefix}sports-config-container`;
+      const checkedIds = Array.from(document.querySelectorAll(`#${containerId} input[data-sport="${sport}"]:checked:not(:disabled)`)).map(cb => cb.value);
+      const globalCheckedIds = sport === 'GLOBAL' ? [] : getCurrentGlobalCheckedIds(idPrefix);
+
+      const checklist = document.getElementById(`${idPrefix}checklist-${sport}`);
+      checklist.innerHTML = buildCategoryCheckboxesHtml(sport, idPrefix, checkedIds, globalCheckedIds);
+
+      filterCategoriesGeneric(sport, idPrefix);
+    }
+
+    function handleCategoryToggle(idPrefix, sport) {
+      updateAccordionBadge(idPrefix, sport);
+      resortCategorySection(idPrefix, sport);
+
+      // Changing Global affects every other league's disabled/checked
+      // markers and badge counts too, so those need refreshing immediately
+      // rather than only on the next full page render.
+      if (sport === 'GLOBAL') {
+        const containerId = `${idPrefix}sports-config-container`;
+        const container = document.getElementById(containerId);
+        container.querySelectorAll(`[id^="${idPrefix}checklist-"]`).forEach(checklist => {
+          const otherSport = checklist.id.replace(`${idPrefix}checklist-`, '');
+          if (otherSport === 'GLOBAL') return;
+          resortCategorySection(idPrefix, otherSport);
+          updateAccordionBadge(idPrefix, otherSport);
+        });
+      }
+    }
+
+    function toggleAccordionSection(idPrefix, sport) {
+      document.getElementById(`${idPrefix}body-${sport}`).classList.toggle('hidden');
+      document.getElementById(`${idPrefix}chevron-${sport}`).classList.toggle('rotate-180');
+    }
+
+    function updateAccordionBadge(idPrefix, sport) {
+      const containerId = `${idPrefix}sports-config-container`;
+      const count = document.querySelectorAll(`#${containerId} input[data-sport="${sport}"]:checked`).length;
+      const badge = document.getElementById(`${idPrefix}badge-${sport}`);
+      badge.textContent = `${count} selected`;
+      badge.className = `text-xs font-semibold px-2 py-0.5 rounded-full ${count > 0 ? 'bg-[#3b8fc4] text-white' : 'bg-[#3b4d58] text-[#e6e6e6]/55'}`;
+
+      // Only the real dashboard's checkboxes represent unsaved account
+      // changes - the wizard's checkboxes are scratch state with no save
+      // button of their own, so they never mark anything dirty.
+      if (idPrefix === '') {
+        markDashboardDirty();
+      }
+    }
+
+    function filterCategoriesGeneric(sport, idPrefix) {
+      const searchInput = document.getElementById(`${idPrefix}search-${sport}`).value.toLowerCase();
+      const checkboxes = document.querySelectorAll(`.${idPrefix}category-item-${sport}`);
+      checkboxes.forEach(item => {
+        const name = item.getAttribute('data-name').toLowerCase();
+        item.classList.toggle('hidden', !name.includes(searchInput));
+      });
+    }
+
+    // Which sports show on the dashboard: whatever the account has explicitly
+    // chosen via Manage Sports, or every sport if that hasn't been set yet
+    // (keeps existing accounts behaving exactly as before until they opt in).
+    function getVisibleSports() {
+      if (activeUser && activeUser.selectedSports && activeUser.selectedSports.length > 0) {
+        return activeUser.selectedSports;
+      }
+      return SPORTS;
+    }
+
+    let manageSportsSelection = [];
+
+    function toggleManageSportsPanel() {
+      const panel = document.getElementById('manage-sports-panel');
+      if (panel.classList.contains('hidden')) {
+        closeEditXtreamPanelSilently();
+        closeEditM3uPanelSilently();
+        closeChangeTimezonePanelSilently();
+        closeDeleteAccountPanelSilently();
+        manageSportsSelection = [...getVisibleSports()];
+        renderLeagueGrid('manage-sports-grid', manageSportsSelection, 'toggleManagedSport');
+        panel.classList.remove('hidden');
+      } else {
+        cancelManageSports();
+      }
+      updateSettingsButtonStates();
+    }
+
+    // Closes Manage Sports without saving anything - used both by its own
+    // Cancel button and when the Xtream editor needs to take over, so only
+    // one editor is ever open at a time.
+    function closeManageSportsPanelSilently() {
+      document.getElementById('manage-sports-panel').classList.add('hidden');
+      updateSettingsButtonStates();
+    }
+
+    function cancelManageSports() {
+      closeManageSportsPanelSilently();
+    }
+
+    // Generic HTML-escaping utility - used when rendering any external,
+    // untrusted text (e.g. Xtream-provider-supplied category names) into
+    // the page, to prevent XSS.
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str == null ? '' : String(str);
+      return div.innerHTML;
+    }
+
+    // --- Dashboard: Change Timezone editor ---
+
+    let dashboardTimezoneSelection = null;
+
+    function toggleChangeTimezonePanel() {
+      const panel = document.getElementById('change-timezone-panel');
+      if (panel.classList.contains('hidden')) {
+        closeEditXtreamPanelSilently();
+        closeEditM3uPanelSilently();
+        closeManageSportsPanelSilently();
+        closeDeleteAccountPanelSilently();
+        dashboardTimezoneSelection = (activeUser && activeUser.timeZone) || 'America/New_York';
+        document.getElementById('dashboard-timezone-search').value = '';
+        renderDashboardTimezoneList();
+        updateDashboardTimezoneSelectedLabel();
+        panel.classList.remove('hidden');
+      } else {
+        cancelChangeTimezone();
+      }
+      updateSettingsButtonStates();
+    }
+
+    function closeChangeTimezonePanelSilently() {
+      document.getElementById('change-timezone-panel').classList.add('hidden');
+      updateSettingsButtonStates();
+    }
+
+    function cancelChangeTimezone() {
+      closeChangeTimezonePanelSilently();
+    }
+
+    // --- Dashboard: Delete Account ---
+    // Unlike every other panel on this page, this one is NOT staged for
+    // the "Save and Copy Link" flow - deletion happens immediately and
+    // irreversibly the moment the bomb button is clicked, since there's no
+    // sensible meaning to "staging" an account deletion.
+
+    function toggleDeleteAccountPanel() {
+      const panel = document.getElementById('delete-account-panel');
+      if (panel.classList.contains('hidden')) {
+        closeEditXtreamPanelSilently();
+        closeEditM3uPanelSilently();
+        closeManageSportsPanelSilently();
+        closeChangeTimezonePanelSilently();
+        document.getElementById('delete-confirm-input').value = '';
+        updateDeleteButton();
+        panel.classList.remove('hidden');
+      } else {
+        cancelDeleteAccount();
+      }
+    }
+
+    function closeDeleteAccountPanelSilently() {
+      document.getElementById('delete-account-panel').classList.add('hidden');
+    }
+
+    function cancelDeleteAccount() {
+      closeDeleteAccountPanelSilently();
+    }
+
+    // The bomb button only ever becomes clickable once the typed text is
+    // an EXACT match for "DELETE" - no case-insensitive or trimmed leniency,
+    // since a destructive, irreversible action should require a genuinely
+    // deliberate action, not something that could fire off a stray keypress.
+    function updateDeleteButton() {
+      const typed = document.getElementById('delete-confirm-input').value;
+      const btn = document.getElementById('delete-account-btn');
+      if (typed === 'DELETE') {
+        btn.disabled = false;
+        btn.className = 'w-full flex items-center justify-center gap-2 bg-[#c0392b] hover:bg-[#d8483a] active:scale-95 transition-all duration-150 font-bold py-2.5 rounded-lg text-xs';
+      } else {
+        btn.disabled = true;
+        btn.className = 'w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-xs cursor-not-allowed';
+      }
+    }
+
+    async function confirmDeleteAccount() {
+      const typed = document.getElementById('delete-confirm-input').value;
+      if (typed !== 'DELETE') return;
+
+      try {
+        const res = await fetch('/api/user/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password })
+        });
+        const data = await res.json();
+        if (data.success) {
+          activeUser = null;
+          showView('landing');
+          showStatus('Account permanently deleted.');
+        } else {
+          showStatus(data.error || 'Failed to delete account.', true);
+        }
+      } catch (err) {
+        showStatus('Network error while deleting account.', true);
+      }
+    }
+
+    function renderDashboardTimezoneList() {
+      renderTimezoneList('dashboard-timezone-list', dashboardTimezoneSelection, 'selectDashboardTimezone', document.getElementById('dashboard-timezone-search').value);
+    }
+
+    function selectDashboardTimezone(tz) {
+      dashboardTimezoneSelection = tz;
+      renderDashboardTimezoneList();
+      updateDashboardTimezoneSelectedLabel();
+    }
+
+    function updateDashboardTimezoneSelectedLabel() {
+      document.getElementById('dashboard-timezone-selected').textContent = `Selected: ${dashboardTimezoneSelection.replace(/_/g, ' ')} (${getTimezoneOffsetLabel(dashboardTimezoneSelection)})`;
+    }
+
+    // Stages the selected timezone for this session only - see
+    // confirmEditXtream for why nothing is sent to the server here.
+    function saveChangeTimezone() {
+      activeUser.timeZone = dashboardTimezoneSelection;
+      closeChangeTimezonePanelSilently();
+      markDashboardDirty();
+      showStatus('Timezone updated for this session - click Save and Copy Link to save.');
+    }
+
+    function toggleManagedSport(sport) {
+      toggleSportInArray(manageSportsSelection, sport);
+      renderLeagueGrid('manage-sports-grid', manageSportsSelection, 'toggleManagedSport');
+    }
+
+    // Stages the selected leagues for this session only - see
+    // confirmEditXtream for why nothing is sent to the server here.
+    function saveManagedSports() {
+      if (dashboardHasUnsavedChanges && !confirm(UNSAVED_CHANGES_WARNING)) {
+        return;
+      }
+
+      const selectedSports = [...manageSportsSelection];
+      activeUser.selectedSports = selectedSports;
+      document.getElementById('manage-sports-panel').classList.add('hidden');
+      renderSportsConfig();
+      markDashboardDirty();
+      showStatus('Leagues updated for this session - click Save and Copy Link to save.');
+    }
+
+    let dashboardHasUnsavedChanges = false;
+
+    function markDashboardDirty() {
+      dashboardHasUnsavedChanges = true;
+      updateSaveCopyButton();
+    }
+
+    function updateSaveCopyButton() {
+      const btn = document.getElementById('copy-link-btn');
+      if (!btn) return;
+      if (dashboardHasUnsavedChanges) {
+        btn.className = 'bg-[#4a9d52] hover:bg-[#5cb164] text-xs font-bold py-2 px-4 rounded-lg transition flex items-center';
+        btn.innerHTML = '<i class="fa-solid fa-floppy-disk mr-2"></i>Save and Copy Link';
+      } else {
+        btn.className = 'bg-[#4a6fa5] hover:bg-[#5a82bc] text-xs font-bold py-2 px-4 rounded-lg transition flex items-center';
+        btn.innerHTML = '<i class="fa-solid fa-copy mr-2"></i>Copy Install Link';
+      }
+    }
+
+    // Briefly flashes the top button to confirm a save from any of the
+    // three editors (Xtream, Leagues, Timezone) - none of those affect
+    // dashboardHasUnsavedChanges since they persist immediately on their
+    // own, so without this the button would give no visual acknowledgment
+    // at all for those saves.
+    let allAccordionsExpanded = false;
+
+    function toggleAllAccordions() {
+      allAccordionsExpanded = !allAccordionsExpanded;
+      ['GLOBAL', ...getVisibleSports()].forEach(sport => {
+        const body = document.getElementById(`body-${sport}`);
+        const chevron = document.getElementById(`chevron-${sport}`);
+        if (!body || !chevron) return;
+        if (allAccordionsExpanded) {
+          body.classList.remove('hidden');
+          chevron.classList.add('rotate-180');
+        } else {
+          body.classList.add('hidden');
+          chevron.classList.remove('rotate-180');
+        }
+      });
+      updateExpandAllButton();
+    }
+
+    function updateExpandAllButton() {
+      const btn = document.getElementById('expand-all-btn');
+      if (!btn) return;
+      btn.innerHTML = allAccordionsExpanded
+        ? '<i class="fa-solid fa-compress"></i> Collapse All'
+        : '<i class="fa-solid fa-expand"></i> Expand All';
+    }
+
+    function renderSportsConfig() {
+      // Only one of these two is ever relevant for a given account - an
+      // account has exactly one connectionType, set at registration and
+      // not currently changeable. Xtream is the default/fallback for
+      // accounts created before M3U support existed.
+      const isM3u = activeUser && activeUser.connectionType === 'm3u';
+      document.getElementById('edit-xtream-trigger-btn').classList.toggle('hidden', isM3u);
+      document.getElementById('edit-m3u-trigger-btn').classList.toggle('hidden', !isM3u);
+      if (isM3u) {
+        document.getElementById('edit-m3u-trigger-btn').classList.add('flex');
+      }
+
+      renderCategoryConfig(
+        getVisibleSports(),
+        'sports-config-container',
+        '',
+        (sport) => (activeUser && activeUser.sportCategories && activeUser.sportCategories[sport]) || [],
+        () => (activeUser && activeUser.sportCategories && activeUser.sportCategories.GLOBAL) || [],
+        (activeUser && activeUser.sportOrder) || [],
+        (newOrder) => {
+          if (activeUser) activeUser.sportOrder = newOrder;
+          markDashboardDirty();
+        }
+      );
+      // A fresh render always reflects exactly what's saved on the server,
+      // so any prior unsaved-changes state is now stale - clear it.
+      dashboardHasUnsavedChanges = false;
+      updateSaveCopyButton();
+      // Every section renders collapsed by default, so the Expand/Collapse
+      // All control needs to match that on every fresh render too.
+      allAccordionsExpanded = false;
+      updateExpandAllButton();
+    }
+
+    // Persists category folder selections. Returns true/false so callers
+    // (the unified Copy Link button) know whether it's safe to proceed.
+    // The single function that actually persists anything to the server -
+    // every other panel on this page (Edit Xtream, Add/Remove Leagues,
+    // Change Timezone) only stages its changes into activeUser locally.
+    // This sends the complete current state in one request when "Save and
+    // Copy Link" is clicked, so a closed browser without ever clicking that
+    // button leaves the account exactly as it was before any of this
+    // session's edits.
+    async function saveAllChanges() {
+      if (!activeUser) return false;
+
+      const collected = collectCheckedCategories(['GLOBAL', ...getVisibleSports()], 'sports-config-container');
+      // Merge with whatever was already saved, so any sport currently hidden
+      // via Manage Sports keeps its folder selections intact rather than
+      // being wiped out just because it wasn't on screen to collect from.
+      const sportCategories = { ...(activeUser.sportCategories || {}), ...collected };
+
+      try {
+        const res = await fetch('/api/user/update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            uuid: activeUser.uuid,
+            password: activeUser.password,
+            xtream: activeUser.xtream,
+            selectedSports: activeUser.selectedSports,
+            timeZone: activeUser.timeZone,
+            sportCategories,
+            sportOrder: activeUser.sportOrder
+          })
+        });
+        const data = await res.json();
+        if (data.success) {
+          activeUser.sportCategories = sportCategories;
+          return true;
+        } else {
+          showStatus(data.error || 'Failed to save settings.', true);
+          return false;
+        }
+      } catch (err) {
+        showStatus('Network error while saving settings.', true);
+        return false;
+      }
+    }
+
+    // The single top-right button: just copies the manifest link when there's
+    // nothing pending, or saves first (then copies) when there is.
+    async function handleCopyLinkButton() {
+      if (!dashboardHasUnsavedChanges) {
+        copyManifestUrl();
+        return;
+      }
+
+      const saved = await saveAllChanges();
+      if (saved) {
+        dashboardHasUnsavedChanges = false;
+        updateSaveCopyButton();
+        copyManifestUrl('Changes saved! Link copied to clipboard!');
+      }
+    }
+
+    function copyManifestUrl(successMessage) {
+      if (!activeUser) return;
+      const manifestUrl = `${window.location.origin}/user/${activeUser.uuid}/manifest.json`;
+      const message = successMessage || 'Link copied to clipboard!';
+
+      // navigator.clipboard only exists in secure contexts (https:// or localhost).
+      // This app is often accessed over plain http://<vps-ip>, so fall back to a
+      // manual textarea+execCommand copy when the modern API isn't available.
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(manifestUrl)
+          .then(() => showStatus(message))
+          .catch(() => fallbackCopy(manifestUrl, message));
+      } else {
+        fallbackCopy(manifestUrl, message);
+      }
+    }
+
+    function fallbackCopy(text, successMessage) {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+
+      let copied = false;
+      try {
+        copied = document.execCommand('copy');
+      } catch (err) {
+        copied = false;
+      }
+      document.body.removeChild(textarea);
+
+      if (copied) {
+        showStatus(successMessage || 'Link copied to clipboard!');
+      } else {
+        showStatus(`Couldn't auto-copy. Manifest URL: ${text}`, true);
+      }
+    }
+
+    // First-run setup check - runs before anything else on page load,
+    // since a fresh install needs to be steered into the setup screens
+    // rather than the normal landing page. Only checks the existing
+    // admin-button-visibility logic once setup is confirmed complete,
+    // since there's no reason to check that separately when this same
+    // request already tells us definitively.
+    async function checkFirstRunSetup() {
+      try {
+        const res = await fetch('/api/setup/status');
+        const data = await res.json();
+        if (!data.adminConfigured) {
+          showView('admin-setup');
+          return;
+        }
+        if (!data.encryptionKeyConfigured) {
+          showView('encryption-setup');
+          return;
+        }
+        // Setup is fully complete - safe to check whether to show the
+        // Admin button on the normal landing page now.
+        document.getElementById('admin-page-link').classList.remove('hidden');
+      } catch (err) {
+        // If the status check itself fails, fall through to the normal
+        // landing page rather than get stuck on a blank screen - an
+        // actually-incomplete setup will just surface again the moment
+        // the user tries to register/log in.
+      }
+    }
+    checkFirstRunSetup();
+
+    async function submitAdminSetup() {
+      const username = document.getElementById('admin-setup-username').value.trim();
+      const password = document.getElementById('admin-setup-password').value;
+      const errorEl = document.getElementById('admin-setup-error');
+      errorEl.classList.add('hidden');
+
+      try {
+        const res = await fetch('/api/setup/admin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+        const data = await res.json();
+        if (data.success) {
+          checkFirstRunSetup();
+        } else {
+          errorEl.textContent = data.error || 'Failed to set admin password.';
+          errorEl.classList.remove('hidden');
+        }
+      } catch (err) {
+        errorEl.textContent = 'Network error while setting admin password.';
+        errorEl.classList.remove('hidden');
+      }
+    }
+
+    async function generateEncryptionKey() {
+      try {
+        const res = await fetch('/api/setup/generate-encryption-key');
+        const data = await res.json();
+        if (data.key) {
+          document.getElementById('encryption-key-value').value = data.key;
+          document.getElementById('encryption-key-result').classList.remove('hidden');
+        }
+      } catch (err) {
+        showStatus('Network error while generating a key.', true);
+      }
+    }
+
+    function copyEncryptionKey() {
+      const input = document.getElementById('encryption-key-value');
+      input.select();
+      try {
+        document.execCommand('copy');
+        showStatus('Key copied to clipboard!');
+      } catch (err) {
+        showStatus('Could not auto-copy - please copy it manually.', true);
+      }
+    }
+
+    // Re-runs the same status check the container restart is meant to
+    // resolve - if the key still isn't configured, this view simply
+    // shows again, same as it did before.
+    function recheckSetupStatus() {
+      checkFirstRunSetup();
+    }
+  </script>
+
+  <div class="fixed top-4 left-4 flex items-center gap-3 z-40">
+    <a href="https://ko-fi.com/V3C424TWM9" target="_blank" rel="noopener noreferrer" class="flex items-center gap-2 bg-[#ff6433] hover:bg-[#ff7c52] text-white font-bold py-2 px-4 rounded-lg text-sm shadow-lg transition">
+      <i class="fa-solid fa-mug-hot"></i>
+      Buy me a coffee
+    </a>
+    <a href="https://github.com/Sportio-Live/sportio-live" target="_blank" rel="noopener noreferrer" class="flex items-center gap-2 bg-[#24292e] hover:bg-[#32383f] text-white font-bold py-2 px-4 rounded-lg text-sm shadow-lg transition">
+      <i class="fa-brands fa-github"></i>
+      GitHub
+    </a>
+  </div>
+</body>
+</html>
