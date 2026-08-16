@@ -109,7 +109,7 @@ Sportio Live requires an existing, legitimate IPTV subscription. It does not pro
 ![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/addon/1.jpegli.jpg?raw=true)
 ![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/addon/2.jpegli.jpg?raw=true)
 ![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/addon/3.jpegli.jpg?raw=true)
-enter image description here
+
 ###  Setup:
 ![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/setup/1.png?raw=true)
 ![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/setup/2.png?raw=true)
