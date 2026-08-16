@@ -55,6 +55,7 @@ Every account has its own configured timezone with the actual date and time bake
 | Football | NFL, NCAA Football |
 | Hockey | NHL |
 | Soccer | Premier League, MLS, La Liga, FIFA World Cup |
+| Combat | UFC |
 
 ---
 
@@ -111,6 +112,7 @@ Sportio Live requires an existing, legitimate IPTV subscription. It does not pro
 ![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/addon/1.jpegli.jpg?raw=true)
 ![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/addon/2.jpegli.jpg?raw=true)
 ![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/addon/3.jpegli.jpg?raw=true)
+![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/addon/4.jpegli.jpg?raw=true)
 
 ###  Setup:
 ![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/setup/1.png?raw=true)
