@@ -4,7 +4,7 @@
 
 
 
-# Sportio Live
+
 *Disclaimer: This was created entirely using AI*
 
 Sportio Live is a self-hosted Nuvio/Stremio addon that turns your IPTV into a live sports catalog - today's games, personalized to your timezone, with custom artwork and stream matching. (Xtream and M3U supported)
@@ -12,6 +12,7 @@ Sportio Live is a self-hosted Nuvio/Stremio addon that turns your IPTV into a li
 *Sportio Live doesn't provide any streams itself* - it bridges ESPN's schedule data with the live channels of your own IPTV.
 
 [Screenshots](#screenshots)
+[Supported leagues](#supportedleagues)
 
 
 ## Setup
