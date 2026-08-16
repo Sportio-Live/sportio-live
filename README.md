@@ -1,3 +1,5 @@
+
+
 ![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/public/sportio_logo.png?raw=true)
 
 
@@ -9,6 +11,7 @@ Sportio Live is a self-hosted Nuvio/Stremio addon that turns your IPTV into a li
 
 *Sportio Live doesn't provide any streams itself* - it bridges ESPN's schedule data with the live channels of your own IPTV.
 
+[Screenshots](#screenshots)
 
 
 ## Setup
@@ -98,3 +101,22 @@ Xtream/M3U credentials are encrypted at rest (AES-256-GCM).
 ## Disclaimer
 
 Sportio Live requires an existing, legitimate IPTV subscription. It does not provide, host, or distribute any streams or content of its own.
+
+---
+## Screenshots
+
+### Addon:
+![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/addon/1.jpegli.jpg?raw=true)
+![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/addon/2.jpegli.jpg?raw=true)
+![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/addon/3.jpegli.jpg?raw=true)
+enter image description here
+###  Setup:
+![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/setup/1.png?raw=true)
+![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/setup/2.png?raw=true)
+![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/setup/3.png?raw=true)
+![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/setup/4.png?raw=true)
+![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/setup/5.png?raw=true)
+![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/setup/6.png?raw=true)
+![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/setup/7.png?raw=true)
+![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/setup/8.png?raw=true)
+
