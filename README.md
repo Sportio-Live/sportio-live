@@ -11,9 +11,11 @@ Sportio Live is a self-hosted Nuvio/Stremio addon that turns your IPTV into a li
 
 *Sportio Live doesn't provide any streams itself* - it bridges ESPN's schedule data with the live channels of your own IPTV.
 
-[Screenshots](#screenshots)
 
 [Supported Leagues](#supported-leagues)
+
+
+[Screenshots](#screenshots)
 
 
 ## Setup
