@@ -1,3 +1,7 @@
+![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/public/sportio_logo.png?raw=true)
+
+
+
 # Sportio Live
 *Disclaimer: This was created entirely using AI*
 
