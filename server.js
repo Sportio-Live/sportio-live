@@ -872,7 +872,8 @@ async function fetchUpcomingGames(sport, userTimeZone = 'America/New_York', limi
 
       const homeNick = homeTeam.name || homeTeam.shortDisplayName || homeTeam.displayName || 'Home';
       const awayNick = awayTeam.name || awayTeam.shortDisplayName || awayTeam.displayName || 'Away';
-      return `${formatGameDateLabel(event.date, userTimeZone)} \u2014 ${awayNick} at ${homeNick}`;
+      const startTime = formatTeamTime(event.date, userTimeZone) || 'TBD';
+      return `${formatGameDateLabel(event.date, userTimeZone)}: ${awayNick} at ${homeNick} - ${startTime}`;
     });
   } catch (err) {
     console.error(`[ESPN] Error fetching upcoming schedule for ${sport}:`, err.message);
@@ -1685,11 +1686,33 @@ async function fetchTodayUFCEvents(hostUrl, userTimeZone = 'America/New_York') {
 // fetchTodayGames already does via getLocalDateString(userTimeZone). Do
 // not assume an unfiltered scoreboard call is safe just because it works
 // for daily sports like MLB/NBA.
+// Shared across the catalog, meta, and stream routes so a burst of requests
+// for the same sport doesn't each hit ESPN independently. Keyed by host and
+// timeZone (not just sport) because the returned game objects embed
+// host-specific poster/background URLs and timeZone-formatted date/time
+// strings baked into their description text - two users in different
+// timeZones must not share a cached result. No explicit date in the key:
+// the target date is derived from the current time inside the fetchers
+// themselves, and the 60s TTL means the only staleness risk is a request
+// landing right at a user's local midnight, which is a rare and harmless
+// one-cycle delay rather than a correctness issue worth extra key
+// complexity.
+const gamesCache = new Map(); // `${sport}|${hostUrl}|${userTimeZone}` -> { fetchedAt, games }
+const GAMES_CACHE_MS = 60 * 1000;
+
 async function fetchGamesForSport(sport, hostUrl, userTimeZone = 'America/New_York') {
-  if (sport === 'UFC') {
-    return fetchTodayUFCEvents(hostUrl, userTimeZone);
+  const cacheKey = `${sport}|${hostUrl}|${userTimeZone}`;
+  const cached = gamesCache.get(cacheKey);
+  if (cached && (Date.now() - cached.fetchedAt) < GAMES_CACHE_MS) {
+    return cached.games;
   }
-  return fetchTodayGames(sport, hostUrl, userTimeZone);
+
+  const games = sport === 'UFC'
+    ? await fetchTodayUFCEvents(hostUrl, userTimeZone)
+    : await fetchTodayGames(sport, hostUrl, userTimeZone);
+
+  gamesCache.set(cacheKey, { fetchedAt: Date.now(), games });
+  return games;
 }
 
 // Fetches the current/upcoming program title+description for a single
