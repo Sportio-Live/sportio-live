@@ -1,0 +1,15 @@
+services:
+  sportio-live:
+    build: .
+    container_name: sportio-live
+    restart: unless-stopped
+    ports:
+      - "2323:2323"
+    environment:
+      - PORT=2323
+      - HOST=0.0.0.0
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - ADMIN_USERNAME=${ADMIN_USERNAME}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+    volumes:
+      - ./data:/usr/src/app/data
