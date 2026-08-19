@@ -420,7 +420,7 @@
   </div>
 
   <script>
-    const SPORTS = ['NBA', 'NFL', 'MLB', 'WNBA', 'NHL', 'NCAAFB', 'NCAAMB', 'NCAAWB', 'EPL', 'LALIGA', 'MLS', 'WORLDCUP', 'UFC', 'NWSL', 'AFL', 'URC', 'PREM'];
+    const SPORTS = ['NBA', 'NFL', 'MLB', 'WNBA', 'NHL', 'NCAAFB', 'NCAAMB', 'NCAAWB', 'EPL', 'LALIGA', 'MLS', 'WORLDCUP', 'UFC', 'AFL', 'URC', 'PREM', 'IPL'];
     const SPORT_LABELS = {
       GLOBAL: 'Global',
       NCAAMB: 'College Basketball (Mens)',
@@ -432,7 +432,8 @@
       WORLDCUP: 'FIFA World Cup',
       UFC: 'UFC',
       URC: 'United Rugby Championship',
-      PREM: 'Premiership Rugby'
+      PREM: 'Premiership Rugby',
+      IPL: 'Indian Premier League'
     };
     const SPORT_ICONS = {
       GLOBAL: 'fa-globe',
@@ -449,10 +450,14 @@
       LALIGA: 'fa-futbol',
       WORLDCUP: 'fa-futbol',
       UFC: 'fa-hand-fist',
-      NWSL: 'fa-futbol',
       AFL: 'fa-football',
       URC: 'fa-football',
-      PREM: 'fa-football'
+      PREM: 'fa-football',
+      // Font Awesome's free tier (the only tier loaded here, via cdnjs)
+      // has no cricket-specific icon - fa-baseball is the closest existing
+      // round-ball icon, same reasoning as reusing baseball.svg for IPL's
+      // background art on the server side.
+      IPL: 'fa-baseball'
     };
     let activeUser = null;
     // Which of activeUser.providers is the currently-visible tab. Only this

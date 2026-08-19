@@ -350,14 +350,19 @@ const ESPN_ENDPOINTS = {
   LALIGA: 'https://site.api.espn.com/apis/site/v2/sports/soccer/esp.1/scoreboard',
   WORLDCUP: 'https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard',
   UFC: 'https://site.api.espn.com/apis/site/v2/sports/mma/ufc/scoreboard',
-  NWSL: 'https://site.api.espn.com/apis/site/v2/sports/soccer/usa.nwsl/scoreboard',
   AFL: 'https://site.api.espn.com/apis/site/v2/sports/australian-football/afl/scoreboard',
   // Rugby leagues use ESPN's own numeric league id in place of a slug
   // (confirmed live - rugby has no single-table "one league" the way
   // EPL/MLS do, so each competition needs its own id here, the same as
   // any other league in this map).
   URC: 'https://site.api.espn.com/apis/site/v2/sports/rugby/270557/scoreboard',
-  PREM: 'https://site.api.espn.com/apis/site/v2/sports/rugby/267979/scoreboard'
+  PREM: 'https://site.api.espn.com/apis/site/v2/sports/rugby/267979/scoreboard',
+  // Cricket, like rugby, has no single "the league" slug - ESPN keys IPL
+  // by its own numeric league id (confirmed live against real data: event
+  // shape carries the same homeAway/team/logo/color fields every other
+  // sport here already relies on, so no special-casing was needed
+  // downstream in fetchTodayGames).
+  IPL: 'https://site.api.espn.com/apis/site/v2/sports/cricket/8048/scoreboard'
 };
 
 // UFC events, unlike every other sport here, don't map to a single
@@ -389,10 +394,10 @@ const ESPN_LEAGUES = {
   LALIGA: 'esp.1',
   WORLDCUP: 'fifa.world',
   UFC: 'ufc',
-  NWSL: 'usa.nwsl',
   AFL: 'afl',
   URC: '270557',
-  PREM: '267979'
+  PREM: '267979',
+  IPL: '8048'
 };
 
 // The "Upcoming Schedule" placeholder's background image, one per sport
@@ -413,14 +418,17 @@ const SCHEDULE_BACKGROUND_FILES = {
   MLS: 'soccer.svg',
   LALIGA: 'soccer.svg',
   WORLDCUP: 'soccer.svg',
-  NWSL: 'soccer.svg',
   // Neither Aussie rules nor rugby has its own dedicated background asset -
   // both are played with a similar prolate-spheroid ball, much closer to
   // American football's than to the round soccer ball, so football.svg is
   // the closer visual match of the existing art.
   AFL: 'football.svg',
   URC: 'football.svg',
-  PREM: 'football.svg'
+  PREM: 'football.svg',
+  // No cricket-specific background asset exists either - a cricket ball is
+  // round like a baseball (unlike the prolate rugby/AFL ball above), so
+  // baseball.svg is the closer visual match of the existing art.
+  IPL: 'baseball.svg'
 };
 
 const scheduleBackgroundCache = {};
@@ -556,7 +564,6 @@ const TEAM_LOGO_BUCKET_OVERRIDES = {
   MLS: 'soccer',
   LALIGA: 'soccer',
   WORLDCUP: 'soccer',
-  NWSL: 'soccer',
   // Confirmed live for both football and men's basketball - ESPN buckets
   // ALL NCAA team logos under the literal folder 'ncaa', not each sport's
   // own league slug (e.g. NOT 'college-football' or
@@ -569,9 +576,13 @@ const TEAM_LOGO_BUCKET_OVERRIDES = {
   // 'rugby/teams' regardless of competition (not a per-competition
   // folder, and not just 'rugby' either).
   URC: 'rugby/teams',
-  PREM: 'rugby/teams'
+  PREM: 'rugby/teams',
   // AFL needs no override - ESPN_LEAGUES.AFL ('afl') already matches its
   // real logo bucket folder.
+  // Confirmed live - ESPN buckets ALL cricket team logos under the literal
+  // folder 'cricket', not the numeric league id ('8048') ESPN_LEAGUES.IPL
+  // uses for the scoreboard endpoint itself.
+  IPL: 'cricket'
 };
 
 function getTeamLogoBucket(sportKey) {
@@ -590,7 +601,8 @@ const SPORT_DISPLAY_NAMES = {
   WORLDCUP: 'FIFA World Cup',
   UFC: 'UFC',
   URC: 'United Rugby Championship',
-  PREM: 'Premiership Rugby'
+  PREM: 'Premiership Rugby',
+  IPL: 'Indian Premier League'
 };
 
 function getSportDisplayName(sportKey) {
@@ -1080,10 +1092,10 @@ const SPORT_THEMES = {
   LALIGA: { primary: '#EE8707', secondary: '#000000' },
   WORLDCUP: { primary: '#326295', secondary: '#C8A951' },
   UFC: { primary: '#000000', secondary: '#D20A0A' },
-  NWSL: { primary: '#632478', secondary: '#00B2A9' },
   AFL: { primary: '#1B1B1B', secondary: '#E4002B' },
   URC: { primary: '#003087', secondary: '#FFB81C' },
-  PREM: { primary: '#00205B', secondary: '#C8102E' }
+  PREM: { primary: '#00205B', secondary: '#C8102E' },
+  IPL: { primary: '#004C8C', secondary: '#F6A100' }
 };
 
 // Primary accent used for the subtle poster background gradient per sport.
@@ -1755,6 +1767,12 @@ async function fetchAllTeamNamesForSport(sportKey) {
   // that concept doesn't really translate to a single fighter-vs-fighter
   // matchup anyway.
   if (sportKey === 'UFC') return [];
+
+  // Confirmed live - ESPN's /teams endpoint 404s for cricket/8048 (IPL),
+  // unlike every other league here. Skip straight to an empty list for the
+  // same reason as UFC above, rather than hitting a request that can never
+  // succeed on every single IPL stream lookup.
+  if (sportKey === 'IPL') return [];
 
   const cached = teamNameCache.get(sportKey);
   if (cached && (Date.now() - cached.fetchedAt) < TEAM_NAME_CACHE_MS) {
