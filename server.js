@@ -2022,12 +2022,14 @@ app.post('/api/user/login', async (req, res) => {
     providers: user.providers || [],
     timeZone: user.timeZone || 'America/New_York',
     sportOrder: user.sportOrder || [],
+    nameFormat: user.nameFormat || DEFAULT_NAME_FORMAT,
+    titleFormat: user.titleFormat || DEFAULT_TITLE_FORMAT,
     manifestUrl: `/user/${uuid}/manifest.json`
   });
 });
 
 app.post('/api/user/update', async (req, res) => {
-  const { uuid, password, providers, timeZone, sportOrder } = req.body;
+  const { uuid, password, providers, timeZone, sportOrder, nameFormat, titleFormat } = req.body;
   const ip = req.ip;
 
   if (isRateLimited(ip)) {
@@ -2056,6 +2058,12 @@ app.post('/api/user/update', async (req, res) => {
   }
   if (timeZone) user.timeZone = timeZone;
   if (sportOrder !== undefined) user.sportOrder = sportOrder;
+  // Blank/whitespace-only is treated as "go back to default" rather than
+  // saved literally - an empty template would otherwise render every
+  // stream's name/title as a blank string, which is never actually what
+  // someone clearing the field out wants.
+  if (nameFormat !== undefined) user.nameFormat = nameFormat.trim() || undefined;
+  if (titleFormat !== undefined) user.titleFormat = titleFormat.trim() || undefined;
   saveUserConfigs();
 
   return res.json({ success: true, uuid: user.uuid, manifestUrl: `/user/${uuid}/manifest.json` });
@@ -2467,6 +2475,45 @@ app.get('/user/:uuid/meta/sports/:id.json', async (req, res) => {
   });
 });
 
+// Reproduces exactly what shipped before the Formatter setting existed -
+// an account that's never touched it sees byte-identical stream naming to
+// today, and these are also what a brand-new account gets until it opts
+// into something custom.
+const DEFAULT_NAME_FORMAT = '{channelName}';
+const DEFAULT_TITLE_FORMAT = '📁 {category} · {status}';
+
+// Deliberately plain {placeholder} substitution, not a templating engine -
+// an unrecognized placeholder (a typo) is left as literal text rather than
+// silently vanishing, so a mistake is obvious in the rendered result
+// instead of just quietly missing. A recognized placeholder with no value
+// for this particular stream (e.g. {epgDescription} when the channel has
+// no EPG data) renders as empty, not "undefined".
+function applyFormatter(template, fields) {
+  return template.replace(/\{(\w+)\}/g, (match, key) => {
+    return Object.prototype.hasOwnProperty.call(fields, key) ? (fields[key] || '') : match;
+  });
+}
+
+// Builds the placeholder value set for one candidate stream - deliberately
+// a curated subset of everything technically available (game venue,
+// records, stat leaders, team colors, etc. all exist upstream but aren't
+// included here), since the Formatter is meant for naming/labeling a
+// stream, not reproducing the full game-description blurb already shown
+// elsewhere.
+function buildFormatterFields(game, stream) {
+  return {
+    channelName: stream.name || '',
+    category: stream.categoryLabel || '',
+    epgDescription: stream.description || '',
+    provider: stream.providerLabel || '',
+    homeTeam: game.homeTeam || '',
+    awayTeam: game.awayTeam || '',
+    homeNick: game.homeNick || '',
+    awayNick: game.awayNick || '',
+    status: game.status || ''
+  };
+}
+
 app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
   const user = userConfigs[req.params.uuid];
   if (!user) return res.json({ streams: [] });
@@ -2718,11 +2765,13 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
 
   // Confirmed via direct testing in Nuvio that a forced rank-prefix isn't
   // actually needed - Nuvio respects our intended order as returned.
+  const nameFormat = user.nameFormat || DEFAULT_NAME_FORMAT;
+  const titleFormat = user.titleFormat || DEFAULT_TITLE_FORMAT;
   const streams = streamsToReturn.map((s) => {
-    const providerPrefix = s.providerLabel ? `${s.providerLabel} \u00B7 ` : '';
+    const fields = buildFormatterFields(game, s);
     return {
-      name: s.name,
-      title: `\uD83D\uDCC1 ${providerPrefix}${s.categoryLabel || ''}`,
+      name: applyFormatter(nameFormat, fields),
+      title: applyFormatter(titleFormat, fields),
       url: s.streamUrl
     };
   });
