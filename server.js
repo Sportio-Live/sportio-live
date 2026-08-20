@@ -2792,9 +2792,25 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
   const titleFormat = user.titleFormat || DEFAULT_TITLE_FORMAT;
   const streams = streamsToReturn.map((s) => {
     const fields = buildFormatterFields(game, s);
+    const name = applyFormatter(nameFormat, fields);
+    const title = applyFormatter(titleFormat, fields);
     return {
-      name: applyFormatter(nameFormat, fields),
-      title: applyFormatter(titleFormat, fields),
+      name,
+      title,
+      // `description` is Stremio's modern replacement for the deprecated
+      // `title` field - some meta-addons (e.g. AIOStreams) read it as a
+      // fallback text source, so mirroring it here costs nothing and helps
+      // those aggregators surface our labeling instead of showing blank.
+      description: title,
+      // Aggregators like AIOStreams run their own quality/resolution
+      // parser over each stream and check behaviorHints.filename first,
+      // before name/title/description - since our streams are plain-text
+      // labeled (no torrent-style quality tags to find), that parser comes
+      // up empty and the stream shows no text unless we hand it something
+      // here directly.
+      behaviorHints: {
+        filename: `${name} - ${title}`
+      },
       url: s.streamUrl
     };
   });
