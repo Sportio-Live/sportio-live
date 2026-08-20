@@ -378,7 +378,7 @@
 
       <!-- Formatter (collapsed until Formatter is clicked) -->
       <div id="formatter-panel" class="hidden bg-[#3b4d58]/60 border border-[#e6e6e6]/15 rounded-lg p-4 mb-6">
-        <p class="text-xs text-[#e6e6e6]/55 mb-3">Drag and drop. Hover for definition.</p>
+        <p class="text-xs text-[#e6e6e6]/55 mb-3">Click a placeholder to copy it, then paste it into a field below. Hover for definition.</p>
         <div id="formatter-placeholder-legend" class="flex flex-wrap gap-1.5 mb-4"></div>
 
         <div class="flex items-center justify-between mb-1">
@@ -387,7 +387,7 @@
             <i class="fa-solid fa-copy text-xs"></i>
           </button>
         </div>
-        <div id="formatter-name-input" class="formatter-field w-full min-h-[38px] bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none mb-3 leading-6" contenteditable="true" oninput="updateFormatterPreview()" onkeydown="handleFormatterFieldKeydown(event)" onpaste="handleFormatterFieldPaste(event)" ondragover="handleFormatterDragOver(event)" ondrop="handleFormatterFieldDrop(event, this)"></div>
+        <input type="text" id="formatter-name-input" class="formatter-field w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none mb-3" oninput="updateFormatterPreview()">
 
         <div class="flex items-center justify-between mb-1">
           <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55">Stream Title Format</label>
@@ -395,7 +395,7 @@
             <i class="fa-solid fa-copy text-xs"></i>
           </button>
         </div>
-        <div id="formatter-title-input" class="formatter-field w-full min-h-[38px] bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none mb-3 leading-6" contenteditable="true" oninput="updateFormatterPreview()" onkeydown="handleFormatterFieldKeydown(event)" onpaste="handleFormatterFieldPaste(event)" ondragover="handleFormatterDragOver(event)" ondrop="handleFormatterFieldDrop(event, this)"></div>
+        <input type="text" id="formatter-title-input" class="formatter-field w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none mb-3" oninput="updateFormatterPreview()">
 
         <div class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3 mb-4">
           <div class="text-[10px] uppercase text-[#e6e6e6]/55 font-semibold mb-1.5">Preview (using sample data)</div>
@@ -1830,7 +1830,6 @@
       { key: 'awayNick', description: 'Away team nickname', sample: 'Celtics' },
       { key: 'status', description: 'Game status ("Scheduled", "Final", etc.)', sample: 'Scheduled' }
     ];
-    const FORMATTER_PLACEHOLDER_KEYS = new Set(FORMATTER_PLACEHOLDERS.map(p => p.key));
 
     // Same substitution rule as server.js's applyFormatter - an
     // unrecognized {placeholder} is left as literal text instead of
@@ -1842,17 +1841,16 @@
       });
     }
 
-    // Each legend chip is a drag SOURCE only (draggable, carries the bare
-    // key as plain text) and a hover target for a custom-styled tooltip
-    // (not the native title attribute - matches the dark theme and shows
-    // instantly rather than after the browser's default hover delay).
-    // Distinct from the chips a field builds for itself once one of these
-    // has actually been placed - see buildFormatterChipElement.
+    // Each legend chip is a click-to-copy source (copies its bare
+    // {placeholder} text so the user can paste it into a field below) and a
+    // hover target for a custom-styled tooltip (not the native title
+    // attribute - matches the dark theme and shows instantly rather than
+    // after the browser's default hover delay).
     function renderFormatterLegend() {
       const legend = document.getElementById('formatter-placeholder-legend');
       legend.innerHTML = FORMATTER_PLACEHOLDERS.map(p => `
         <div class="relative group">
-          <code draggable="true" ondragstart="handleFormatterLegendDragStart(event, '${p.key}')" class="block text-[10px] bg-[#2f3e47] border border-[#e6e6e6]/15 rounded px-1.5 py-0.5 text-[#5aa8d1] cursor-grab active:cursor-grabbing hover:border-[#3b8fc4]/60 transition">{${p.key}}</code>
+          <code onclick="copyFormatterPlaceholder('${p.key}')" class="block text-[10px] bg-[#2f3e47] border border-[#e6e6e6]/15 rounded px-1.5 py-0.5 text-[#5aa8d1] cursor-pointer hover:border-[#3b8fc4]/60 transition">{${p.key}}</code>
           <div class="hidden group-hover:block absolute bottom-full left-0 mb-1.5 w-max max-w-[220px] bg-[#1a242a] border border-[#e6e6e6]/20 rounded-lg px-2.5 py-1.5 text-[10px] text-[#e6e6e6]/90 shadow-xl z-10 pointer-events-none">
             ${escapeHtml(p.description)}
           </div>
@@ -1860,183 +1858,12 @@
       `).join('');
     }
 
-    // Tracks an already-placed chip mid-drag, distinct from a fresh drag
-    // starting at the legend - set on a placed chip's own dragstart, read
-    // by the drop handler to decide "move this exact element" instead of
-    // "insert a brand new one", and cleared on dragend regardless of
-    // whether the drop actually landed anywhere.
-    let formatterDraggedChip = null;
-
-    function handleFormatterLegendDragStart(event, placeholderKey) {
-      formatterDraggedChip = null;
-      event.dataTransfer.setData('text/plain', placeholderKey);
-      event.dataTransfer.effectAllowed = 'copy';
-    }
-
-    // Builds one placeholder chip as it appears once actually placed inside
-    // a format field - unlike a legend chip, this one is itself draggable
-    // for reordering/moving between fields, and carries its own delete
-    // button. contenteditable="false" on both the chip and its delete
-    // button keeps the field's own text cursor from ever landing inside
-    // them - they're atomic, not editable text.
-    function buildFormatterChipElement(key) {
-      const chip = document.createElement('span');
-      chip.className = 'formatter-chip inline-flex items-center gap-1 bg-[#3b8fc4]/25 border border-[#3b8fc4]/60 text-[#5aa8d1] rounded px-1.5 py-0.5 text-[11px] mx-0.5 align-middle cursor-grab active:cursor-grabbing';
-      chip.contentEditable = 'false';
-      chip.draggable = true;
-      chip.dataset.key = key;
-
-      chip.addEventListener('dragstart', (event) => {
-        formatterDraggedChip = chip;
-        event.dataTransfer.setData('text/plain', key);
-        event.dataTransfer.effectAllowed = 'move';
-      });
-      chip.addEventListener('dragend', () => {
-        formatterDraggedChip = null;
-      });
-
-      const label = document.createElement('span');
-      label.textContent = `{${key}}`;
-      chip.appendChild(label);
-
-      const del = document.createElement('button');
-      del.type = 'button';
-      del.contentEditable = 'false';
-      del.className = 'hover:text-[#e56a6a] transition leading-none font-bold';
-      del.textContent = '×';
-      del.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        chip.remove();
-        updateFormatterPreview();
-      });
-      chip.appendChild(del);
-
-      return chip;
-    }
-
-    // Converts a format field's live DOM (a mix of text nodes and chip
-    // spans, in document order) back into the plain {placeholder}-syntax
-    // string server.js actually stores and applies - the chip editor is
-    // purely a friendlier way to build/edit that same string, never a
-    // different underlying representation.
-    function serializeFormatterField(container) {
-      let result = '';
-      container.childNodes.forEach(node => {
-        if (node.nodeType === Node.TEXT_NODE) {
-          result += node.textContent;
-        } else if (node.dataset && node.dataset.key) {
-          result += `{${node.dataset.key}}`;
-        } else {
-          result += node.textContent;
-        }
-      });
-      return result;
-    }
-
-    // The inverse of serializeFormatterField - parses a stored template
-    // string back into chip spans + text nodes so the editor has something
-    // to show/manipulate. A {placeholder} that isn't one of ours (a typo,
-    // or a name that's since been retired) is left as plain literal text
-    // rather than a chip - matches applyFormatter's own "unknown stays
-    // literal" rule, and keeps it visibly editable/removable as text
-    // rather than trapped inside a chip with no matching definition.
-    function populateFormatterField(container, template) {
-      container.innerHTML = '';
-      const pattern = /\{(\w+)\}/g;
-      let lastIndex = 0;
-      let match;
-      while ((match = pattern.exec(template)) !== null) {
-        if (match.index > lastIndex) {
-          container.appendChild(document.createTextNode(template.slice(lastIndex, match.index)));
-        }
-        const key = match[1];
-        if (FORMATTER_PLACEHOLDER_KEYS.has(key)) {
-          container.appendChild(buildFormatterChipElement(key));
-        } else {
-          container.appendChild(document.createTextNode(match[0]));
-        }
-        lastIndex = pattern.lastIndex;
-      }
-      if (lastIndex < template.length) {
-        container.appendChild(document.createTextNode(template.slice(lastIndex)));
-      }
-    }
-
-    function handleFormatterDragOver(event) {
-      event.preventDefault();
-      event.dataTransfer.dropEffect = formatterDraggedChip ? 'move' : 'copy';
-    }
-
-    // Resolves a drop's screen coordinates to an actual insertion point in
-    // the field's text - without this, every drop would just land at
-    // whatever the browser's default range happens to be, ignoring where
-    // the user actually dropped.
-    function getFormatterDropRange(event) {
-      if (document.caretRangeFromPoint) {
-        return document.caretRangeFromPoint(event.clientX, event.clientY);
-      }
-      if (document.caretPositionFromPoint) {
-        const pos = document.caretPositionFromPoint(event.clientX, event.clientY);
-        if (!pos) return null;
-        const range = document.createRange();
-        range.setStart(pos.offsetNode, pos.offset);
-        range.collapse(true);
-        return range;
-      }
-      return null;
-    }
-
-    // Single drop handler for both fields, covering two distinct cases:
-    // dragging a fresh placeholder in from the legend (insert a new chip),
-    // and dragging an already-placed chip to a new spot, in the same field
-    // or the other one (move the exact same element rather than cloning
-    // it) - formatterDraggedChip is what tells these two apart.
-    function handleFormatterFieldDrop(event, container) {
-      event.preventDefault();
-      const key = event.dataTransfer.getData('text/plain');
-      if (!key) return;
-
-      const range = getFormatterDropRange(event);
-      let chip;
-
-      if (formatterDraggedChip) {
-        chip = formatterDraggedChip;
-        formatterDraggedChip = null;
-        chip.remove();
-      } else {
-        chip = buildFormatterChipElement(key);
-      }
-
-      if (range) range.insertNode(chip); else container.appendChild(chip);
-      // A trailing space after every dropped placeholder, so chained
-      // placeholders read as separate words by default instead of running
-      // together - easy enough to delete afterward for anyone building a
-      // template where that's not wanted.
-      chip.insertAdjacentText('afterend', ' ');
-
-      updateFormatterPreview();
-    }
-
-    // A format field is meant to stay one line - Enter would otherwise
-    // insert a <div>/<br> that both looks broken in a field this size and
-    // has no meaning in the final template string anyway.
-    function handleFormatterFieldKeydown(event) {
-      if (event.key === 'Enter') event.preventDefault();
-    }
-
-    // Forces pasted content down to plain text - contenteditable pastes
-    // arbitrary HTML by default, which could otherwise inject styled spans
-    // or stray elements that serializeFormatterField was never meant to
-    // handle.
-    function handleFormatterFieldPaste(event) {
-      event.preventDefault();
-      const text = (event.clipboardData || window.clipboardData).getData('text/plain');
-      document.execCommand('insertText', false, text);
+    function copyFormatterPlaceholder(key) {
+      copyTextToClipboard(`{${key}}`, 'Placeholder copied - paste it into a field below!');
     }
 
     function copyFormatterField(fieldId) {
-      copyTextToClipboard(serializeFormatterField(document.getElementById(fieldId)), 'Format copied!');
+      copyTextToClipboard(document.getElementById(fieldId).value, 'Format copied!');
     }
 
     function toggleFormatterPanel() {
@@ -2048,8 +1875,8 @@
         closeChangeTimezonePanelSilently();
         closeDeleteAccountPanelSilently();
         renderFormatterLegend();
-        populateFormatterField(document.getElementById('formatter-name-input'), (activeUser && activeUser.nameFormat) || DEFAULT_NAME_FORMAT);
-        populateFormatterField(document.getElementById('formatter-title-input'), (activeUser && activeUser.titleFormat) || DEFAULT_TITLE_FORMAT);
+        document.getElementById('formatter-name-input').value = (activeUser && activeUser.nameFormat) || DEFAULT_NAME_FORMAT;
+        document.getElementById('formatter-title-input').value = (activeUser && activeUser.titleFormat) || DEFAULT_TITLE_FORMAT;
         updateFormatterPreview();
         panel.classList.remove('hidden');
       } else {
@@ -2068,8 +1895,8 @@
     }
 
     function resetFormatterDefaults() {
-      populateFormatterField(document.getElementById('formatter-name-input'), DEFAULT_NAME_FORMAT);
-      populateFormatterField(document.getElementById('formatter-title-input'), DEFAULT_TITLE_FORMAT);
+      document.getElementById('formatter-name-input').value = DEFAULT_NAME_FORMAT;
+      document.getElementById('formatter-title-input').value = DEFAULT_TITLE_FORMAT;
       updateFormatterPreview();
     }
 
@@ -2077,8 +1904,8 @@
       const sampleFields = {};
       FORMATTER_PLACEHOLDERS.forEach(p => { sampleFields[p.key] = p.sample; });
 
-      const nameTemplate = serializeFormatterField(document.getElementById('formatter-name-input')) || DEFAULT_NAME_FORMAT;
-      const titleTemplate = serializeFormatterField(document.getElementById('formatter-title-input')) || DEFAULT_TITLE_FORMAT;
+      const nameTemplate = document.getElementById('formatter-name-input').value || DEFAULT_NAME_FORMAT;
+      const titleTemplate = document.getElementById('formatter-title-input').value || DEFAULT_TITLE_FORMAT;
       document.getElementById('formatter-preview-name').textContent = applyFormatterTemplate(nameTemplate, sampleFields);
       document.getElementById('formatter-preview-title').textContent = applyFormatterTemplate(titleTemplate, sampleFields);
     }
@@ -2089,8 +1916,8 @@
     // rather than saving an empty template that would blank out every
     // stream's name/title.
     function saveFormatter() {
-      activeUser.nameFormat = serializeFormatterField(document.getElementById('formatter-name-input')).trim() || DEFAULT_NAME_FORMAT;
-      activeUser.titleFormat = serializeFormatterField(document.getElementById('formatter-title-input')).trim() || DEFAULT_TITLE_FORMAT;
+      activeUser.nameFormat = document.getElementById('formatter-name-input').value.trim() || DEFAULT_NAME_FORMAT;
+      activeUser.titleFormat = document.getElementById('formatter-title-input').value.trim() || DEFAULT_TITLE_FORMAT;
       closeFormatterPanelSilently();
       markDashboardDirty();
       showStatus('Formatter updated for this session - click Save and Copy Link to save.');
