@@ -381,20 +381,10 @@
         <p class="text-xs text-[#e6e6e6]/55 mb-3">Click a placeholder to copy it, then paste it into a field below. Hover for definition.</p>
         <div id="formatter-placeholder-legend" class="flex flex-wrap gap-1.5 mb-4"></div>
 
-        <div class="flex items-center justify-between mb-1">
-          <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55">Stream Name Format</label>
-          <button type="button" onclick="copyFormatterField('formatter-name-input')" class="text-[#5aa8d1] hover:text-[#6bb5dd] transition" title="Copy format">
-            <i class="fa-solid fa-copy text-xs"></i>
-          </button>
-        </div>
+        <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">Name Template</label>
         <textarea id="formatter-name-input" rows="2" class="formatter-field w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none mb-3 resize-y" oninput="updateFormatterPreview()"></textarea>
 
-        <div class="flex items-center justify-between mb-1">
-          <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55">Stream Title Format</label>
-          <button type="button" onclick="copyFormatterField('formatter-title-input')" class="text-[#5aa8d1] hover:text-[#6bb5dd] transition" title="Copy format">
-            <i class="fa-solid fa-copy text-xs"></i>
-          </button>
-        </div>
+        <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">Description Template</label>
         <textarea id="formatter-title-input" rows="2" class="formatter-field w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none mb-3 resize-y" oninput="updateFormatterPreview()"></textarea>
 
         <div class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3 mb-4">
@@ -1860,10 +1850,6 @@
 
     function copyFormatterPlaceholder(key) {
       copyTextToClipboard(`{${key}}`, 'Placeholder copied - paste it into a field below!');
-    }
-
-    function copyFormatterField(fieldId) {
-      copyTextToClipboard(document.getElementById(fieldId).value, 'Format copied!');
     }
 
     function toggleFormatterPanel() {
