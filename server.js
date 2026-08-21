@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const m3u = require('./m3u.js');
+const epgshare = require('./epgshare01.js');
 
 // Xtream credentials are encrypted at rest in users.json using this key.
 // Must be a 64-character hex string (32 bytes) for AES-256-GCM. Generate one
@@ -127,6 +128,7 @@ const PORT = process.env.PORT || 2323;
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'users.json');
 const M3U_SETTINGS_FILE = path.join(DATA_DIR, 'm3u-settings.json');
+const EPGSHARE_SETTINGS_FILE = path.join(DATA_DIR, 'epgshare-settings.json');
 const ADMIN_CONFIG_FILE = path.join(DATA_DIR, 'admin-config.json');
 
 if (!fs.existsSync(DATA_DIR)) {
@@ -304,6 +306,46 @@ function saveM3uSettings(settings) {
 }
 
 let m3uSettings = loadM3uSettings();
+
+// Admin-controlled EPGShare01 source pool - empty by default. This is NOT
+// a global "override all EPG" switch: enabling a source here only makes
+// its programme data available and keeps it warm in cache (see
+// epgshare01.js) - a user still has to separately choose, per channel, to
+// actually use one of these sources in place of their provider's own EPG
+// (that per-channel picker is a separate, not-yet-built piece of UI).
+// Fetching and parsing even one extra XMLTV feed is real, avoidable load,
+// so the pool starts empty until an admin explicitly enables sources.
+// Shares the M3U refresh schedule above rather than getting its own - one
+// schedule panel on the admin page, not two to keep in sync.
+const DEFAULT_EPGSHARE_SETTINGS = { enabledSources: [] };
+
+function loadEpgShareSettings() {
+  if (!fs.existsSync(EPGSHARE_SETTINGS_FILE)) return { ...DEFAULT_EPGSHARE_SETTINGS };
+  try {
+    const raw = JSON.parse(fs.readFileSync(EPGSHARE_SETTINGS_FILE, 'utf8'));
+    // Re-validated against the known filename convention on every load
+    // (not just on save) - epgshare01.refreshEnabledSources builds fetch
+    // URLs directly from this list, so a corrupted/hand-edited settings
+    // file should never be able to smuggle an arbitrary URL in.
+    const enabledSources = Array.isArray(raw.enabledSources)
+      ? raw.enabledSources.filter(f => epgshare.isKnownSourceFile(f))
+      : [];
+    return { enabledSources };
+  } catch (err) {
+    console.error('[Storage] Error loading epgshare-settings.json, using defaults:', err.message);
+    return { ...DEFAULT_EPGSHARE_SETTINGS };
+  }
+}
+
+function saveEpgShareSettings(settings) {
+  try {
+    fs.writeFileSync(EPGSHARE_SETTINGS_FILE, JSON.stringify(settings, null, 2), 'utf8');
+  } catch (err) {
+    console.error('[Storage] Failed to save epgshare-settings.json:', err.message);
+  }
+}
+
+let epgShareSettings = loadEpgShareSettings();
 
 // App-managed admin credentials - lets a fresh install set an admin
 // password through the UI itself, rather than requiring a manual
@@ -2333,7 +2375,114 @@ app.post('/api/admin/m3u-cache/recache', async (req, res) => {
   m3u.m3uSourceCache.clear();
   await m3u.refreshAllM3USources(getActiveM3uSources);
 
-  return res.json({ success: true, cachedSources: m3u.m3uSourceCache.size });
+  // Recache every admin-enabled EPGShare01 source too - an empty
+  // enabledSources list (the default) means this is just a no-op loop,
+  // not a skipped step, so no separate "is EPGShare enabled" branch is
+  // needed here.
+  epgshare.clearEpgShareCache();
+  const epgShareResults = await epgshare.refreshEnabledSources(epgShareSettings.enabledSources);
+  const epgShareRefreshedCount = epgShareResults.filter(r => r.status === 'fulfilled').length;
+
+  return res.json({
+    success: true,
+    cachedSources: m3u.m3uSourceCache.size,
+    epgShareRefreshed: epgShareRefreshedCount,
+    epgShareFailed: epgShareResults.length - epgShareRefreshedCount
+  });
+});
+
+// Lists every EPGShare01 source file available to enable, with its
+// compressed and (exact, via gzip's ISIZE trailer - see epgshare01.js)
+// decompressed size, for the admin picker's column view. This is just
+// metadata about what's available - fetching it never fetches or parses
+// any source's actual EPG data. Cached after the first call (the full
+// listing + ~100 tiny range requests takes a few seconds); pass
+// { refresh: true } to force a re-fetch instead of serving the cache.
+app.post('/api/admin/epgshare-catalog', async (req, res) => {
+  const { username, password, refresh } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  try {
+    const catalog = (!refresh && epgshare.getCachedCatalog()) || await epgshare.refreshCatalog();
+    return res.json({ success: true, fetchedAt: catalog.fetchedAt, sources: catalog.sources });
+  } catch (err) {
+    console.error('[EPGShare01] Failed to fetch source catalog:', err.message);
+    return res.status(502).json({ error: 'Failed to fetch the EPGShare01 source list. Try again shortly.' });
+  }
+});
+
+app.post('/api/admin/epgshare-settings', async (req, res) => {
+  const { username, password } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  return res.json({ success: true, settings: epgShareSettings });
+});
+
+// Takes effect on the shared scheduler's very next cycle - no restart
+// needed, same as the M3U settings update route. Note this only controls
+// which sources are FETCHED AND AVAILABLE, not who's actually using them -
+// there's no per-request behavior change from this route at all, that
+// only happens once the (separate, not yet built) per-channel picker
+// reads from whatever ends up cached here.
+app.post('/api/admin/epgshare-settings/update', async (req, res) => {
+  const { username, password, enabledSources } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  if (!Array.isArray(enabledSources) || !enabledSources.every(f => epgshare.isKnownSourceFile(f))) {
+    return res.status(400).json({ error: 'enabledSources must be a list of valid EPGShare01 source filenames.' });
+  }
+
+  const previouslyEnabled = new Set(epgShareSettings.enabledSources);
+  const newlyEnabled = enabledSources.filter(f => !previouslyEnabled.has(f));
+  epgShareSettings = { enabledSources: [...new Set(enabledSources)] };
+  saveEpgShareSettings(epgShareSettings);
+
+  // Fetch newly-enabled sources immediately rather than leaving them
+  // cache-empty until the next scheduled run - mirrors the M3U
+  // scheduler's "fetch on startup" reasoning. Sources that were already
+  // enabled keep whatever's already cached; sources that got disabled are
+  // simply left in cache until the next full recache (no urgency to evict
+  // them early - they're just unused, not harmful).
+  if (newlyEnabled.length > 0) {
+    epgshare.refreshEnabledSources(newlyEnabled).catch(err => {
+      console.error('[EPGShare01] Initial fetch for newly-enabled sources failed:', err.message);
+    });
+  }
+
+  return res.json({ success: true, settings: epgShareSettings });
 });
 
 app.post('/api/admin/user/delete', async (req, res) => {
@@ -2653,6 +2802,10 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
           startTimestamp: epg.startTimestamp,
           streamUrl: `${provider.xtream.url.replace(/\/+$/, '')}/live/${encodeURIComponent(provider.xtream.username)}/${encodeURIComponent(provider.xtream.password)}/${s.stream_id}.m3u8`,
           categoryLabel: getCategoryName(s),
+          // Xtream's own tvg-id equivalent - not used by anything Xtream-
+          // specific here, only kept so the EPGShare01 override below can
+          // join against it.
+          channelId: s.epg_channel_id || '',
           ...(showProviderLabel ? { providerLabel: provider.label } : {})
         };
       });
@@ -2670,6 +2823,14 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
     }
     return result.value;
   });
+
+  // NOTE: no blanket EPGShare01 override happens here. Admin-enabled
+  // sources (epgShareSettings.enabledSources) are only fetched and cached
+  // (see the scheduler below and the recache route) - actually applying
+  // one to a given channel's description/startTimestamp is a per-channel,
+  // user-driven choice that isn't wired up yet (see epgshare01.js's
+  // getBestProgrammeForChannel, which the future per-channel picker will
+  // call using a user-stored channelId -> EPGShare01 channel id mapping).
 
   const homeKw = (game.homeTeam || '').toLowerCase().split(' ').filter(w => w.length > 2);
   const awayKw = (game.awayTeam || '').toLowerCase().split(' ').filter(w => w.length > 2);
@@ -2860,3 +3021,29 @@ function getActiveM3uSources() {
 }
 
 m3u.startM3uScheduler(getActiveM3uSources, () => m3uSettings);
+
+// Runs every admin-enabled EPGShare01 source through the exact same
+// schedule as the M3U cache above (computeNextScheduledRun, reused from
+// m3u.js rather than duplicated) - deliberately a separate, independent
+// setTimeout loop rather than teaching m3u.js about EPGShare01, so that
+// module stays self-contained. An empty enabledSources list (the default)
+// just means refreshEnabledSources has nothing to do on a given tick, not
+// that the tick is skipped - so enabling sources takes effect on the very
+// next tick without needing to restart any timer.
+let epgShareSchedulerTimeoutHandle = null;
+
+function startEpgShareScheduler() {
+  async function runAndReschedule() {
+    await epgshare.refreshEnabledSources(epgShareSettings.enabledSources);
+    const nextRun = m3u.computeNextScheduledRun(m3uSettings.daysOfWeek, m3uSettings.times, m3uSettings.timeZone);
+    const delay = nextRun ? nextRun.getTime() - Date.now() : 60 * 60 * 1000;
+    epgShareSchedulerTimeoutHandle = setTimeout(runAndReschedule, delay);
+  }
+
+  // Immediate first attempt on startup, same reasoning as the M3U
+  // scheduler - runAndReschedule itself already no-ops when there's
+  // nothing enabled.
+  runAndReschedule();
+}
+
+startEpgShareScheduler();

@@ -73,6 +73,42 @@
         </div>
       </div>
 
+      <div class="glass rounded-xl p-4 mb-4">
+        <h2 class="text-sm font-bold mb-1">EPG Sources (EPGShare01)</h2>
+        <p class="text-xs text-[#e6e6e6]/55 mb-4">Choose which of <a href="https://epgshare01.online/epgshare01/" target="_blank" rel="noopener" class="text-[#5aa8d1] hover:underline">epgshare01.online</a>'s XMLTV feeds this server keeps fetched and cached. This does <span class="font-semibold text-[#e6e6e6]/80">not</span> override anyone's EPG by itself - each enabled source just becomes available for a user to pick, per channel, in place of their provider's own guide. Every source you enable here adds an extra download + parse to the M3U refresh schedule above, so pick only what you actually need for your users' channel lineups (a per-country/category file, not the ~200MB combined one, unless you really need it).</p>
+
+        <div class="flex flex-wrap items-center gap-3 mb-3">
+          <div class="relative flex-1 min-w-[200px] max-w-sm">
+            <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-xs text-[#e6e6e6]/55"></i>
+            <input type="text" id="epgshare-search" oninput="renderEpgShareCatalog()" placeholder="Search sources..." class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg pl-8 pr-3 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none">
+          </div>
+          <button onclick="loadEpgShareCatalog(true)" id="epgshare-refresh-list-btn" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2 px-3 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed">
+            <i class="fa-solid fa-rotate"></i> Refresh List
+          </button>
+          <div id="epgshare-selected-count" class="text-xs text-[#e6e6e6]/55 ml-auto"></div>
+        </div>
+
+        <div id="epgshare-catalog-status" class="text-xs text-[#e6e6e6]/55 italic mb-2"></div>
+
+        <div class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg overflow-hidden mb-4">
+          <div class="grid grid-cols-[20px_1fr_84px_104px_84px] gap-3 px-3 py-2 border-b border-[#e6e6e6]/15 text-[10px] font-semibold uppercase text-[#e6e6e6]/55">
+            <div></div>
+            <div>Source</div>
+            <div class="text-right">Compressed</div>
+            <div class="text-right">Decompressed (est.)</div>
+            <div class="text-center">Channels TXT</div>
+          </div>
+          <div id="epgshare-catalog-list" class="max-h-80 overflow-y-auto divide-y divide-[#e6e6e6]/10"></div>
+        </div>
+
+        <div class="flex items-center gap-3">
+          <button onclick="saveEpgShareSettings()" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2 px-4 rounded-lg text-xs transition">
+            Save
+          </button>
+          <div id="epgshare-settings-saved" class="hidden text-xs text-[#a8e0ac] font-semibold"></div>
+        </div>
+      </div>
+
       <div class="glass rounded-xl p-4 mb-4 flex flex-wrap items-end gap-3">
         <div>
           <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">Filter by</label>
@@ -149,6 +185,8 @@
           document.getElementById('admin-panel-section').classList.remove('hidden');
           loadUsers();
           loadM3uSettings();
+          loadEpgShareCatalog(false);
+          loadEpgShareSettings();
         } else {
           errorEl.textContent = data.error || 'Login failed.';
           errorEl.classList.remove('hidden');
@@ -312,7 +350,12 @@
         const data = await res.json();
         if (data.success) {
           const count = data.cachedSources;
-          showAdminStatus(`EPG cache cleared and refreshed (${count} source${count === 1 ? '' : 's'}).`);
+          let message = `EPG cache cleared and refreshed (${count} M3U source${count === 1 ? '' : 's'}).`;
+          if (data.epgShareRefreshed || data.epgShareFailed) {
+            message += ` ${data.epgShareRefreshed} EPGShare01 source${data.epgShareRefreshed === 1 ? '' : 's'} refreshed.`;
+            if (data.epgShareFailed) message += ` ${data.epgShareFailed} failed.`;
+          }
+          showAdminStatus(message, !!data.epgShareFailed);
         } else {
           showAdminStatus(data.error || 'Failed to refresh the EPG cache.', true);
         }
@@ -351,6 +394,136 @@
         }
       } catch (err) {
         showAdminStatus('Network error while saving settings.', true);
+      }
+    }
+
+    // --- EPGShare01 source catalog + selection ---
+    let epgShareCatalog = []; // [{file, url, compressedBytes, decompressedBytes}]
+    let epgShareEnabledSet = new Set(); // selected filenames
+
+    function formatBytes(n) {
+      if (n === null || n === undefined) return 'unknown';
+      if (n < 1024) return `${n} B`;
+      if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+      if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+      return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+    }
+
+    // A short, human-friendly label derived from the raw filename (e.g.
+    // "epg_ripper_US_SPORTS1.xml.gz" -> "US SPORTS1") - the full filename
+    // is still shown below it (in a smaller/dimmer style) since that's
+    // what's actually saved/matched against.
+    function epgShareSourceLabel(file) {
+      return file.replace(/^epg_ripper_/, '').replace(/\.xml\.gz$/, '').replace(/_/g, ' ');
+    }
+
+    async function loadEpgShareCatalog(forceRefresh) {
+      const statusEl = document.getElementById('epgshare-catalog-status');
+      const btn = document.getElementById('epgshare-refresh-list-btn');
+      btn.disabled = true;
+      statusEl.textContent = forceRefresh ? 'Refreshing source list from epgshare01.online...' : 'Loading source list...';
+
+      try {
+        const res = await fetch('/api/admin/epgshare-catalog', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...adminCreds, refresh: !!forceRefresh })
+        });
+        const data = await res.json();
+        if (data.success) {
+          epgShareCatalog = data.sources;
+          statusEl.textContent = `${epgShareCatalog.length} sources available, as of ${formatDate(new Date(data.fetchedAt).toISOString())}.`;
+          renderEpgShareCatalog();
+        } else {
+          statusEl.textContent = '';
+          showAdminStatus(data.error || 'Failed to load the EPGShare01 source list.', true);
+        }
+      } catch (err) {
+        statusEl.textContent = '';
+        showAdminStatus('Network error while loading the EPGShare01 source list.', true);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function loadEpgShareSettings() {
+      try {
+        const res = await fetch('/api/admin/epgshare-settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(adminCreds)
+        });
+        const data = await res.json();
+        if (data.success) {
+          epgShareEnabledSet = new Set(data.settings.enabledSources);
+          renderEpgShareCatalog();
+        }
+      } catch (err) {
+        console.error('Failed to load EPGShare01 settings:', err.message);
+      }
+    }
+
+    function toggleEpgShareSource(file) {
+      if (epgShareEnabledSet.has(file)) epgShareEnabledSet.delete(file); else epgShareEnabledSet.add(file);
+      renderEpgShareCatalog();
+    }
+
+    function renderEpgShareCatalog() {
+      const list = document.getElementById('epgshare-catalog-list');
+      const term = document.getElementById('epgshare-search').value.trim().toLowerCase();
+      const filtered = term
+        ? epgShareCatalog.filter(s => s.file.toLowerCase().includes(term))
+        : epgShareCatalog;
+
+      if (epgShareCatalog.length === 0) {
+        list.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No sources loaded yet.</p>';
+      } else if (filtered.length === 0) {
+        list.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No sources match your search.</p>';
+      } else {
+        list.innerHTML = filtered.map(s => {
+          const checked = epgShareEnabledSet.has(s.file);
+          return `
+          <label class="grid grid-cols-[20px_1fr_84px_104px_84px] gap-3 px-3 py-2 items-center cursor-pointer hover:bg-[#3b4d58]/40 select-none">
+            <input type="checkbox" class="w-4 h-4 accent-[#3b8fc4]" ${checked ? 'checked' : ''} onchange="toggleEpgShareSource('${s.file}')">
+            <div>
+              <div class="text-xs font-semibold">${epgShareSourceLabel(s.file)}</div>
+              <div class="text-[10px] text-[#e6e6e6]/45 font-mono">${s.file}</div>
+            </div>
+            <div class="text-xs text-[#e6e6e6]/75 text-right whitespace-nowrap">${formatBytes(s.compressedBytes)}</div>
+            <div class="text-xs text-[#e6e6e6]/75 text-right whitespace-nowrap">${formatBytes(s.decompressedBytes)}</div>
+            <div class="text-center">
+              <a href="${s.txtUrl}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="View channel list (.txt)" class="inline-flex text-[#5aa8d1] hover:text-[#7fc0e8] transition">
+                <i class="fa-solid fa-arrow-up-right-from-square"></i>
+              </a>
+            </div>
+          </label>
+        `;
+        }).join('');
+      }
+
+      document.getElementById('epgshare-selected-count').textContent = `${epgShareEnabledSet.size} selected`;
+    }
+
+    async function saveEpgShareSettings() {
+      const savedEl = document.getElementById('epgshare-settings-saved');
+      savedEl.classList.add('hidden');
+
+      try {
+        const res = await fetch('/api/admin/epgshare-settings/update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...adminCreds, enabledSources: [...epgShareEnabledSet] })
+        });
+        const data = await res.json();
+        if (data.success) {
+          savedEl.textContent = 'Saved.';
+          savedEl.classList.remove('hidden');
+          setTimeout(() => savedEl.classList.add('hidden'), 3000);
+        } else {
+          showAdminStatus(data.error || 'Failed to save EPG source selection.', true);
+        }
+      } catch (err) {
+        showAdminStatus('Network error while saving EPG source selection.', true);
       }
     }
 

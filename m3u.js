@@ -192,7 +192,11 @@ function getCandidateStreamsForGame(source, configuredCategoryIds, gameTimestamp
       description: bestTitle,
       startTimestamp: bestStartTimestamp,
       streamUrl: ch.streamUrl,
-      categoryLabel: ch.categories[0] || ''
+      categoryLabel: ch.categories[0] || '',
+      // The playlist's own tvg-id - kept around (not used by anything in
+      // this module) so callers can join against an external EPG source,
+      // e.g. an EPGShare01 override in server.js.
+      channelId: ch.id
     };
   });
 }
