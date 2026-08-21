@@ -2310,6 +2310,32 @@ app.post('/api/admin/m3u-settings/update', async (req, res) => {
   return res.json({ success: true, settings: m3uSettings });
 });
 
+// Manual out-of-cycle refresh - empties the shared cache first so a stale
+// entry can never be served while the fresh fetch is in flight, then
+// re-fetches every currently active source the same way the scheduler
+// does. Awaited so the admin gets a definitive success/failure response
+// rather than firing this and hoping.
+app.post('/api/admin/m3u-cache/recache', async (req, res) => {
+  const { username, password } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  m3u.m3uSourceCache.clear();
+  await m3u.refreshAllM3USources(getActiveM3uSources);
+
+  return res.json({ success: true, cachedSources: m3u.m3uSourceCache.size });
+});
+
 app.post('/api/admin/user/delete', async (req, res) => {
   const { username, password, targetUuid } = req.body;
   const ip = req.ip;

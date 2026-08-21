@@ -37,7 +37,12 @@
       <h1 class="text-lg font-bold mb-6">Sportio Live - Admin</h1>
 
       <div class="glass rounded-xl p-4 mb-4">
-        <h2 class="text-sm font-bold mb-3">M3U Refresh Schedule</h2>
+        <div class="flex items-center justify-between mb-3 gap-3">
+          <h2 class="text-sm font-bold">M3U Refresh Schedule</h2>
+          <button onclick="recacheM3u()" id="m3u-recache-btn" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2 px-3 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed">
+            <i class="fa-solid fa-rotate"></i> Clear &amp; Recache EPG Now
+          </button>
+        </div>
         <p class="text-xs text-[#e6e6e6]/55 mb-4">Which days, and at what time(s) on those days, the shared M3U playlist/EPG cache refreshes in the background. Takes effect on the next scheduled run - no restart needed.</p>
 
         <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Days</label>
@@ -289,6 +294,33 @@
         }
       } catch (err) {
         console.error('Failed to load M3U settings:', err.message);
+      }
+    }
+
+    async function recacheM3u() {
+      const btn = document.getElementById('m3u-recache-btn');
+      const originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Recaching...';
+
+      try {
+        const res = await fetch('/api/admin/m3u-cache/recache', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(adminCreds)
+        });
+        const data = await res.json();
+        if (data.success) {
+          const count = data.cachedSources;
+          showAdminStatus(`EPG cache cleared and refreshed (${count} source${count === 1 ? '' : 's'}).`);
+        } else {
+          showAdminStatus(data.error || 'Failed to refresh the EPG cache.', true);
+        }
+      } catch (err) {
+        showAdminStatus('Network error while refreshing the EPG cache.', true);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
       }
     }
 
