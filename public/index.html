@@ -451,11 +451,23 @@
               <i class="fa-solid fa-magnifying-glass absolute left-5 top-[1.15rem] text-xs text-[#e6e6e6]/55"></i>
               <input type="text" id="channel-epg-search" oninput="renderChannelEpgCategories()" placeholder="Search your channels..." class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg pl-8 pr-3 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none">
             </div>
-            <div id="channel-epg-categories" class="overflow-y-auto max-h-96"></div>
+            <label class="flex items-center gap-2 px-2 py-2 border-b border-[#e6e6e6]/15 shrink-0 cursor-pointer select-none">
+              <div class="relative shrink-0">
+                <input type="checkbox" id="channel-epg-only-overrides" onchange="toggleChannelEpgOnlyOverrides()" class="sr-only peer">
+                <div class="w-9 h-5 bg-[#56707d] rounded-full peer-checked:bg-[#3b8fc4] transition"></div>
+                <div class="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full transition peer-checked:translate-x-4"></div>
+              </div>
+              <span class="text-xs font-semibold text-[#e6e6e6]/75">Show only overrides</span>
+            </label>
+            <div id="channel-epg-categories" class="overflow-y-auto max-h-[660px]"></div>
           </div>
 
-          <!-- Right: editor for whichever channel is selected on the left -->
-          <div class="md:w-1/2 bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg overflow-y-auto max-h-96">
+          <!-- Right: editor for whichever channel is selected on the left. No
+               fixed height here - the parent flex row's default align-items:
+               stretch makes it match the left column's full height (search +
+               toggle + the ~20-row category list) automatically, top anchored
+               together since both start at the same flex-row position. -->
+          <div class="md:w-1/2 bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg overflow-y-auto">
             <div id="channel-epg-editor" class="p-3">
               <p class="text-xs text-[#e6e6e6]/55 italic">Select a channel on the left to edit its EPG source.</p>
             </div>
@@ -578,8 +590,20 @@
     let channelEpgChannels = [];
     let epgShareSourcesCatalog = null;
     let channelEpgManualSourceFilter = '';
+    // Which single source (a filename) the "Suggested matches" search is
+    // scoped to, and the last search's results for whichever channel is
+    // currently selected. Unlike channelEpgManualSourceFilter there's no
+    // merged "all sources" option here - matching is deliberately run
+    // against one source at a time. The source choice persists across
+    // switching channels (same reasoning as the manual filter above); the
+    // results don't - they're cleared back to null (meaning "not searched
+    // yet") on every new channel selection, since a stale match list for a
+    // different channel's name would be actively misleading.
+    let channelEpgSuggestSourceFilter = '';
+    let channelEpgSuggestResults = null;
     let channelEpgExpandedCategories = new Set();
     let channelEpgSelectedChannelId = null;
+    let channelEpgOnlyOverrides = false;
 
     // Setup wizard state (new-account creation only)
     let wizardSelectedSports = [];
@@ -2110,6 +2134,9 @@
         document.getElementById('channel-epg-search').value = '';
         channelEpgExpandedCategories = new Set();
         channelEpgSelectedChannelId = null;
+        channelEpgSuggestResults = null;
+        channelEpgOnlyOverrides = false;
+        document.getElementById('channel-epg-only-overrides').checked = false;
         renderChannelEpgEditor();
         panel.classList.remove('hidden');
         loadChannelEpgChannels();
@@ -2247,6 +2274,11 @@
 
     // --- Left panel: category accordion ---
 
+    function toggleChannelEpgOnlyOverrides() {
+      channelEpgOnlyOverrides = document.getElementById('channel-epg-only-overrides').checked;
+      renderChannelEpgCategories();
+    }
+
     function renderChannelEpgCategories() {
       const container = document.getElementById('channel-epg-categories');
       const provider = activeUser && activeUser.providers[activeProviderIndex];
@@ -2271,15 +2303,19 @@
         const channelsInCategory = channelEpgChannels.filter(ch => ch.categoryIds.includes(catId));
         if (channelsInCategory.length === 0) return '';
 
-        const matchingChannels = term
+        const searchMatched = term
           ? channelsInCategory.filter(ch => ch.name.toLowerCase().includes(term) || ch.id.toLowerCase().includes(term))
           : channelsInCategory;
-        // While searching, only categories with at least one match show up
-        // at all, and always expanded - otherwise, respect whatever the
-        // user manually expanded/collapsed.
-        if (term && matchingChannels.length === 0) return '';
+        const matchingChannels = channelEpgOnlyOverrides
+          ? searchMatched.filter(ch => provider.epgOverrides && provider.epgOverrides[ch.id])
+          : searchMatched;
+        // While searching or filtering to overrides only, only categories
+        // with at least one match show up at all, and always expanded -
+        // otherwise, respect whatever the user manually expanded/collapsed.
+        const isFiltering = term || channelEpgOnlyOverrides;
+        if (isFiltering && matchingChannels.length === 0) return '';
         anyCategoryRendered = true;
-        const isExpanded = term ? true : channelEpgExpandedCategories.has(catId);
+        const isExpanded = isFiltering ? true : channelEpgExpandedCategories.has(catId);
 
         const channelsHtml = isExpanded ? matchingChannels.map(ch => {
           const overrideTarget = provider.epgOverrides && provider.epgOverrides[ch.id];
@@ -2313,6 +2349,8 @@
         container.innerHTML = html;
       } else if (term) {
         container.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No channels match your search.</p>';
+      } else if (channelEpgOnlyOverrides) {
+        container.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No channels have an EPG override yet.</p>';
       } else {
         // Every selected category came back with zero matching channels -
         // distinct from "no categories selected" above. If this shows up
@@ -2335,6 +2373,9 @@
 
     function selectChannelForEpgEdit(channelId) {
       channelEpgSelectedChannelId = channelId;
+      // Last channel's matches would be actively misleading here - source
+      // choice stays, but the results themselves are always per-channel.
+      channelEpgSuggestResults = null;
       renderChannelEpgCategories();
       renderChannelEpgEditor();
     }
@@ -2395,6 +2436,20 @@
       if (a === b) return 100;
       if (b.startsWith(a) || a.startsWith(b)) return 80;
       if (b.includes(a) || a.includes(b)) return 60;
+
+      // EPG ids concatenate multi-word names with no separator at all
+      // (confirmed directly: "Fox Sports 1" is "FoxSports1", "NBC Sports"
+      // is "NBCSports") - not even the "."-as-punctuation case
+      // normalizeForMatch already handles, since there's nothing there to
+      // normalize. The word-boundary checks above and the token-overlap
+      // check below both need actual separators on both sides to line up,
+      // so neither one alone catches this - comparing the channel name
+      // with its own spaces stripped out is what bridges it.
+      const aJoined = a.replace(/ /g, '');
+      if (aJoined && (b === aJoined || b.startsWith(aJoined) || aJoined.startsWith(b) || b.includes(aJoined) || aJoined.includes(b))) {
+        return 50;
+      }
+
       const aTokens = new Set(a.split(' ').filter(t => t.length > 1));
       const bTokens = new Set(b.split(' ').filter(t => t.length > 1));
       let overlap = 0;
@@ -2402,8 +2457,11 @@
       return overlap > 0 ? 20 + overlap * 10 : 0;
     }
 
-    function getSuggestedEpgShareMatches(channelName, limit = 5) {
-      return getMergedEpgShareChannelIds()
+    // candidateIds is deliberately passed in rather than always pulled from
+    // getMergedEpgShareChannelIds() - the "Suggested matches" search scopes
+    // this to one chosen source's channelIds at a time.
+    function getSuggestedEpgShareMatches(channelName, candidateIds, limit = 5) {
+      return candidateIds
         .map(id => ({ id, score: scoreEpgShareMatch(channelName, id) }))
         .filter(x => x.score > 0)
         .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
@@ -2423,43 +2481,66 @@
 
       const overrideTarget = provider.epgOverrides && provider.epgOverrides[channel.id];
       const currentHtml = overrideTarget
-        ? `<div class="flex items-center justify-between gap-2 bg-[#3b4d58] rounded-lg px-3 py-2 mb-3">
-             <div class="text-xs min-w-0"><span class="text-[#e6e6e6]/55">Using:</span> <span class="font-mono text-[#5aa8d1] break-all">${escapeHtml(overrideTarget)}</span></div>
-             <button type="button" onclick="clearSelectedChannelEpgOverride()" class="text-[10px] font-bold text-[#e56a6a] hover:text-[#f0b8b8] transition px-2 py-1 shrink-0">Reset</button>
+        ? `<div class="shrink-0 max-w-[55%] flex items-center gap-2 bg-[#3b4d58] rounded-lg px-2.5 py-1.5">
+             <div class="text-xs text-right min-w-0"><span class="text-[#e6e6e6]/55">Using:</span> <span class="font-mono text-[#5aa8d1] break-all">${escapeHtml(overrideTarget)}</span></div>
+             <button type="button" onclick="clearSelectedChannelEpgOverride()" class="text-[10px] font-bold text-[#e56a6a] hover:text-[#f0b8b8] transition shrink-0">Reset</button>
            </div>`
-        : `<div class="text-xs text-[#e6e6e6]/55 bg-[#3b4d58] rounded-lg px-3 py-2 mb-3">Using: <span class="font-semibold text-[#e6e6e6]/80">Provider EPG</span> (default)</div>`;
+        : `<div class="shrink-0 text-xs text-[#e6e6e6]/55 bg-[#3b4d58] rounded-lg px-2.5 py-1.5 whitespace-nowrap">Using: <span class="font-semibold text-[#e6e6e6]/80">Provider EPG</span> (default)</div>`;
 
-      const suggestions = getSuggestedEpgShareMatches(channel.name);
-      const suggestionsHtml = epgShareSourcesCatalog === null
-        ? '<p class="text-xs text-[#e6e6e6]/55 italic">Loading suggestions...</p>'
-        : suggestions.length > 0
-          ? suggestions.map(id => `
+      // Source dropdown for the "Suggested matches" search - one option per
+      // admin-enabled+cached source (no merged "all sources" choice here,
+      // unlike the manual picker below: matching is scoped to one source
+      // at a time by design). channelEpgSuggestSourceFilter persists across
+      // channel selections; channelEpgSuggestResults doesn't, so switching
+      // channels always requires a fresh Search click even though the
+      // source stays picked.
+      const sources = epgShareSourcesCatalog || [];
+      const catalogLoading = epgShareSourcesCatalog === null;
+      const suggestSourceOptionsHtml = sources.map(s => `
+        <option value="${escapeHtml(s.file)}" ${s.file === channelEpgSuggestSourceFilter ? 'selected' : ''}>${escapeHtml(epgShareSourceLabel(s.file))} (${s.channelIds.length})</option>
+      `).join('');
+      const searchDisabled = catalogLoading || !channelEpgSuggestSourceFilter;
+      const suggestResultsHtml = channelEpgSuggestResults === null
+        ? `<p class="text-xs text-[#e6e6e6]/55 italic">${catalogLoading ? 'Loading sources...' : 'Pick an EPG source above, then click Search.'}</p>`
+        : channelEpgSuggestResults.length > 0
+          ? channelEpgSuggestResults.map(id => `
               <button type="button" onclick="applyEpgShareOverrideToSelected('${escapeJsAttr(id)}')" class="w-full text-left px-3 py-1.5 text-xs font-mono rounded-lg transition ${id === overrideTarget ? 'bg-[#3b8fc4]/30 text-[#5aa8d1]' : 'bg-[#3b4d58] hover:bg-[#455c69]'}">${escapeHtml(id)}</button>
             `).join('')
-          : '<p class="text-xs text-[#e6e6e6]/55 italic">No close matches found - search manually below.</p>';
+          : '<p class="text-xs text-[#e6e6e6]/55 italic">No close matches found in that source - try manual search below.</p>';
 
-      // Source dropdown: "All EPG sources" (merged, the default) plus one
-      // option per admin-enabled+cached source, each labeled with its
-      // channel count - lets a user narrow the manual search down to a
-      // specific source instead of always searching everything merged
-      // together, and doubles as visibility into exactly which source(s)
-      // are actually available right now.
-      const sources = epgShareSourcesCatalog || [];
+      // Source dropdown for manual search: "All EPG sources" (merged, the
+      // default) plus one option per source, each labeled with its channel
+      // count - lets a user narrow the manual search down to a specific
+      // source instead of always searching everything merged together, and
+      // doubles as visibility into exactly which source(s) are available.
       const totalChannels = getMergedEpgShareChannelIds().length;
-      const sourceOptionsHtml = sources.map(s => `
+      const manualSourceOptionsHtml = sources.map(s => `
         <option value="${escapeHtml(s.file)}" ${s.file === channelEpgManualSourceFilter ? 'selected' : ''}>${escapeHtml(epgShareSourceLabel(s.file))} (${s.channelIds.length})</option>
       `).join('');
 
       editor.innerHTML = `
-        <div class="text-sm font-bold truncate">${escapeHtml(channel.name)}</div>
-        <div class="text-[10px] text-[#e6e6e6]/45 font-mono truncate mb-3">${escapeHtml(channel.id)}</div>
-        ${currentHtml}
+        <div class="flex items-start justify-between gap-3 mb-3">
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-bold truncate">${escapeHtml(channel.name)}</div>
+            <div class="text-[10px] text-[#e6e6e6]/45 font-mono truncate">${escapeHtml(channel.id)}</div>
+          </div>
+          ${currentHtml}
+        </div>
         <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Suggested matches</label>
-        <div class="space-y-1 mb-4">${suggestionsHtml}</div>
+        <div class="flex gap-2 mb-2">
+          <select id="channel-epg-suggest-source" onchange="onChannelEpgSuggestSourceChange()" ${catalogLoading ? 'disabled' : ''} class="flex-1 min-w-0 bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none">
+            <option value="" ${channelEpgSuggestSourceFilter === '' ? 'selected' : ''}>${catalogLoading ? 'Loading sources...' : 'Select a source...'}</option>
+            ${suggestSourceOptionsHtml}
+          </select>
+          <button type="button" onclick="searchChannelEpgSuggestions()" ${searchDisabled ? 'disabled' : ''} class="shrink-0 font-bold px-3 py-1.5 rounded-lg text-xs transition flex items-center gap-1.5 ${searchDisabled ? 'bg-[#56707d] text-[#e6e6e6]/40 cursor-not-allowed' : 'bg-[#3b8fc4] hover:bg-[#4fa3d8]'}">
+            <i class="fa-solid fa-magnifying-glass"></i> Search
+          </button>
+        </div>
+        <div class="space-y-1 mb-4">${suggestResultsHtml}</div>
         <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Or choose manually</label>
         <select id="channel-epg-manual-source" onchange="onChannelEpgManualSourceChange()" class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none mb-2">
           <option value="" ${channelEpgManualSourceFilter === '' ? 'selected' : ''}>All EPG sources (${totalChannels})</option>
-          ${sourceOptionsHtml}
+          ${manualSourceOptionsHtml}
         </select>
         <div class="relative mb-2">
           <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-xs text-[#e6e6e6]/55"></i>
@@ -2468,6 +2549,22 @@
         <div id="channel-epg-manual-list" class="max-h-48 overflow-y-auto bg-[#3b4d58] rounded-lg divide-y divide-[#e6e6e6]/10"></div>
       `;
       renderManualEpgShareList();
+    }
+
+    function onChannelEpgSuggestSourceChange() {
+      channelEpgSuggestSourceFilter = document.getElementById('channel-epg-suggest-source').value;
+      // Stale results from whichever source was picked before - require a
+      // fresh Search click rather than silently re-scoring in place.
+      channelEpgSuggestResults = null;
+      renderChannelEpgEditor();
+    }
+
+    function searchChannelEpgSuggestions() {
+      const channel = channelEpgChannels.find(ch => ch.id === channelEpgSelectedChannelId);
+      const source = (epgShareSourcesCatalog || []).find(s => s.file === channelEpgSuggestSourceFilter);
+      if (!channel || !source) return;
+      channelEpgSuggestResults = getSuggestedEpgShareMatches(channel.name, source.channelIds);
+      renderChannelEpgEditor();
     }
 
     function onChannelEpgManualSourceChange() {
