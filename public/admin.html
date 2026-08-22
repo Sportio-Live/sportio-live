@@ -36,14 +36,18 @@
     <div class="max-w-5xl mx-auto w-full">
       <h1 class="text-lg font-bold mb-6">Sportio Live - Admin</h1>
 
-      <div class="glass rounded-xl p-4 mb-4">
-        <div class="flex items-center justify-between mb-3 gap-3">
-          <h2 class="text-sm font-bold">M3U Refresh Schedule</h2>
-          <button onclick="recacheM3u()" id="m3u-recache-btn" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2 px-3 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed">
+      <div class="glass rounded-xl mb-4 overflow-hidden">
+        <div class="flex items-center justify-between gap-3 p-4 cursor-pointer select-none" onclick="toggleSection('m3u')">
+          <div class="flex items-center gap-2">
+            <i id="section-chevron-m3u" class="fa-solid fa-chevron-down text-xs text-[#e6e6e6]/55 transition-transform"></i>
+            <h2 class="text-sm font-bold">Refresh schedule</h2>
+          </div>
+          <button onclick="event.stopPropagation(); recacheM3u()" id="m3u-recache-btn" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2 px-3 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed">
             <i class="fa-solid fa-rotate"></i> Clear &amp; Recache EPG Now
           </button>
         </div>
-        <p class="text-xs text-[#e6e6e6]/55 mb-4">Which days, and at what time(s) on those days, the shared M3U playlist/EPG cache refreshes in the background. Takes effect on the next scheduled run - no restart needed.</p>
+        <div id="section-body-m3u" class="px-4 pb-4">
+        <p class="text-xs text-[#e6e6e6]/55 mb-4">Create a schedule to update M3Us and EPG.</p>
 
         <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Days</label>
         <div id="m3u-days-row" class="flex flex-wrap gap-2 mb-4"></div>
@@ -71,10 +75,17 @@
           </button>
           <div id="m3u-settings-saved" class="hidden text-xs text-[#a8e0ac] font-semibold"></div>
         </div>
+        </div>
       </div>
 
-      <div class="glass rounded-xl p-4 mb-4">
-        <h2 class="text-sm font-bold mb-1">EPG Sources (EPGShare01)</h2>
+      <div class="glass rounded-xl mb-4 overflow-hidden">
+        <div class="flex items-center justify-between gap-3 p-4 cursor-pointer select-none" onclick="toggleSection('epgshare')">
+          <div class="flex items-center gap-2">
+            <i id="section-chevron-epgshare" class="fa-solid fa-chevron-down text-xs text-[#e6e6e6]/55 transition-transform"></i>
+            <h2 class="text-sm font-bold">EPG Editor</h2>
+          </div>
+        </div>
+        <div id="section-body-epgshare" class="px-4 pb-4">
         <p class="text-xs text-[#e6e6e6]/55 mb-4">Choose which of <a href="https://epgshare01.online/epgshare01/" target="_blank" rel="noopener" class="text-[#5aa8d1] hover:underline">epgshare01.online</a>'s XMLTV feeds this server keeps fetched and cached. This does <span class="font-semibold text-[#e6e6e6]/80">not</span> override anyone's EPG by itself - each enabled source just becomes available for a user to pick, per channel, in place of their provider's own guide. Every source you enable here adds an extra download + parse to the M3U refresh schedule above, so pick only what you actually need for your users' channel lineups (a per-country/category file, not the ~200MB combined one, unless you really need it).</p>
 
         <div class="flex flex-wrap items-center gap-3 mb-3">
@@ -107,50 +118,61 @@
           </button>
           <div id="epgshare-settings-saved" class="hidden text-xs text-[#a8e0ac] font-semibold"></div>
         </div>
+        </div>
       </div>
 
-      <div class="glass rounded-xl p-4 mb-4 flex flex-wrap items-end gap-3">
-        <div>
-          <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">Filter by</label>
-          <select id="filter-field" class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
-            <option value="createdAt">Created Date</option>
-            <option value="lastAccessedAt">Last Accessed</option>
-          </select>
+      <div class="glass rounded-xl mb-4 overflow-hidden">
+        <div class="flex items-center justify-between gap-3 p-4 cursor-pointer select-none" onclick="toggleSection('accounts')">
+          <div class="flex items-center gap-2">
+            <i id="section-chevron-accounts" class="fa-solid fa-chevron-down text-xs text-[#e6e6e6]/55 transition-transform"></i>
+            <h2 class="text-sm font-bold">Accounts</h2>
+          </div>
         </div>
-        <div>
-          <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">From</label>
-          <input type="date" id="filter-from" class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+        <div id="section-body-accounts" class="px-4 pb-4">
+        <div class="flex flex-wrap items-end gap-3 mb-4">
+          <div>
+            <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">Filter by</label>
+            <select id="filter-field" class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+              <option value="createdAt">Created Date</option>
+              <option value="lastAccessedAt">Last Accessed</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">From</label>
+            <input type="date" id="filter-from" class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">To</label>
+            <input type="date" id="filter-to" class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+          </div>
+          <button onclick="applyDateFilter()" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2 px-4 rounded-lg text-xs transition">
+            Apply
+          </button>
+          <button onclick="clearDateFilter()" class="bg-[#56707d] hover:bg-[#66818f] font-bold py-2 px-4 rounded-lg text-xs transition">
+            Clear
+          </button>
+          <div class="ml-auto text-xs text-[#e6e6e6]/55" id="user-count"></div>
         </div>
-        <div>
-          <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">To</label>
-          <input type="date" id="filter-to" class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
-        </div>
-        <button onclick="applyDateFilter()" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2 px-4 rounded-lg text-xs transition">
-          Apply
-        </button>
-        <button onclick="clearDateFilter()" class="bg-[#56707d] hover:bg-[#66818f] font-bold py-2 px-4 rounded-lg text-xs transition">
-          Clear
-        </button>
-        <div class="ml-auto text-xs text-[#e6e6e6]/55" id="user-count"></div>
-      </div>
 
-      <div class="glass rounded-xl overflow-hidden">
-        <table class="w-full text-sm">
-          <thead>
-            <tr class="border-b border-[#e6e6e6]/15 text-left">
-              <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55">UUID</th>
-              <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55">Type</th>
-              <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55 cursor-pointer hover:text-[#e6e6e6] select-none" onclick="sortBy('createdAt')">
-                Created <i id="sort-icon-createdAt" class="fa-solid fa-sort ml-1"></i>
-              </th>
-              <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55 cursor-pointer hover:text-[#e6e6e6] select-none" onclick="sortBy('lastAccessedAt')">
-                Last Accessed <i id="sort-icon-lastAccessedAt" class="fa-solid fa-sort ml-1"></i>
-              </th>
-              <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55 text-right">Action</th>
-            </tr>
-          </thead>
-          <tbody id="admin-user-table-body"></tbody>
-        </table>
+        <div class="rounded-lg border border-[#e6e6e6]/15 overflow-hidden">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-[#e6e6e6]/15 text-left">
+                <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55">UUID</th>
+                <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55">Type</th>
+                <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55 cursor-pointer hover:text-[#e6e6e6] select-none" onclick="sortBy('createdAt')">
+                  Created <i id="sort-icon-createdAt" class="fa-solid fa-sort ml-1"></i>
+                </th>
+                <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55 cursor-pointer hover:text-[#e6e6e6] select-none" onclick="sortBy('lastAccessedAt')">
+                  Last Accessed <i id="sort-icon-lastAccessedAt" class="fa-solid fa-sort ml-1"></i>
+                </th>
+                <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody id="admin-user-table-body"></tbody>
+          </table>
+        </div>
+        </div>
       </div>
     </div>
   </div>
@@ -165,6 +187,16 @@
     let allUsers = [];
     let visibleUsers = [];
     let currentSort = { field: null, direction: 'asc' };
+
+    // --- Collapsible sections - all expanded by default; state lives only
+    // in the DOM (a hidden class on the body, a rotated chevron), nothing
+    // persisted, so a fresh login always starts fully expanded.
+    function toggleSection(name) {
+      const body = document.getElementById(`section-body-${name}`);
+      const chevron = document.getElementById(`section-chevron-${name}`);
+      const collapsed = body.classList.toggle('hidden');
+      chevron.classList.toggle('-rotate-90', collapsed);
+    }
 
     async function adminLogin() {
       const username = document.getElementById('admin-username').value.trim();
