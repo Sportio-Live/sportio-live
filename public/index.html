@@ -405,10 +405,10 @@
         <div id="formatter-placeholder-legend" class="flex flex-wrap gap-1.5 mb-4"></div>
 
         <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">Name Template</label>
-        <textarea id="formatter-name-input" rows="2" class="formatter-field w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none mb-3 resize-y" oninput="updateFormatterPreview()"></textarea>
+        <textarea id="formatter-name-input" rows="2" class="formatter-field w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none mb-3 resize-y" oninput="updateFormatterFromInputs()"></textarea>
 
         <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">Description Template</label>
-        <textarea id="formatter-title-input" rows="2" class="formatter-field w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none mb-3 resize-y" oninput="updateFormatterPreview()"></textarea>
+        <textarea id="formatter-title-input" rows="2" class="formatter-field w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none mb-3 resize-y" oninput="updateFormatterFromInputs()"></textarea>
 
         <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">Preview</label>
         <div class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3 mb-4">
@@ -416,17 +416,9 @@
           <div id="formatter-preview-title" class="text-xs text-[#e6e6e6]/70 break-all mt-0.5 whitespace-pre-wrap"></div>
         </div>
 
-        <div class="grid grid-cols-3 gap-3">
-          <button onclick="resetFormatterDefaults()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">
-            Reset to Default
-          </button>
-          <button onclick="cancelFormatter()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">
-            Cancel
-          </button>
-          <button onclick="saveFormatter()" class="w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2.5 rounded-lg text-xs transition">
-            Confirm
-          </button>
-        </div>
+        <button onclick="resetFormatterDefaults()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">
+          Reset to Default
+        </button>
       </div>
 
       <!-- Channel EPG (collapsed until Channel EPG is clicked) - lets the
@@ -473,24 +465,12 @@
             </div>
           </div>
         </div>
-
-        <button onclick="closeChannelEpgPanel()" class="w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2.5 rounded-lg text-xs transition">
-          Done
-        </button>
       </div>
 
       <!-- Sport Configuration Sections -->
       <div id="manage-sports-panel" class="hidden bg-[#3b4d58]/60 border border-[#e6e6e6]/15 rounded-lg p-4 mb-6">
         <h4 class="font-bold text-sm text-[#e6e6e6]/75 mb-3">Choose your leagues</h4>
-        <div id="manage-sports-grid" class="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4"></div>
-        <div class="grid grid-cols-2 gap-3">
-          <button onclick="cancelManageSports()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-sm transition">
-            Cancel
-          </button>
-          <button onclick="saveManagedSports()" class="w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2.5 rounded-lg text-sm transition">
-            Done
-          </button>
-        </div>
+        <div id="manage-sports-grid" class="grid grid-cols-2 sm:grid-cols-3 gap-3"></div>
       </div>
 
       <!-- Delete Account (collapsed until "Delete account" is clicked) -->
@@ -1891,8 +1871,6 @@
       return SPORTS;
     }
 
-    let manageSportsSelection = [];
-
     function toggleManageSportsPanel() {
       const panel = document.getElementById('manage-sports-panel');
       if (panel.classList.contains('hidden')) {
@@ -1904,25 +1882,20 @@
         closeFormatterPanelSilently();
         closeChannelEpgPanelSilently();
         const provider = activeUser.providers[activeProviderIndex];
-        manageSportsSelection = [...getVisibleSports(provider)];
-        renderLeagueGrid('manage-sports-grid', manageSportsSelection, 'toggleManagedSport');
+        renderLeagueGrid('manage-sports-grid', getVisibleSports(provider), 'toggleManagedSport');
         panel.classList.remove('hidden');
       } else {
-        cancelManageSports();
+        closeManageSportsPanelSilently();
       }
       updateSettingsButtonStates();
     }
 
-    // Closes Manage Sports without saving anything - used both by its own
-    // Cancel button and when the Xtream editor needs to take over, so only
-    // one editor is ever open at a time.
+    // Used when another editor needs to take over, so only one is ever open
+    // at a time - nothing to revert here since toggleManagedSport already
+    // writes straight into the provider the moment a league is clicked.
     function closeManageSportsPanelSilently() {
       document.getElementById('manage-sports-panel').classList.add('hidden');
       updateSettingsButtonStates();
-    }
-
-    function cancelManageSports() {
-      closeManageSportsPanelSilently();
     }
 
     // Generic HTML-escaping utility - used when rendering any external,
@@ -2070,7 +2043,7 @@
         updateFormatterPreview();
         panel.classList.remove('hidden');
       } else {
-        cancelFormatter();
+        closeFormatterPanelSilently();
       }
       updateSettingsButtonStates();
     }
@@ -2080,14 +2053,10 @@
       updateSettingsButtonStates();
     }
 
-    function cancelFormatter() {
-      closeFormatterPanelSilently();
-    }
-
     function resetFormatterDefaults() {
       document.getElementById('formatter-name-input').value = DEFAULT_NAME_FORMAT;
       document.getElementById('formatter-title-input').value = DEFAULT_TITLE_FORMAT;
-      updateFormatterPreview();
+      updateFormatterFromInputs();
     }
 
     function updateFormatterPreview() {
@@ -2100,17 +2069,17 @@
       document.getElementById('formatter-preview-title').textContent = applyFormatterTemplate(titleTemplate, sampleFields);
     }
 
-    // Stages the format strings for this session only - see
-    // confirmEditXtream for why nothing is sent to the server here. Blank
-    // is treated the same way the server does: falls back to the default
-    // rather than saving an empty template that would blank out every
-    // stream's name/title.
-    function saveFormatter() {
+    // Writes straight into activeUser on every keystroke - no separate
+    // Confirm step, matching Category Search's checkboxes and Channel
+    // EPG's overrides. Blank is treated the same way the server does:
+    // falls back to the default rather than saving an empty template that
+    // would blank out every stream's name/title.
+    function updateFormatterFromInputs() {
+      if (!activeUser) return;
       activeUser.nameFormat = document.getElementById('formatter-name-input').value.trim() || DEFAULT_NAME_FORMAT;
       activeUser.titleFormat = document.getElementById('formatter-title-input').value.trim() || DEFAULT_TITLE_FORMAT;
-      closeFormatterPanelSilently();
+      updateFormatterPreview();
       markDashboardDirty();
-      showStatus('Formatter updated for this session - click Save and Copy Link to save.');
     }
 
     // --- Dashboard: Channel EPG (per-channel EPGShare01 override picker) ---
@@ -2142,7 +2111,7 @@
         loadChannelEpgChannels();
         loadEpgShareChannelCatalog();
       } else {
-        closeChannelEpgPanel();
+        closeChannelEpgPanelSilently();
       }
       updateSettingsButtonStates();
     }
@@ -2150,10 +2119,6 @@
     function closeChannelEpgPanelSilently() {
       document.getElementById('channel-epg-panel').classList.add('hidden');
       updateSettingsButtonStates();
-    }
-
-    function closeChannelEpgPanel() {
-      closeChannelEpgPanelSilently();
     }
 
     // Fetches the active provider's own channel list, branching by
@@ -2716,23 +2681,25 @@
       showStatus('Timezone updated for this session - click Save and Copy Link to save.');
     }
 
+    // Writes straight into the active provider the moment a league is
+    // clicked - no separate Done step, matching Category Search's
+    // checkboxes and Channel EPG's overrides. Re-rendering Category Search
+    // right away (via renderActiveProviderPanel) is what the
+    // UNSAVED_CHANGES_WARNING guard below protects: that render rebuilds
+    // the category checkboxes from provider.sportCategories, discarding
+    // any not-yet-saved checkbox picks - same hazard confirmEditXtream/
+    // confirmEditM3u guard against, just triggered per-click here instead
+    // of once at a Done click.
     function toggleManagedSport(sport) {
-      toggleSportInArray(manageSportsSelection, sport);
-      renderLeagueGrid('manage-sports-grid', manageSportsSelection, 'toggleManagedSport');
-    }
-
-    // Stages the selected leagues for this session only - see
-    // confirmEditXtream for why nothing is sent to the server here.
-    function saveManagedSports() {
       if (dashboardHasUnsavedChanges && !confirm(UNSAVED_CHANGES_WARNING)) {
         return;
       }
-
-      activeUser.providers[activeProviderIndex].selectedSports = [...manageSportsSelection];
-      document.getElementById('manage-sports-panel').classList.add('hidden');
+      const provider = activeUser.providers[activeProviderIndex];
+      provider.selectedSports = [...getVisibleSports(provider)];
+      toggleSportInArray(provider.selectedSports, sport);
+      renderLeagueGrid('manage-sports-grid', provider.selectedSports, 'toggleManagedSport');
       renderActiveProviderPanel();
       markDashboardDirty();
-      showStatus('Leagues updated for this session - click Save and Copy Link to save.');
     }
 
     let dashboardHasUnsavedChanges = false;
