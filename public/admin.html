@@ -385,7 +385,15 @@
           let message = `EPG cache cleared and refreshed (${count} M3U source${count === 1 ? '' : 's'}).`;
           if (data.epgShareRefreshed || data.epgShareFailed) {
             message += ` ${data.epgShareRefreshed} EPGShare01 source${data.epgShareRefreshed === 1 ? '' : 's'} refreshed.`;
-            if (data.epgShareFailed) message += ` ${data.epgShareFailed} failed.`;
+            if (data.epgShareFailed) {
+              message += ` ${data.epgShareFailed} failed.`;
+              // Named per-source, not just a count - "2 failed" alone
+              // isn't diagnosable from the admin page itself.
+              const failures = (data.epgShareResults || []).filter(r => !r.success);
+              failures.forEach(f => {
+                message += `\n• ${epgShareSourceLabel(f.file)}: ${f.error}`;
+              });
+            }
           }
           showAdminStatus(message, !!data.epgShareFailed);
         } else {
@@ -713,8 +721,13 @@
     function showAdminStatus(message, isError = false) {
       const el = document.getElementById('admin-status-message');
       el.textContent = message;
-      el.className = `fixed top-4 right-4 z-50 max-w-sm rounded-lg p-4 text-sm font-semibold shadow-2xl ${isError ? 'bg-[#3a1f1f]/50 text-[#f0b8b8] border border-[#c0392b]' : 'bg-[#1f3a21]/50 text-[#a8e0ac] border border-[#4a9d52]'}`;
-      setTimeout(() => el.classList.add('hidden'), 4000);
+      // whitespace-pre-line so a multi-line message (e.g. one "• source:
+      // error" line per failed EPGShare01 source) actually breaks lines
+      // instead of collapsing to one run-on line.
+      el.className = `fixed top-4 right-4 z-50 max-w-sm rounded-lg p-4 text-sm font-semibold shadow-2xl whitespace-pre-line ${isError ? 'bg-[#3a1f1f]/50 text-[#f0b8b8] border border-[#c0392b]' : 'bg-[#1f3a21]/50 text-[#a8e0ac] border border-[#4a9d52]'}`;
+      // Errors stay up longer - a multi-source failure list takes more
+      // than 4 seconds to actually read.
+      setTimeout(() => el.classList.add('hidden'), isError ? 10000 : 4000);
     }
   </script>
 </body>

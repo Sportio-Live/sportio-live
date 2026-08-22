@@ -42,25 +42,43 @@ function sourceFileToUrl(file) {
 
 // Same regex-based approach as m3u.js's parseXMLTVEpg (a full DOM parse of
 // a large XMLTV file is unnecessarily slow/memory-hungry for the flat,
-// simple structure actually used here), but with two deliberate
-// differences confirmed against a real epg_ripper_*.xml.gz file's actual
-// structure: <title> carries a `lang` attribute (`<title lang="en">`), and
-// - unlike the provider-specific EPG m3u.js's parser was validated
-// against - it's on its own indented line, not immediately adjacent to
-// the closing `>` of <programme>, so whitespace between them has to be
-// tolerated rather than assumed away.
+// simple structure actually used here), with a few deliberate differences
+// confirmed against real epg_ripper_*.xml.gz files: <title> carries a
+// `lang` attribute (`<title lang="en">`), and - unlike the
+// provider-specific EPG m3u.js's parser was validated against - it's on
+// its own indented line, not immediately adjacent to the closing `>` of
+// <programme>, so whitespace between them has to be tolerated rather than
+// assumed away.
+//
+// Critically, <programme>'s own attribute ORDER is NOT consistent across
+// sources - confirmed directly: epg_ripper_US_SPORTS1 writes
+// `start="..." stop="..." channel="..."`, but epg_ripper_RAKUTEN1 writes
+// `channel="..." start="..." stop="..."` instead. An earlier version of
+// this regex baked in one fixed order and silently parsed zero programmes
+// (not an error - just an empty result) for every source using the other
+// one. Fixed by capturing the whole opening tag's raw attribute text
+// first, then pulling start/channel out of THAT with their own
+// order-independent sub-patterns.
+const PROGRAMME_TAG_PATTERN = /<programme\s+([^>]*)>\s*<title[^>]*>([^<]*)<\/title>/g;
+const START_ATTR_PATTERN = /\bstart="(\d{14})/;
+const CHANNEL_ATTR_PATTERN = /\bchannel="([^"]*)"/;
+
 function parseEpgShareXmltv(content, relevantChannelIds) {
   const programmesByChannel = new Map();
-  const pattern = /<programme start="(\d{14}) [^"]*" stop="(\d{14}) [^"]*" channel="([^"]*)">\s*<title[^>]*>([^<]*)<\/title>/g;
 
   let match;
-  while ((match = pattern.exec(content)) !== null) {
-    const [, start, stop, channel, title] = match;
+  while ((match = PROGRAMME_TAG_PATTERN.exec(content)) !== null) {
+    const [, attrs, title] = match;
+    const startMatch = attrs.match(START_ATTR_PATTERN);
+    const channelMatch = attrs.match(CHANNEL_ATTR_PATTERN);
+    if (!startMatch || !channelMatch) continue;
+
+    const channel = channelMatch[1];
     if (relevantChannelIds && !relevantChannelIds.has(channel)) continue;
     if (!programmesByChannel.has(channel)) {
       programmesByChannel.set(channel, []);
     }
-    programmesByChannel.get(channel).push({ start, stop, title: title.trim() });
+    programmesByChannel.get(channel).push({ start: startMatch[1], title: title.trim() });
   }
 
   return programmesByChannel;
@@ -152,6 +170,40 @@ function getCachedCatalog() {
 // Fetch + parse a source
 // ---------------------------------------------------------------------
 
+// V8 hard-caps a single JS string at ~536,870,888 characters
+// (0x1fffffe8) - confirmed directly against a real source: EPGShare01's
+// largest files (epg_ripper_US_LOCALS1, epg_ripper_ALL_SOURCES1)
+// decompress to 700MB-1.8GB, so decoding the whole buffer to one string
+// via .toString('utf8') throws outright for those specifically, even
+// though the gunzip step itself succeeds fine (Buffers aren't
+// string-length-limited). Fixed by scanning the decompressed buffer in
+// overlapping byte-range chunks instead, each decoded to its own
+// (comfortably-under-the-limit) string. The overlap is generously larger
+// than any single matched <programme ...>...</title> span can plausibly
+// be, so a match straddling a chunk boundary still lands fully inside the
+// next chunk's overlap region and gets picked up there - a programme
+// entry counted twice in that tiny overlap is a harmless duplicate array
+// entry, so no de-duplication bookkeeping is needed.
+const PARSE_CHUNK_BYTES = 200 * 1024 * 1024;
+const PARSE_CHUNK_OVERLAP_BYTES = 64 * 1024;
+
+function parseEpgShareXmltvBuffer(buf, relevantChannelIds) {
+  if (buf.length <= PARSE_CHUNK_BYTES) {
+    return parseEpgShareXmltv(buf.toString('utf8'), relevantChannelIds);
+  }
+
+  const programmesByChannel = new Map();
+  for (let offset = 0; offset < buf.length; offset += PARSE_CHUNK_BYTES) {
+    const end = Math.min(offset + PARSE_CHUNK_BYTES + PARSE_CHUNK_OVERLAP_BYTES, buf.length);
+    const chunkResult = parseEpgShareXmltv(buf.subarray(offset, end).toString('utf8'), relevantChannelIds);
+    for (const [channel, programmes] of chunkResult) {
+      if (!programmesByChannel.has(channel)) programmesByChannel.set(channel, []);
+      programmesByChannel.get(channel).push(...programmes);
+    }
+  }
+  return programmesByChannel;
+}
+
 // EPGShare01's files are published as gzip (.xml.gz), but this sniffs the
 // gzip magic bytes rather than trusting the URL's file extension - an
 // admin pointing this at some other, already-uncompressed XMLTV source
@@ -160,9 +212,9 @@ async function fetchAndParseEpgShareSource(url, relevantChannelIds) {
   const res = await axios.get(url, { timeout: 120000, responseType: 'arraybuffer' });
   const buf = Buffer.from(res.data);
   const isGzip = buf.length > 2 && buf[0] === 0x1f && buf[1] === 0x8b;
-  const xml = (isGzip ? zlib.gunzipSync(buf) : buf).toString('utf8');
+  const decompressed = isGzip ? zlib.gunzipSync(buf) : buf;
 
-  const programmesByChannel = parseEpgShareXmltv(xml, relevantChannelIds);
+  const programmesByChannel = parseEpgShareXmltvBuffer(decompressed, relevantChannelIds);
   if (programmesByChannel.size === 0) {
     throw new Error('EPGShare01 source parsed but contained no usable programme data');
   }
@@ -198,19 +250,25 @@ function clearEpgShareCache() {
 // reasoning as m3u.js's refreshAllM3USources. Takes filenames (as stored
 // in epgShareSettings.enabledSources), not full URLs, and resolves each
 // through sourceFileToUrl itself.
+// Returns one result per file - {file, success, channelCount} on success,
+// {file, success: false, error} on failure - rather than raw
+// Promise.allSettled entries, so a caller can surface exactly which
+// source(s) failed and why (the admin recache route does) without having
+// to separately re-derive the valid/ordered file list itself.
 async function refreshEnabledSources(files) {
   const validFiles = (files || []).filter(isKnownSourceFile);
-  const results = await Promise.allSettled(
+  const settled = await Promise.allSettled(
     validFiles.map(file => refreshEpgShareSource(sourceFileToUrl(file)))
   );
-  results.forEach((result, i) => {
+  return settled.map((result, i) => {
+    const file = validFiles[i];
     if (result.status === 'rejected') {
-      console.error(`[EPGShare01] Failed to refresh ${validFiles[i]}:`, result.reason.message);
-    } else {
-      console.log(`[EPGShare01] Refreshed ${validFiles[i]}: ${result.value.programmesByChannel.size} channels`);
+      console.error(`[EPGShare01] Failed to refresh ${file}:`, result.reason.message);
+      return { file, success: false, error: result.reason.message };
     }
+    console.log(`[EPGShare01] Refreshed ${file}: ${result.value.programmesByChannel.size} channels`);
+    return { file, success: true, channelCount: result.value.programmesByChannel.size };
   });
-  return results;
 }
 
 // ---------------------------------------------------------------------

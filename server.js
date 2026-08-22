@@ -2483,13 +2483,16 @@ app.post('/api/admin/m3u-cache/recache', async (req, res) => {
   // needed here.
   epgshare.clearEpgShareCache();
   const epgShareResults = await epgshare.refreshEnabledSources(epgShareSettings.enabledSources);
-  const epgShareRefreshedCount = epgShareResults.filter(r => r.status === 'fulfilled').length;
+  const epgShareRefreshedCount = epgShareResults.filter(r => r.success).length;
 
   return res.json({
     success: true,
     cachedSources: m3u.m3uSourceCache.size,
     epgShareRefreshed: epgShareRefreshedCount,
-    epgShareFailed: epgShareResults.length - epgShareRefreshedCount
+    epgShareFailed: epgShareResults.length - epgShareRefreshedCount,
+    // Per-source detail (file + error) so a failure is diagnosable from
+    // the admin page itself, not just an aggregate "N failed" count.
+    epgShareResults
   });
 });
 
