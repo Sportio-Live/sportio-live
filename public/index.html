@@ -211,7 +211,7 @@
 
     <!-- Active User Dashboard (Hidden by default) -->
     <div id="dashboard-section" class="glass rounded-xl p-6 shadow-2xl mb-8 hidden">
-      <div class="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-[#e6e6e6]/15 pb-4 mb-6 gap-4">
+      <div class="bg-[#455c69] border border-[#e6e6e6]/15 rounded-lg p-4 mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <!-- Provider tabs - one per IPTV connection on this account. Each tab
              has its own credentials and its own Category Search below, since
              category folder ids only ever mean something within the one
@@ -273,40 +273,42 @@
       </div>
 
       <!-- Shared action row -->
-      <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-2">Settings</h3>
-      <div class="grid grid-cols-2 sm:grid-cols-7 gap-3 mb-4">
-        <button id="sources-trigger-btn" onclick="toggleSourcesPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
-          <i class="fa-solid fa-server"></i>
-          Sources
-        </button>
-        <button id="manage-sports-btn" onclick="toggleManageSportsPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
-          <i class="fa-solid fa-sliders"></i>
-          Add/Remove Leagues
-        </button>
-        <button id="channel-epg-btn" onclick="toggleChannelEpgPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
-          <i class="fa-solid fa-satellite-dish"></i>
-          Channel EPG
-        </button>
-        <button id="formatter-btn" onclick="toggleFormatterPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
-          <i class="fa-solid fa-font"></i>
-          Formatter
-        </button>
-        <button id="change-timezone-btn" onclick="toggleChangeTimezonePanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
-          <i class="fa-solid fa-clock"></i>
-          Change Timezone
-        </button>
-        <button id="edit-xtream-trigger-btn" onclick="toggleEditXtreamPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
-          <i class="fa-solid fa-pen-to-square"></i>
-          Edit Xtream
-        </button>
-        <button id="edit-m3u-trigger-btn" onclick="toggleEditM3uPanel()" class="hidden bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition items-center justify-center gap-2">
-          <i class="fa-solid fa-pen-to-square"></i>
-          Edit M3U
-        </button>
-        <button id="delete-account-trigger-btn" onclick="toggleDeleteAccountPanel()" class="bg-[#c0392b] hover:bg-[#d8483a] border border-[#e56a6a]/50 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2 text-white">
-          <i class="fa-solid fa-trash"></i>
-          Delete account
-        </button>
+      <div class="bg-[#455c69] border border-[#e6e6e6]/15 rounded-lg p-4">
+        <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-2">Settings</h3>
+        <div class="grid grid-cols-2 sm:grid-cols-7 gap-3">
+          <button id="sources-trigger-btn" onclick="toggleSourcesPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
+            <i class="fa-solid fa-server"></i>
+            Sources
+          </button>
+          <button id="manage-sports-btn" onclick="toggleManageSportsPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
+            <i class="fa-solid fa-sliders"></i>
+            Add/Remove Leagues
+          </button>
+          <button id="channel-epg-btn" onclick="toggleChannelEpgPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
+            <i class="fa-solid fa-satellite-dish"></i>
+            Channel EPG
+          </button>
+          <button id="formatter-btn" onclick="toggleFormatterPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
+            <i class="fa-solid fa-font"></i>
+            Formatter
+          </button>
+          <button id="change-timezone-btn" onclick="toggleChangeTimezonePanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
+            <i class="fa-solid fa-clock"></i>
+            Change Timezone
+          </button>
+          <button id="edit-xtream-trigger-btn" onclick="toggleEditXtreamPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
+            <i class="fa-solid fa-pen-to-square"></i>
+            Edit Xtream
+          </button>
+          <button id="edit-m3u-trigger-btn" onclick="toggleEditM3uPanel()" class="hidden bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition items-center justify-center gap-2">
+            <i class="fa-solid fa-pen-to-square"></i>
+            Edit M3U
+          </button>
+          <button id="delete-account-trigger-btn" onclick="toggleDeleteAccountPanel()" class="bg-[#c0392b] hover:bg-[#d8483a] border border-[#e56a6a]/50 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2 text-white">
+            <i class="fa-solid fa-trash"></i>
+            Delete account
+          </button>
+        </div>
       </div>
 
       <!-- Sources: Category Search, plus Refresh Categories for whichever
@@ -491,7 +493,7 @@
 
       <!-- Always visible, not collapsible - this is the one action nearly
            every visit ends with. -->
-      <button id="copy-link-btn" onclick="handleCopyLinkButton()" class="js-copy-link-btn mx-auto min-w-[220px] bg-[#4a6fa5] hover:bg-[#5a82bc] font-bold py-2.5 px-4 rounded-lg text-xs transition flex items-center justify-center gap-2 mt-12 mb-4">
+      <button id="copy-link-btn" onclick="handleCopyLinkButton()" class="js-copy-link-btn mx-auto min-w-[220px] bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2.5 px-4 rounded-lg text-xs transition flex items-center justify-center gap-2 mt-12 mb-4">
         <i class="fa-solid fa-copy"></i>
         Copy Install Link
       </button>
@@ -2621,22 +2623,19 @@
       updateSaveCopyButton();
     }
 
-    // There are two of these buttons - one in the header, one always
-    // visible at the bottom of the page - kept in sync here rather than
-    // duplicating this logic. Only the color/icon/label are touched, via
-    // classList rather than a wholesale className overwrite, so each
-    // instance's own layout classes (margins differ between the two) are
-    // left alone.
+    // Only the color/icon/label are touched, via classList rather than a
+    // wholesale className overwrite, so the button's own layout classes
+    // are left alone.
     function updateSaveCopyButton() {
       const btns = document.querySelectorAll('.js-copy-link-btn');
       if (!btns.length) return;
       btns.forEach(btn => {
-        btn.classList.remove('bg-[#4a6fa5]', 'hover:bg-[#5a82bc]', 'bg-[#4a9d52]', 'hover:bg-[#5cb164]');
+        btn.classList.remove('bg-[#3b8fc4]', 'hover:bg-[#4fa3d8]', 'bg-[#4a9d52]', 'hover:bg-[#5cb164]');
         if (dashboardHasUnsavedChanges) {
           btn.classList.add('bg-[#4a9d52]', 'hover:bg-[#5cb164]');
           btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i>Save and Copy Link';
         } else {
-          btn.classList.add('bg-[#4a6fa5]', 'hover:bg-[#5a82bc]');
+          btn.classList.add('bg-[#3b8fc4]', 'hover:bg-[#4fa3d8]');
           btn.innerHTML = '<i class="fa-solid fa-copy"></i>Copy Install Link';
         }
       });
