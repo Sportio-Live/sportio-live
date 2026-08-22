@@ -277,38 +277,41 @@
         </div>
       </div>
 
-      <!-- Shared action row -->
+      <!-- Shared action row - styled as a tab strip (see updateSettingsButtonStates
+           for the active/inactive underline logic). Delete account is part of the
+           same strip but kept red and pushed to the far edge via ml-auto, so it
+           reads as a tab like the rest while staying visually set apart. -->
       <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-2">Settings</h3>
-      <div class="grid grid-cols-2 sm:grid-cols-7 gap-3 pb-4 mb-6 border-b border-[#e6e6e6]/15">
-        <button id="sources-trigger-btn" onclick="toggleSourcesPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
+      <div class="flex flex-wrap items-end gap-1 sm:gap-6 border-b border-[#e6e6e6]/15 mb-6">
+        <button id="sources-trigger-btn" onclick="toggleSourcesPanel()" class="bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
           <i class="fa-solid fa-server"></i>
           Sources
         </button>
-        <button id="manage-sports-btn" onclick="toggleManageSportsPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
+        <button id="manage-sports-btn" onclick="toggleManageSportsPanel()" class="bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
           <i class="fa-solid fa-sliders"></i>
           Add/Remove Leagues
         </button>
-        <button id="channel-epg-btn" onclick="toggleChannelEpgPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
+        <button id="channel-epg-btn" onclick="toggleChannelEpgPanel()" class="bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
           <i class="fa-solid fa-satellite-dish"></i>
           Channel EPG
         </button>
-        <button id="formatter-btn" onclick="toggleFormatterPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
+        <button id="formatter-btn" onclick="toggleFormatterPanel()" class="bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
           <i class="fa-solid fa-font"></i>
           Formatter
         </button>
-        <button id="change-timezone-btn" onclick="toggleChangeTimezonePanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
+        <button id="change-timezone-btn" onclick="toggleChangeTimezonePanel()" class="bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
           <i class="fa-solid fa-clock"></i>
           Change Timezone
         </button>
-        <button id="edit-xtream-trigger-btn" onclick="toggleEditXtreamPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
+        <button id="edit-xtream-trigger-btn" onclick="toggleEditXtreamPanel()" class="bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
           <i class="fa-solid fa-pen-to-square"></i>
           Edit Xtream
         </button>
-        <button id="edit-m3u-trigger-btn" onclick="toggleEditM3uPanel()" class="hidden bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition items-center justify-center gap-2">
+        <button id="edit-m3u-trigger-btn" onclick="toggleEditM3uPanel()" class="hidden bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
           <i class="fa-solid fa-pen-to-square"></i>
           Edit M3U
         </button>
-        <button id="delete-account-trigger-btn" onclick="toggleDeleteAccountPanel()" class="bg-[#c0392b] hover:bg-[#d8483a] border border-[#e56a6a]/50 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2 text-white">
+        <button id="delete-account-trigger-btn" onclick="toggleDeleteAccountPanel()" class="ml-auto bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e56a6a] hover:text-[#f0908f]">
           <i class="fa-solid fa-trash"></i>
           Delete account
         </button>
@@ -1215,10 +1218,22 @@
         const wasHidden = btn.classList.contains('hidden');
         const isOpen = !panel.classList.contains('hidden');
         btn.className = isOpen
-          ? 'bg-[#3b8fc4] border border-[#5aa8d1] text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2'
-          : 'bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2';
+          ? 'bg-transparent border-0 border-b-2 border-[#3b8fc4] rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]'
+          : 'bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]';
         if (wasHidden) btn.classList.add('hidden');
       });
+
+      // Delete account isn't in the pairs list above so its red color is
+      // never overwritten by the generic blue active/inactive styling -
+      // same underline treatment, its own color.
+      const deleteBtn = document.getElementById('delete-account-trigger-btn');
+      const deletePanel = document.getElementById('delete-account-panel');
+      if (deleteBtn && deletePanel) {
+        const isOpen = !deletePanel.classList.contains('hidden');
+        deleteBtn.className = isOpen
+          ? 'ml-auto bg-transparent border-0 border-b-2 border-[#e56a6a] rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e56a6a]'
+          : 'ml-auto bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e56a6a]/70 hover:text-[#e56a6a]';
+      }
     }
 
     // Called right before the dashboard is shown after a fresh login or
@@ -2528,10 +2543,12 @@
       } else {
         cancelDeleteAccount();
       }
+      updateSettingsButtonStates();
     }
 
     function closeDeleteAccountPanelSilently() {
       document.getElementById('delete-account-panel').classList.add('hidden');
+      updateSettingsButtonStates();
     }
 
     function cancelDeleteAccount() {
