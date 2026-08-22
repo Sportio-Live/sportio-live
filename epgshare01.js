@@ -59,7 +59,18 @@ function sourceFileToUrl(file) {
 // one. Fixed by capturing the whole opening tag's raw attribute text
 // first, then pulling start/channel out of THAT with their own
 // order-independent sub-patterns.
-const PROGRAMME_TAG_PATTERN = /<programme\s+([^>]*)>\s*<title[^>]*>([^<]*)<\/title>/g;
+//
+// <desc> (the actual programme description/synopsis, distinct from
+// <title>) is captured too where present, tolerating an optional
+// <sub-title> element in between - confirmed necessary against real data:
+// epg_ripper_PLEX1 puts <sub-title> between <title> and <desc> for
+// essentially every entry, and without accounting for it the desc capture
+// below would silently miss almost all of that source's descriptions
+// (339 out of 4010 matched vs. 4009 out of 4010 once <sub-title> is
+// tolerated). <desc> itself isn't universal even so - confirmed present
+// on anywhere from ~50% (AL1) to 100% (US_SPORTS1) of entries depending
+// on the source - so it's captured as optional, not required.
+const PROGRAMME_TAG_PATTERN = /<programme\s+([^>]*)>\s*<title[^>]*>([^<]*)<\/title>(?:\s*<sub-title[^>]*>[^<]*<\/sub-title>)?(?:\s*<desc[^>]*>([^<]*)<\/desc>)?/g;
 const START_ATTR_PATTERN = /\bstart="(\d{14})/;
 const CHANNEL_ATTR_PATTERN = /\bchannel="([^"]*)"/;
 
@@ -68,7 +79,7 @@ function parseEpgShareXmltv(content, relevantChannelIds) {
 
   let match;
   while ((match = PROGRAMME_TAG_PATTERN.exec(content)) !== null) {
-    const [, attrs, title] = match;
+    const [, attrs, title, desc] = match;
     const startMatch = attrs.match(START_ATTR_PATTERN);
     const channelMatch = attrs.match(CHANNEL_ATTR_PATTERN);
     if (!startMatch || !channelMatch) continue;
@@ -78,7 +89,14 @@ function parseEpgShareXmltv(content, relevantChannelIds) {
     if (!programmesByChannel.has(channel)) {
       programmesByChannel.set(channel, []);
     }
-    programmesByChannel.get(channel).push({ start: startMatch[1], title: title.trim() });
+    // title is kept on its own (not just folded into description) since
+    // it's always present even when desc isn't, and there may be uses for
+    // it distinct from description later.
+    programmesByChannel.get(channel).push({
+      start: startMatch[1],
+      title: title.trim(),
+      description: desc ? desc.trim() : ''
+    });
   }
 
   return programmesByChannel;
@@ -282,6 +300,11 @@ async function refreshEnabledSources(files) {
 // - that quirk (real date hidden in the title, XMLTV start/stop just
 // padding) was confirmed against one specific provider's own EPG, not
 // EPGShare01's, whose start/stop timestamps are the actual schedule data.
+//
+// The override this feeds is specifically a DESCRIPTION override - falls
+// back to the programme's title when that particular entry has no <desc>
+// (not every source populates it for every entry - see the parser above),
+// so an override still produces something rather than an empty string.
 function getBestProgrammeForChannel(source, channelId, gameTimestampSec) {
   if (!source || !channelId) return null;
   const programmes = source.programmesByChannel.get(channelId);
@@ -294,7 +317,7 @@ function getBestProgrammeForChannel(source, channelId, gameTimestampSec) {
     const dist = gameTimestampSec !== null ? Math.abs(startTimestamp - gameTimestampSec) : 0;
     if (dist < bestDist) {
       bestDist = dist;
-      best = { title: p.title, startTimestamp };
+      best = { title: p.title, description: p.description || p.title, startTimestamp };
     }
   }
   return best;

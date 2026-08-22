@@ -2896,7 +2896,10 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
       if (!targetChannelId) return s;
       const override = epgshare.findOverrideProgramme(targetChannelId, epgShareSettings.enabledSources, gameTimestamp);
       if (!override) return s;
-      return { ...s, description: override.title, startTimestamp: override.startTimestamp };
+      // description, not title - findOverrideProgramme already falls back
+      // to the EPGShare01 entry's title when that specific entry has no
+      // <desc> of its own, so this is never blanked out even then.
+      return { ...s, description: override.description, startTimestamp: override.startTimestamp };
     });
   };
 
