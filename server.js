@@ -2778,12 +2778,11 @@ app.get('/user/:uuid/meta/sports/:id.json', async (req, res) => {
   });
 });
 
-// Reproduces exactly what shipped before the Formatter setting existed -
-// an account that's never touched it sees byte-identical stream naming to
-// today, and these are also what a brand-new account gets until it opts
-// into something custom.
-const DEFAULT_NAME_FORMAT = '{channelName}';
-const DEFAULT_TITLE_FORMAT = '📁 {category} · {status}';
+// What every account gets until it opts into something custom via the
+// Formatter panel - an account that's never touched it sees this, not a
+// blank/raw fallback.
+const DEFAULT_NAME_FORMAT = '{homeNick} vs. {awayNick}\n{status}';
+const DEFAULT_TITLE_FORMAT = '📁 {category}  | 📺 {channelName}\nℹ️ {epgDescription}';
 
 // Deliberately plain {placeholder} substitution, not a templating engine -
 // an unrecognized placeholder (a typo) is left as literal text rather than
