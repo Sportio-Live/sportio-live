@@ -2069,7 +2069,7 @@
           });
           const data = await res.json();
           if (data.success) {
-            channelEpgChannels = data.channels.map(ch => ({ id: ch.id, name: ch.name, categoryIds: ch.categories || [] }));
+            channelEpgChannels = data.channels.map(ch => ({ id: ch.id, name: ch.name, categoryIds: (ch.categories || []).map(String) }));
             statusEl.textContent = data.notReady
               ? 'M3U data is still loading in the background - try again shortly.'
               : `${channelEpgChannels.length} channel${channelEpgChannels.length === 1 ? '' : 's'}.`;
@@ -2101,7 +2101,19 @@
               .map(s => ({
                 id: s.epg_channel_id,
                 name: s.name,
-                categoryIds: s.category_ids || (s.category_id != null ? [String(s.category_id)] : [])
+                // Always coerced to strings - provider.sportCategories
+                // (and therefore the category ids the left accordion
+                // groups by) is always string-valued, since it's built
+                // from checkbox .value attributes in Category Search, but
+                // Xtream's own API can hand back category_ids as an array
+                // of raw numbers rather than strings. Left uncoerced, this
+                // silently produces zero matches for every category
+                // (`[5].includes('5')` is false) even though the data is
+                // otherwise completely correct.
+                categoryIds: (s.category_ids && s.category_ids.length > 0
+                  ? s.category_ids
+                  : (s.category_id != null ? [s.category_id] : [])
+                ).map(String)
               }));
             statusEl.textContent = `${channelEpgChannels.length} channel${channelEpgChannels.length === 1 ? '' : 's'}.`;
           } else {
@@ -2120,7 +2132,7 @@
     // scopes /api/m3u/channels and the stream-matching route to, so the
     // left accordion only ever shows categories actually in play.
     function getSelectedCategoryIds(provider) {
-      return [...new Set(Object.values((provider && provider.sportCategories) || {}).flat())];
+      return [...new Set(Object.values((provider && provider.sportCategories) || {}).flat().map(String))];
     }
 
     // fetchedCategories (already loaded/kept fresh by
@@ -2197,7 +2209,19 @@
         `;
       }).join('');
 
-      container.innerHTML = anyCategoryRendered ? html : '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No channels match your search.</p>';
+      if (anyCategoryRendered) {
+        container.innerHTML = html;
+      } else if (term) {
+        container.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No channels match your search.</p>';
+      } else {
+        // Every selected category came back with zero matching channels -
+        // distinct from "no categories selected" above. If this shows up
+        // with real channels loaded, it means none of them are tagged
+        // with any of the currently-selected category ids (a data
+        // mismatch, not truly "nothing to show") - Refresh Categories is
+        // the fix, since it re-pulls both sides fresh.
+        container.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">None of your loaded channels match your selected categories - try "Refresh Categories" above.</p>';
+      }
     }
 
     function toggleChannelEpgCategory(categoryId) {
