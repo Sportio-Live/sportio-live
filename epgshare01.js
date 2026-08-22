@@ -242,6 +242,42 @@ function getBestProgrammeForChannel(source, channelId, gameTimestampSec) {
   return best;
 }
 
+// Merges every admin-enabled source's channel ids into one deduped,
+// sorted list - this is the browsable catalog a user's per-channel picker
+// searches against. Only draws from sources that are both enabled AND
+// already cached (a source the scheduler hasn't fetched yet just
+// contributes nothing, same as everywhere else this cache is read) -
+// never triggers a fetch itself, since this can be called from a
+// user-facing request and must stay cheap.
+function getEnabledChannelCatalog(enabledFiles) {
+  const channelIds = new Set();
+  for (const file of enabledFiles || []) {
+    if (!isKnownSourceFile(file)) continue;
+    const source = getCachedEpgShareSource(sourceFileToUrl(file));
+    if (!source) continue;
+    for (const id of source.programmesByChannel.keys()) channelIds.add(id);
+  }
+  return [...channelIds].sort();
+}
+
+// Looks up one EPGShare01 channel id's best-matching programme across
+// every admin-enabled source, stopping at the first source that has it -
+// a user's per-channel override is stored as just a channel id (not
+// "channel id + which source"), since the same id could plausibly appear
+// in more than one enabled source and there's no reason to force a
+// specific one.
+function findOverrideProgramme(epgShareChannelId, enabledFiles, gameTimestampSec) {
+  if (!epgShareChannelId) return null;
+  for (const file of enabledFiles || []) {
+    if (!isKnownSourceFile(file)) continue;
+    const source = getCachedEpgShareSource(sourceFileToUrl(file));
+    if (!source) continue;
+    const result = getBestProgrammeForChannel(source, epgShareChannelId, gameTimestampSec);
+    if (result) return result;
+  }
+  return null;
+}
+
 module.exports = {
   EPGSHARE_BASE_URL,
   EPGSHARE_FILENAME_PATTERN,
@@ -258,5 +294,7 @@ module.exports = {
   getCachedEpgShareSource,
   clearEpgShareCache,
   getBestProgrammeForChannel,
+  getEnabledChannelCatalog,
+  findOverrideProgramme,
   epgShareCache
 };

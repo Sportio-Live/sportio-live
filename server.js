@@ -2021,6 +2021,107 @@ app.post('/api/m3u/categories', async (req, res) => {
   return res.json({ success: true, categories: source.categoryList });
 });
 
+// Companion to /api/m3u/categories above, same auth/lookup pattern - but
+// returns individual channels (id/name/logo/categories) rather than just
+// the category folder list, for the Channel EPG picker to browse and
+// search. Scoped to whatever categories the provider already has selected
+// across all its sports (GLOBAL included) - a full unscoped channel list
+// could be thousands of entries from categories this account doesn't even
+// use, and none of that is relevant to an EPG override for THIS account.
+// Falls back to every channel only when nothing's been selected yet
+// (a brand-new provider, so there's nothing to scope down to).
+app.post('/api/m3u/channels', async (req, res) => {
+  const { uuid, password, providerId } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  const user = userConfigs[uuid];
+  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid UUID or password.' });
+  }
+  clearFailedAttempts(ip);
+
+  const provider = (user.providers || []).find(p => p.id === providerId) || (user.providers || [])[0];
+  if (!provider || provider.connectionType !== 'm3u' || !provider.m3u || !provider.m3u.playlistUrl) {
+    return res.status(400).json({ error: 'This provider is not configured for M3U.' });
+  }
+
+  const source = m3u.getCachedM3USource(provider.m3u.playlistUrl);
+  if (!source) {
+    return res.json({ success: true, channels: [], notReady: true });
+  }
+
+  const categorySet = new Set(Object.values(provider.sportCategories || {}).flat());
+  const channels = categorySet.size > 0
+    ? source.channels.filter(ch => ch.categories.some(c => categorySet.has(c)))
+    : source.channels;
+
+  return res.json({ success: true, channels: channels.map(ch => ({ id: ch.id, name: ch.name, logo: ch.logo })) });
+});
+
+// Xtream's equivalent of /api/m3u/channels above - there's no cached
+// source to read here (Xtream is always a live API call), so this takes
+// the category ids to fetch directly rather than looking them up from a
+// stored provider, mirroring /api/xtream/categories' raw-credentials
+// pattern. The caller (Channel EPG picker) is expected to pass the same
+// selected-categories union /api/m3u/channels derives server-side itself.
+app.post('/api/xtream/streams', async (req, res) => {
+  const { url, username, password, categoryIds } = req.body;
+  if (!url || !username || !password) return res.status(400).json({ error: 'Missing credentials' });
+  if (!Array.isArray(categoryIds) || categoryIds.length === 0) {
+    return res.json({ success: true, streams: [] });
+  }
+
+  const pseudoUser = { xtream: { url, username, password } };
+  const streams = await fetchXtreamLiveStreams(pseudoUser, categoryIds);
+  return res.json({
+    success: true,
+    // category_id (single) and category_ids (some providers use an array
+    // instead) are both passed through as-is - the Channel EPG picker
+    // groups by whichever one a given stream actually has, same fallback
+    // buildCategoryNameLookup already relies on elsewhere.
+    streams: streams.map(s => ({
+      stream_id: s.stream_id,
+      name: s.name,
+      epg_channel_id: s.epg_channel_id || '',
+      category_id: s.category_id ?? null,
+      category_ids: Array.isArray(s.category_ids) ? s.category_ids : null
+    }))
+  });
+});
+
+// Lists every channel id available across the sources an admin has
+// actually enabled and that are already cached (see
+// epgshare.getEnabledChannelCatalog) - the browsable list the Channel EPG
+// picker searches to pick an override target. Any logged-in user can call
+// this (it's read-only, public EPGShare01 metadata, not account-specific)
+// - the uuid/password check here is just to keep it consistent with every
+// other user-facing route rather than leaving one route as a genuine
+// exception.
+app.post('/api/epgshare/channels', async (req, res) => {
+  const { uuid, password } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  const user = userConfigs[uuid];
+  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid UUID or password.' });
+  }
+  clearFailedAttempts(ip);
+
+  return res.json({ success: true, channelIds: epgshare.getEnabledChannelCatalog(epgShareSettings.enabledSources) });
+});
+
 app.post('/api/user/register', async (req, res) => {
   if (!ENCRYPTION_KEY_CONFIGURED) {
     return res.status(503).json({ error: 'Encryption key not configured yet. See the homepage for setup instructions.' });
@@ -2774,13 +2875,34 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
   // startTimestamp, streamUrl, categoryLabel} shape the matching/ranking
   // logic below already expects - that normalization is what lets this
   // loop grow the candidate pool without touching the ranking logic at all.
+  // A user's per-channel EPG override (provider.epgOverrides: {providerChannelId
+  // -> epgShareChannelId}, set from the dashboard's Channel EPG picker) is
+  // applied here, right where `provider` is still in scope - joined by the
+  // same provider-native channel id (tvg-id / epg_channel_id) every
+  // candidate stream already carries. A stream with no override for its
+  // channel, or whose override target isn't in any currently cached
+  // admin-enabled source, passes through completely unchanged - this never
+  // blanks out a description that would otherwise have come from the
+  // provider's own EPG.
+  const applyChannelEpgOverrides = (streams, provider) => {
+    const overrides = provider.epgOverrides;
+    if (!overrides || Object.keys(overrides).length === 0) return streams;
+    return streams.map(s => {
+      const targetChannelId = overrides[s.channelId];
+      if (!targetChannelId) return s;
+      const override = epgshare.findOverrideProgramme(targetChannelId, epgShareSettings.enabledSources, gameTimestamp);
+      if (!override) return s;
+      return { ...s, description: override.title, startTimestamp: override.startTimestamp };
+    });
+  };
+
   const perProviderResults = await Promise.allSettled(
     contributingProviders.map(async ({ provider, configuredCategoryIds }) => {
       if (provider.connectionType === 'm3u') {
         if (!provider.m3u || !provider.m3u.playlistUrl) return [];
         const m3uSource = m3u.getCachedM3USource(provider.m3u.playlistUrl);
         if (!m3uSource) return [];
-        const streams = m3u.getCandidateStreamsForGame(m3uSource, configuredCategoryIds, gameTimestamp);
+        const streams = applyChannelEpgOverrides(m3u.getCandidateStreamsForGame(m3uSource, configuredCategoryIds, gameTimestamp), provider);
         return showProviderLabel ? streams.map(s => ({ ...s, providerLabel: provider.label })) : streams;
       }
 
@@ -2794,7 +2916,7 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
       const categories = await fetchXtreamCategories(pseudoUser);
       const getCategoryName = buildCategoryNameLookup(categories);
       const epgByStreamId = await fetchEpgForStreams(pseudoUser, xtreamStreams);
-      return xtreamStreams.map(s => {
+      const xtreamCandidates = xtreamStreams.map(s => {
         const epg = epgByStreamId[s.stream_id] || { text: '', startTimestamp: null };
         return {
           name: s.name,
@@ -2803,12 +2925,13 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
           streamUrl: `${provider.xtream.url.replace(/\/+$/, '')}/live/${encodeURIComponent(provider.xtream.username)}/${encodeURIComponent(provider.xtream.password)}/${s.stream_id}.m3u8`,
           categoryLabel: getCategoryName(s),
           // Xtream's own tvg-id equivalent - not used by anything Xtream-
-          // specific here, only kept so the EPGShare01 override below can
+          // specific here, only kept so the EPGShare01 override above can
           // join against it.
           channelId: s.epg_channel_id || '',
           ...(showProviderLabel ? { providerLabel: provider.label } : {})
         };
       });
+      return applyChannelEpgOverrides(xtreamCandidates, provider);
     })
   );
 
@@ -2823,14 +2946,6 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
     }
     return result.value;
   });
-
-  // NOTE: no blanket EPGShare01 override happens here. Admin-enabled
-  // sources (epgShareSettings.enabledSources) are only fetched and cached
-  // (see the scheduler below and the recache route) - actually applying
-  // one to a given channel's description/startTimestamp is a per-channel,
-  // user-driven choice that isn't wired up yet (see epgshare01.js's
-  // getBestProgrammeForChannel, which the future per-channel picker will
-  // call using a user-stored channelId -> EPGShare01 channel id mapping).
 
   const homeKw = (game.homeTeam || '').toLowerCase().split(' ').filter(w => w.length > 2);
   const awayKw = (game.awayTeam || '').toLowerCase().split(' ').filter(w => w.length > 2);

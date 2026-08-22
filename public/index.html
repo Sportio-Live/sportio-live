@@ -298,7 +298,7 @@
 
       <!-- Shared action row -->
       <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-2 mt-6">Settings</h3>
-      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+      <div class="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-4">
         <button id="edit-xtream-trigger-btn" onclick="toggleEditXtreamPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
           <i class="fa-solid fa-pen-to-square"></i>
           Edit Xtream
@@ -318,6 +318,10 @@
         <button id="formatter-btn" onclick="toggleFormatterPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
           <i class="fa-solid fa-font"></i>
           Formatter
+        </button>
+        <button id="channel-epg-btn" onclick="toggleChannelEpgPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
+          <i class="fa-solid fa-satellite-dish"></i>
+          Channel EPG
         </button>
       </div>
 
@@ -404,6 +408,44 @@
             Confirm
           </button>
         </div>
+      </div>
+
+      <!-- Channel EPG (collapsed until Channel EPG is clicked) - lets the
+           user override a specific channel's program guide with one from
+           an EPGShare01 source their admin has enabled. Purely additive:
+           a channel with no override just keeps using its provider's own
+           EPG, exactly as before this existed.
+           Two-panel layout: left is a per-category accordion of this
+           provider's own channels (categories scoped to whatever's
+           actually selected in Category Search above), right is the
+           editor for whichever channel is currently selected on the
+           left - empty/placeholder until one is clicked. -->
+      <div id="channel-epg-panel" class="hidden bg-[#3b4d58]/60 border border-[#e6e6e6]/15 rounded-lg p-4 mb-6">
+        <p class="text-xs text-[#e6e6e6]/55 mb-3">Pick a channel on the left, then choose an EPG source for it on the right. Only categories you've selected in Category Search are shown.</p>
+
+        <div id="channel-epg-status" class="text-xs text-[#e6e6e6]/55 italic mb-2"></div>
+
+        <div class="flex flex-col md:flex-row gap-3 mb-4">
+          <!-- Left: category accordion -->
+          <div class="md:w-1/2 flex flex-col bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg overflow-hidden">
+            <div class="relative p-2 border-b border-[#e6e6e6]/15 shrink-0">
+              <i class="fa-solid fa-magnifying-glass absolute left-5 top-[1.15rem] text-xs text-[#e6e6e6]/55"></i>
+              <input type="text" id="channel-epg-search" oninput="renderChannelEpgCategories()" placeholder="Search your channels..." class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg pl-8 pr-3 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none">
+            </div>
+            <div id="channel-epg-categories" class="overflow-y-auto max-h-96"></div>
+          </div>
+
+          <!-- Right: editor for whichever channel is selected on the left -->
+          <div class="md:w-1/2 bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg overflow-y-auto max-h-96">
+            <div id="channel-epg-editor" class="p-3">
+              <p class="text-xs text-[#e6e6e6]/55 italic">Select a channel on the left to edit its EPG source.</p>
+            </div>
+          </div>
+        </div>
+
+        <button onclick="closeChannelEpgPanel()" class="w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2.5 rounded-lg text-xs transition">
+          Done
+        </button>
       </div>
 
       <!-- Sport Configuration Sections -->
@@ -499,6 +541,20 @@
     // panel below the tab strip at any given time.
     let activeProviderIndex = 0;
     let fetchedCategories = [];
+
+    // Channel EPG state. channelEpgChannels is the active provider's own
+    // channel list (id/name/categoryIds), re-fetched each time the panel
+    // opens. epgShareChannelCatalog is the merged, admin-enabled EPGShare01
+    // channel id list the editor searches/suggests from - loaded once per
+    // page session (not per provider/panel-open) since it's the same
+    // global list regardless of which provider or channel is being
+    // edited. channelEpgExpandedCategories/channelEpgSelectedChannelId
+    // track the left accordion's open sections and which channel (if any)
+    // the right-hand editor is currently showing.
+    let channelEpgChannels = [];
+    let epgShareChannelCatalog = null;
+    let channelEpgExpandedCategories = new Set();
+    let channelEpgSelectedChannelId = null;
 
     // Setup wizard state (new-account creation only)
     let wizardSelectedSports = [];
@@ -1118,7 +1174,8 @@
         ['edit-m3u-trigger-btn', 'edit-m3u-panel'],
         ['manage-sports-btn', 'manage-sports-panel'],
         ['change-timezone-btn', 'change-timezone-panel'],
-        ['formatter-btn', 'formatter-panel']
+        ['formatter-btn', 'formatter-panel'],
+        ['channel-epg-btn', 'channel-epg-panel']
       ];
       pairs.forEach(([btnId, panelId]) => {
         const btn = document.getElementById(btnId);
@@ -1149,6 +1206,7 @@
         closeChangeTimezonePanelSilently();
         closeDeleteAccountPanelSilently();
         closeFormatterPanelSilently();
+        closeChannelEpgPanelSilently();
         const activeProvider = activeUser && activeUser.providers[activeProviderIndex];
         const x = (activeProvider && activeProvider.xtream) || {};
         editXtreamOriginalValues = { url: x.url || '', username: x.username || '', password: x.password || '' };
@@ -1284,6 +1342,7 @@
         closeChangeTimezonePanelSilently();
         closeDeleteAccountPanelSilently();
         closeFormatterPanelSilently();
+        closeChannelEpgPanelSilently();
         const activeProvider = activeUser && activeUser.providers[activeProviderIndex];
         const m = (activeProvider && activeProvider.m3u) || {};
         editM3uOriginalValues = { playlistUrl: m.playlistUrl || '', epgUrl: m.epgUrl || '' };
@@ -1732,6 +1791,7 @@
         closeChangeTimezonePanelSilently();
         closeDeleteAccountPanelSilently();
         closeFormatterPanelSilently();
+        closeChannelEpgPanelSilently();
         const provider = activeUser.providers[activeProviderIndex];
         manageSportsSelection = [...getVisibleSports(provider)];
         renderLeagueGrid('manage-sports-grid', manageSportsSelection, 'toggleManagedSport');
@@ -1763,6 +1823,35 @@
       return div.innerHTML;
     }
 
+    // Needed specifically for values interpolated into an
+    // onclick="...('value')" attribute - escapeHtml alone doesn't touch a
+    // literal ' or " (not necessary for plain text content), but either
+    // one there would break the inner single-quoted JS string argument.
+    //
+    // Order matters and is easy to get backwards (confirmed the hard way -
+    // an HTML-entity-only version of this, tried first, broke on a name
+    // containing an apostrophe): the browser HTML-decodes an attribute's
+    // value BEFORE handing it to the JS engine as source code, so encoding
+    // a quote as an HTML entity (e.g. ' -> &#39;) does NOT protect the
+    // inner JS string - it decodes right back to a literal ' just in time
+    // to break out of it. The only thing that actually protects the JS
+    // string delimiter is a JS backslash-escape, applied BEFORE any
+    // HTML-escaping. So: JS-escape first (this is what survives into the
+    // actual onclick source), then HTML-escape the result only for what
+    // the outer double-quoted attribute itself needs (" and &).
+    function escapeJsAttr(str) {
+      const jsEscaped = String(str == null ? '' : str)
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '\\r');
+      return jsEscaped
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
     // --- Dashboard: Change Timezone editor ---
 
     let dashboardTimezoneSelection = null;
@@ -1775,6 +1864,7 @@
         closeManageSportsPanelSilently();
         closeDeleteAccountPanelSilently();
         closeFormatterPanelSilently();
+        closeChannelEpgPanelSilently();
         dashboardTimezoneSelection = (activeUser && activeUser.timeZone) || 'America/New_York';
         document.getElementById('dashboard-timezone-search').value = '';
         renderDashboardTimezoneList();
@@ -1860,6 +1950,7 @@
         closeManageSportsPanelSilently();
         closeChangeTimezonePanelSilently();
         closeDeleteAccountPanelSilently();
+        closeChannelEpgPanelSilently();
         renderFormatterLegend();
         document.getElementById('formatter-name-input').value = (activeUser && activeUser.nameFormat) || DEFAULT_NAME_FORMAT;
         document.getElementById('formatter-title-input').value = (activeUser && activeUser.titleFormat) || DEFAULT_TITLE_FORMAT;
@@ -1909,6 +2000,365 @@
       showStatus('Formatter updated for this session - click Save and Copy Link to save.');
     }
 
+    // --- Dashboard: Channel EPG (per-channel EPGShare01 override picker) ---
+    // Unlike Category Search's checkboxes, edits here write directly into
+    // activeUser.providers[activeProviderIndex].epgOverrides the moment
+    // they're made (same immediate-mutation approach as renameProviderTab)
+    // rather than staging into a separate DOM-derived variable first - so
+    // there's no real "cancel" here, just "close" (Done), same as renaming
+    // a provider tab.
+
+    function toggleChannelEpgPanel() {
+      const panel = document.getElementById('channel-epg-panel');
+      if (panel.classList.contains('hidden')) {
+        closeEditXtreamPanelSilently();
+        closeEditM3uPanelSilently();
+        closeManageSportsPanelSilently();
+        closeChangeTimezonePanelSilently();
+        closeDeleteAccountPanelSilently();
+        closeFormatterPanelSilently();
+        document.getElementById('channel-epg-search').value = '';
+        channelEpgExpandedCategories = new Set();
+        channelEpgSelectedChannelId = null;
+        renderChannelEpgEditor();
+        panel.classList.remove('hidden');
+        loadChannelEpgChannels();
+        loadEpgShareChannelCatalog();
+      } else {
+        closeChannelEpgPanel();
+      }
+      updateSettingsButtonStates();
+    }
+
+    function closeChannelEpgPanelSilently() {
+      document.getElementById('channel-epg-panel').classList.add('hidden');
+      updateSettingsButtonStates();
+    }
+
+    function closeChannelEpgPanel() {
+      closeChannelEpgPanelSilently();
+    }
+
+    // Fetches the active provider's own channel list, branching by
+    // connectionType the same way refreshCategoriesForActiveProvider does,
+    // and normalizes both shapes into {id, name, categoryIds} - M3U
+    // channels already carry a categories array (a channel can be in more
+    // than one group-title); Xtream streams carry a single category_id
+    // (or, on some providers, a category_ids array) instead, so that's
+    // wrapped into the same categoryIds shape here for the left
+    // accordion to group by uniformly regardless of source.
+    async function loadChannelEpgChannels() {
+      const statusEl = document.getElementById('channel-epg-status');
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      channelEpgChannels = [];
+      if (!provider) { renderChannelEpgCategories(); return; }
+
+      statusEl.textContent = 'Loading your channels...';
+
+      try {
+        if (provider.connectionType === 'm3u') {
+          if (!provider.m3u || !provider.m3u.playlistUrl) {
+            statusEl.textContent = 'This provider is not configured for M3U.';
+            renderChannelEpgCategories();
+            return;
+          }
+          const res = await fetch('/api/m3u/channels', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password, providerId: provider.id })
+          });
+          const data = await res.json();
+          if (data.success) {
+            channelEpgChannels = data.channels.map(ch => ({ id: ch.id, name: ch.name, categoryIds: ch.categories || [] }));
+            statusEl.textContent = data.notReady
+              ? 'M3U data is still loading in the background - try again shortly.'
+              : `${channelEpgChannels.length} channel${channelEpgChannels.length === 1 ? '' : 's'}.`;
+          } else {
+            statusEl.textContent = data.error || 'Failed to load channels.';
+          }
+        } else {
+          if (!provider.xtream || !provider.xtream.url) {
+            statusEl.textContent = 'This provider is not configured for Xtream.';
+            renderChannelEpgCategories();
+            return;
+          }
+          const categoryIds = getSelectedCategoryIds(provider);
+          if (categoryIds.length === 0) {
+            statusEl.textContent = 'Select some leagues for this provider first (Add/Remove Leagues), then choose their categories in Category Search.';
+            renderChannelEpgCategories();
+            return;
+          }
+          const { url, username, password } = provider.xtream;
+          const res = await fetch('/api/xtream/streams', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url, username, password, categoryIds })
+          });
+          const data = await res.json();
+          if (data.success) {
+            channelEpgChannels = data.streams
+              .filter(s => s.epg_channel_id)
+              .map(s => ({
+                id: s.epg_channel_id,
+                name: s.name,
+                categoryIds: s.category_ids || (s.category_id != null ? [String(s.category_id)] : [])
+              }));
+            statusEl.textContent = `${channelEpgChannels.length} channel${channelEpgChannels.length === 1 ? '' : 's'}.`;
+          } else {
+            statusEl.textContent = data.error || 'Failed to load channels.';
+          }
+        }
+      } catch (err) {
+        statusEl.textContent = 'Network error while loading channels.';
+      }
+
+      renderChannelEpgCategories();
+    }
+
+    // The set of category ids this provider currently has selected, across
+    // every sport (GLOBAL included) - the same union the server itself
+    // scopes /api/m3u/channels and the stream-matching route to, so the
+    // left accordion only ever shows categories actually in play.
+    function getSelectedCategoryIds(provider) {
+      return [...new Set(Object.values((provider && provider.sportCategories) || {}).flat())];
+    }
+
+    // fetchedCategories (already loaded/kept fresh by
+    // refreshCategoriesForActiveProvider for Category Search above) is
+    // reused here as the id -> name lookup rather than fetching categories
+    // a second time - for M3U the id and name are already the same
+    // group-title string anyway.
+    function getCategoryNameById(categoryId) {
+      const match = fetchedCategories.find(c => c.category_id === categoryId);
+      return match ? match.category_name : categoryId;
+    }
+
+    // --- Left panel: category accordion ---
+
+    function renderChannelEpgCategories() {
+      const container = document.getElementById('channel-epg-categories');
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      if (!provider) { container.innerHTML = ''; return; }
+
+      const term = document.getElementById('channel-epg-search').value.trim().toLowerCase();
+      const categoryIds = getSelectedCategoryIds(provider)
+        .map(id => ({ id, name: getCategoryNameById(id) }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      if (channelEpgChannels.length === 0) {
+        container.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No channels loaded yet.</p>';
+        return;
+      }
+      if (categoryIds.length === 0) {
+        container.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No categories selected yet - pick some in Category Search above.</p>';
+        return;
+      }
+
+      let anyCategoryRendered = false;
+      const html = categoryIds.map(({ id: catId, name: catName }) => {
+        const channelsInCategory = channelEpgChannels.filter(ch => ch.categoryIds.includes(catId));
+        if (channelsInCategory.length === 0) return '';
+
+        const matchingChannels = term
+          ? channelsInCategory.filter(ch => ch.name.toLowerCase().includes(term) || ch.id.toLowerCase().includes(term))
+          : channelsInCategory;
+        // While searching, only categories with at least one match show up
+        // at all, and always expanded - otherwise, respect whatever the
+        // user manually expanded/collapsed.
+        if (term && matchingChannels.length === 0) return '';
+        anyCategoryRendered = true;
+        const isExpanded = term ? true : channelEpgExpandedCategories.has(catId);
+
+        const channelsHtml = isExpanded ? matchingChannels.map(ch => {
+          const overrideTarget = provider.epgOverrides && provider.epgOverrides[ch.id];
+          const isSelected = ch.id === channelEpgSelectedChannelId;
+          const statusHtml = overrideTarget
+            ? `<span class="text-[10px] font-semibold text-[#5aa8d1]">&rarr; ${escapeHtml(overrideTarget)}</span>`
+            : `<span class="text-[10px] text-[#e6e6e6]/45">Provider EPG</span>`;
+          return `
+            <button type="button" onclick="selectChannelForEpgEdit('${escapeJsAttr(ch.id)}')" class="w-full text-left pl-7 pr-3 py-1.5 transition ${isSelected ? 'bg-[#3b8fc4]/20 border-l-2 border-[#3b8fc4]' : 'border-l-2 border-transparent hover:bg-[#3b4d58]'}">
+              <div class="text-xs font-semibold truncate">${escapeHtml(ch.name)}</div>
+              ${statusHtml}
+            </button>
+          `;
+        }).join('') : '';
+
+        return `
+          <div class="border-b border-[#e6e6e6]/10 last:border-b-0">
+            <button type="button" onclick="toggleChannelEpgCategory('${escapeJsAttr(catId)}')" class="w-full flex items-center justify-between gap-2 px-3 py-2 text-left hover:bg-[#3b4d58]/60 transition">
+              <span class="text-xs font-semibold truncate flex items-center gap-2">
+                <i class="fa-solid fa-chevron-right text-[10px] text-[#e6e6e6]/55 transition-transform ${isExpanded ? 'rotate-90' : ''}"></i>
+                ${escapeHtml(catName)}
+              </span>
+              <span class="text-[10px] text-[#e6e6e6]/45 shrink-0">${matchingChannels.length}</span>
+            </button>
+            ${channelsHtml}
+          </div>
+        `;
+      }).join('');
+
+      container.innerHTML = anyCategoryRendered ? html : '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No channels match your search.</p>';
+    }
+
+    function toggleChannelEpgCategory(categoryId) {
+      if (channelEpgExpandedCategories.has(categoryId)) {
+        channelEpgExpandedCategories.delete(categoryId);
+      } else {
+        channelEpgExpandedCategories.add(categoryId);
+      }
+      renderChannelEpgCategories();
+    }
+
+    function selectChannelForEpgEdit(channelId) {
+      channelEpgSelectedChannelId = channelId;
+      renderChannelEpgCategories();
+      renderChannelEpgEditor();
+    }
+
+    // --- Right panel: editor for the currently selected channel ---
+
+    async function loadEpgShareChannelCatalog() {
+      if (epgShareChannelCatalog !== null) return;
+      try {
+        const res = await fetch('/api/epgshare/channels', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password })
+        });
+        const data = await res.json();
+        epgShareChannelCatalog = data.success ? data.channelIds : [];
+      } catch (err) {
+        epgShareChannelCatalog = [];
+      }
+      renderChannelEpgEditor();
+    }
+
+    // Reduces a string to lowercase alphanumeric tokens - used on both
+    // sides of a suggestion match (the provider's own channel name, and an
+    // EPGShare01 channel id) so wildly different formatting conventions
+    // ("ESPN HD (US)" vs "ESPN.us") still line up.
+    function normalizeForMatch(str) {
+      return String(str || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    }
+
+    // A deliberately simple, dependency-free scoring heuristic - not fuzzy
+    // matching in any formal sense, just a handful of increasingly loose
+    // checks (exact match, prefix, substring, shared word count) since
+    // EPGShare01 channel ids are short, largely-readable slugs (e.g.
+    // "ESPN.us") rather than free-form text needing real fuzzy search.
+    function scoreEpgShareMatch(channelName, epgShareId) {
+      const a = normalizeForMatch(channelName);
+      const b = normalizeForMatch(epgShareId.replace(/\.[a-z]{2,3}$/i, ''));
+      if (!a || !b) return 0;
+      if (a === b) return 100;
+      if (b.startsWith(a) || a.startsWith(b)) return 80;
+      if (b.includes(a) || a.includes(b)) return 60;
+      const aTokens = new Set(a.split(' ').filter(t => t.length > 1));
+      const bTokens = new Set(b.split(' ').filter(t => t.length > 1));
+      let overlap = 0;
+      aTokens.forEach(t => { if (bTokens.has(t)) overlap++; });
+      return overlap > 0 ? 20 + overlap * 10 : 0;
+    }
+
+    function getSuggestedEpgShareMatches(channelName, limit = 5) {
+      return (epgShareChannelCatalog || [])
+        .map(id => ({ id, score: scoreEpgShareMatch(channelName, id) }))
+        .filter(x => x.score > 0)
+        .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
+        .slice(0, limit)
+        .map(x => x.id);
+    }
+
+    function renderChannelEpgEditor() {
+      const editor = document.getElementById('channel-epg-editor');
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      const channel = channelEpgChannels.find(ch => ch.id === channelEpgSelectedChannelId);
+
+      if (!provider || !channel) {
+        editor.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic">Select a channel on the left to edit its EPG source.</p>';
+        return;
+      }
+
+      const overrideTarget = provider.epgOverrides && provider.epgOverrides[channel.id];
+      const currentHtml = overrideTarget
+        ? `<div class="flex items-center justify-between gap-2 bg-[#3b4d58] rounded-lg px-3 py-2 mb-3">
+             <div class="text-xs min-w-0"><span class="text-[#e6e6e6]/55">Using:</span> <span class="font-mono text-[#5aa8d1] break-all">${escapeHtml(overrideTarget)}</span></div>
+             <button type="button" onclick="clearSelectedChannelEpgOverride()" class="text-[10px] font-bold text-[#e56a6a] hover:text-[#f0b8b8] transition px-2 py-1 shrink-0">Reset</button>
+           </div>`
+        : `<div class="text-xs text-[#e6e6e6]/55 bg-[#3b4d58] rounded-lg px-3 py-2 mb-3">Using: <span class="font-semibold text-[#e6e6e6]/80">Provider EPG</span> (default)</div>`;
+
+      const suggestions = getSuggestedEpgShareMatches(channel.name);
+      const suggestionsHtml = epgShareChannelCatalog === null
+        ? '<p class="text-xs text-[#e6e6e6]/55 italic">Loading suggestions...</p>'
+        : suggestions.length > 0
+          ? suggestions.map(id => `
+              <button type="button" onclick="applyEpgShareOverrideToSelected('${escapeJsAttr(id)}')" class="w-full text-left px-3 py-1.5 text-xs font-mono rounded-lg transition ${id === overrideTarget ? 'bg-[#3b8fc4]/30 text-[#5aa8d1]' : 'bg-[#3b4d58] hover:bg-[#455c69]'}">${escapeHtml(id)}</button>
+            `).join('')
+          : '<p class="text-xs text-[#e6e6e6]/55 italic">No close matches found - search manually below.</p>';
+
+      editor.innerHTML = `
+        <div class="text-sm font-bold truncate">${escapeHtml(channel.name)}</div>
+        <div class="text-[10px] text-[#e6e6e6]/45 font-mono truncate mb-3">${escapeHtml(channel.id)}</div>
+        ${currentHtml}
+        <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Suggested matches</label>
+        <div class="space-y-1 mb-4">${suggestionsHtml}</div>
+        <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Or choose manually</label>
+        <div class="relative mb-2">
+          <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-xs text-[#e6e6e6]/55"></i>
+          <input type="text" id="channel-epg-manual-search" oninput="renderManualEpgShareList()" placeholder="Search EPG channels..." class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg pl-8 pr-3 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none">
+        </div>
+        <div id="channel-epg-manual-list" class="max-h-48 overflow-y-auto bg-[#3b4d58] rounded-lg divide-y divide-[#e6e6e6]/10"></div>
+      `;
+      renderManualEpgShareList();
+    }
+
+    function renderManualEpgShareList() {
+      const listEl = document.getElementById('channel-epg-manual-list');
+      if (!listEl) return;
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      const overrideTarget = provider && provider.epgOverrides && provider.epgOverrides[channelEpgSelectedChannelId];
+      const catalog = epgShareChannelCatalog || [];
+      const term = document.getElementById('channel-epg-manual-search').value.trim().toLowerCase();
+      const filtered = term ? catalog.filter(id => id.toLowerCase().includes(term)) : catalog;
+
+      if (catalog.length === 0) {
+        listEl.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No EPG sources are available yet - ask your admin to enable some in the EPG Editor.</p>';
+        return;
+      }
+      if (filtered.length === 0) {
+        listEl.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No EPG channels match your search.</p>';
+        return;
+      }
+
+      // Capped so a broad/empty search on a large catalog doesn't render
+      // thousands of rows at once - narrowing the search reveals more.
+      const capped = filtered.slice(0, 200);
+      listEl.innerHTML = capped.map(id => `
+        <button type="button" onclick="applyEpgShareOverrideToSelected('${escapeJsAttr(id)}')" class="w-full text-left px-3 py-2 text-xs font-mono hover:bg-[#455c69] transition truncate ${id === overrideTarget ? 'text-[#5aa8d1] font-semibold' : ''}">${escapeHtml(id)}</button>
+      `).join('') + (filtered.length > capped.length
+        ? `<p class="text-[10px] text-[#e6e6e6]/45 italic px-3 py-2">${filtered.length - capped.length} more - narrow your search to see them.</p>`
+        : '');
+    }
+
+    function applyEpgShareOverrideToSelected(epgShareChannelId) {
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      if (!provider || !channelEpgSelectedChannelId) return;
+      provider.epgOverrides = provider.epgOverrides || {};
+      provider.epgOverrides[channelEpgSelectedChannelId] = epgShareChannelId;
+      renderChannelEpgCategories();
+      renderChannelEpgEditor();
+      markDashboardDirty();
+    }
+
+    function clearSelectedChannelEpgOverride() {
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      if (!provider || !provider.epgOverrides || !channelEpgSelectedChannelId) return;
+      delete provider.epgOverrides[channelEpgSelectedChannelId];
+      renderChannelEpgCategories();
+      renderChannelEpgEditor();
+      markDashboardDirty();
+    }
+
     // --- Dashboard: Delete Account ---
     // Unlike every other panel on this page, this one is NOT staged for
     // the "Save and Copy Link" flow - deletion happens immediately and
@@ -1923,6 +2373,7 @@
         closeManageSportsPanelSilently();
         closeChangeTimezonePanelSilently();
         closeFormatterPanelSilently();
+        closeChannelEpgPanelSilently();
         document.getElementById('delete-confirm-input').value = '';
         updateDeleteButton();
         panel.classList.remove('hidden');
@@ -2147,6 +2598,7 @@
       closeChangeTimezonePanelSilently();
       closeDeleteAccountPanelSilently();
       closeFormatterPanelSilently();
+      closeChannelEpgPanelSilently();
       commitActiveProviderCategoryState();
       activeProviderIndex = index;
       await refreshCategoriesForActiveProvider();
@@ -2240,6 +2692,7 @@
       closeChangeTimezonePanelSilently();
       closeDeleteAccountPanelSilently();
       closeFormatterPanelSilently();
+      closeChannelEpgPanelSilently();
 
       document.getElementById('add-provider-choose').classList.remove('hidden');
       document.getElementById('add-provider-xtream').classList.add('hidden');
