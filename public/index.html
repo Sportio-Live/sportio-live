@@ -350,15 +350,10 @@
         <input type="text" id="edit-xtream-username" oninput="updateEditXtreamButton()" placeholder="Username" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
         <input type="password" id="edit-xtream-password" oninput="updateEditXtreamButton()" placeholder="Password" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
         <div id="edit-xtream-error" class="hidden text-xs text-[#e56a6a] font-semibold"></div>
-        <div class="grid grid-cols-2 gap-3">
-          <button onclick="cancelEditXtream()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">
-            Cancel
-          </button>
-          <button id="edit-xtream-btn" onclick="testEditXtream()" disabled class="w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-xs cursor-not-allowed">
-            <i class="fa-solid fa-plug"></i>
-            Test
-          </button>
-        </div>
+        <button id="edit-xtream-btn" onclick="testEditXtream()" disabled class="w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-xs cursor-not-allowed">
+          <i class="fa-solid fa-plug"></i>
+          Test
+        </button>
       </div>
 
       <!-- M3U URLs (collapsed until Edit M3U is clicked) -->
@@ -370,15 +365,10 @@
           <i class="fa-solid fa-spinner fa-spin"></i>
           Importing. Please wait.
         </div>
-        <div class="grid grid-cols-2 gap-3">
-          <button onclick="cancelEditM3u()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">
-            Cancel
-          </button>
-          <button id="edit-m3u-btn" onclick="importEditM3u()" disabled class="w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-xs cursor-not-allowed">
-            <i class="fa-solid fa-file-import"></i>
-            Import
-          </button>
-        </div>
+        <button id="edit-m3u-btn" onclick="importEditM3u()" disabled class="w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-xs cursor-not-allowed">
+          <i class="fa-solid fa-file-import"></i>
+          Import
+        </button>
       </div>
 
       <!-- Change Timezone (collapsed until Change Timezone is clicked) -->
@@ -388,15 +378,7 @@
           <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-xs text-[#e6e6e6]/55"></i>
           <input type="text" id="dashboard-timezone-search" oninput="renderDashboardTimezoneList()" placeholder="Search by city or region..." class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg pl-8 pr-3 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none text-[#e6e6e6]/90">
         </div>
-        <div id="dashboard-timezone-list" class="max-h-64 overflow-y-auto bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-2 space-y-1 mb-3"></div>
-        <div class="grid grid-cols-2 gap-3">
-          <button onclick="cancelChangeTimezone()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">
-            Cancel
-          </button>
-          <button onclick="saveChangeTimezone()" class="w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2.5 rounded-lg text-xs transition">
-            Confirm
-          </button>
-        </div>
+        <div id="dashboard-timezone-list" class="max-h-64 overflow-y-auto bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-2 space-y-1"></div>
       </div>
 
       <!-- Formatter (collapsed until Formatter is clicked) -->
@@ -1306,7 +1288,7 @@
         resetEditXtreamState();
         panel.classList.remove('hidden');
       } else {
-        cancelEditXtream();
+        closeEditXtreamPanelSilently();
       }
       updateSettingsButtonStates();
     }
@@ -1366,10 +1348,14 @@
       }
     }
 
-    // Tests the entered credentials. On success, the Test button morphs
-    // in-place into Confirm (Cancel stays put beside it the whole time) -
-    // nothing is saved until Confirm is actually clicked. On failure, the
-    // fields revert to whatever was saved before this edit.
+    // Tests the entered credentials and, on success, applies them right
+    // away via confirmEditXtream() - no separate Confirm click needed, a
+    // passing test already is the safety check. The button still morphs to
+    // Confirm first and stays there as a manual fallback for the one case
+    // confirmEditXtream() can itself decline: the UNSAVED_CHANGES_WARNING
+    // guard, if there's a pending, unrelated edit elsewhere that a
+    // provider-switch re-render would otherwise silently discard. On
+    // failure, the fields revert to whatever was saved before this edit.
     async function testEditXtream() {
       const url = document.getElementById('edit-xtream-url').value.trim();
       const username = document.getElementById('edit-xtream-username').value.trim();
@@ -1393,7 +1379,7 @@
           btn.onclick = confirmEditXtream;
           btn.innerHTML = 'Confirm';
           btn.className = 'w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 font-bold py-2.5 rounded-lg text-xs';
-          showStatus('Connection successful!');
+          confirmEditXtream();
         } else {
           revertEditXtreamFields();
           errorEl.textContent = "Couldn't connect. Please check credentials.";
@@ -1404,12 +1390,6 @@
         errorEl.textContent = "Couldn't connect. Please check credentials.";
         errorEl.classList.remove('hidden');
       }
-    }
-
-    function cancelEditXtream() {
-      revertEditXtreamFields();
-      document.getElementById('edit-xtream-panel').classList.add('hidden');
-      resetEditXtreamState();
     }
 
     // --- Dashboard: Edit M3U ---
@@ -1442,7 +1422,7 @@
         resetEditM3uState();
         panel.classList.remove('hidden');
       } else {
-        cancelEditM3u();
+        closeEditM3uPanelSilently();
       }
       updateSettingsButtonStates();
     }
@@ -1496,6 +1476,10 @@
       }
     }
 
+    // Imports the playlist/EPG URLs and, on success, applies them right
+    // away via confirmEditM3u() - no separate Confirm click needed (see
+    // testEditXtream's comment for the reasoning, including why the
+    // button still morphs to Confirm as a manual fallback).
     async function importEditM3u() {
       const playlistUrl = document.getElementById('edit-m3u-playlist-url').value.trim();
       const epgUrl = document.getElementById('edit-m3u-epg-url').value.trim();
@@ -1522,7 +1506,7 @@
           btn.onclick = confirmEditM3u;
           btn.innerHTML = 'Confirm';
           btn.className = 'w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 font-bold py-2.5 rounded-lg text-xs';
-          showStatus('Import successful!');
+          confirmEditM3u();
         } else {
           revertEditM3uFields();
           errorEl.textContent = data.error || "Couldn't import. Please check both URLs.";
@@ -1534,12 +1518,6 @@
         errorEl.textContent = "Couldn't import. Please check both URLs.";
         errorEl.classList.remove('hidden');
       }
-    }
-
-    function cancelEditM3u() {
-      revertEditM3uFields();
-      document.getElementById('edit-m3u-panel').classList.add('hidden');
-      resetEditM3uState();
     }
 
     // Stages the imported URLs for this session only - nothing is sent to
@@ -1558,6 +1536,7 @@
       renderActiveProviderPanel();
       markDashboardDirty();
       showStatus('M3U URLs updated for this session - click Save and Copy Link to save.');
+      updateSettingsButtonStates();
     }
 
     // Stages the tested credentials for this session only - nothing is
@@ -1575,6 +1554,7 @@
       renderActiveProviderPanel();
       markDashboardDirty();
       showStatus('Xtream credentials updated for this session - click Save and Copy Link to save.');
+      updateSettingsButtonStates();
     }
 
     // Shared by both the real dashboard and the setup wizard's category step,
@@ -1956,7 +1936,7 @@
         updateDashboardTimezoneSelectedLabel();
         panel.classList.remove('hidden');
       } else {
-        cancelChangeTimezone();
+        closeChangeTimezonePanelSilently();
       }
       updateSettingsButtonStates();
     }
@@ -1964,10 +1944,6 @@
     function closeChangeTimezonePanelSilently() {
       document.getElementById('change-timezone-panel').classList.add('hidden');
       updateSettingsButtonStates();
-    }
-
-    function cancelChangeTimezone() {
-      closeChangeTimezonePanelSilently();
     }
 
     // --- Dashboard: Formatter ---
@@ -2662,23 +2638,20 @@
       renderTimezoneList('dashboard-timezone-list', dashboardTimezoneSelection, 'selectDashboardTimezone', document.getElementById('dashboard-timezone-search').value);
     }
 
+    // Writes straight into activeUser the moment a timezone is clicked -
+    // no separate Confirm step, matching Formatter/Leagues. dashboardTimezoneSelection
+    // stays as the render-time source of truth for which row is
+    // highlighted, it just no longer waits for a save click to become real.
     function selectDashboardTimezone(tz) {
       dashboardTimezoneSelection = tz;
+      activeUser.timeZone = tz;
       renderDashboardTimezoneList();
       updateDashboardTimezoneSelectedLabel();
+      markDashboardDirty();
     }
 
     function updateDashboardTimezoneSelectedLabel() {
       document.getElementById('dashboard-timezone-selected').textContent = `Selected: ${dashboardTimezoneSelection.replace(/_/g, ' ')} (${getTimezoneOffsetLabel(dashboardTimezoneSelection)})`;
-    }
-
-    // Stages the selected timezone for this session only - see
-    // confirmEditXtream for why nothing is sent to the server here.
-    function saveChangeTimezone() {
-      activeUser.timeZone = dashboardTimezoneSelection;
-      closeChangeTimezonePanelSilently();
-      markDashboardDirty();
-      showStatus('Timezone updated for this session - click Save and Copy Link to save.');
     }
 
     // Writes straight into the active provider the moment a league is
