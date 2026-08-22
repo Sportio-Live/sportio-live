@@ -226,79 +226,13 @@
         </div>
       </div>
 
-      <!-- Provider tabs - one per IPTV connection on this account. Each tab
-           has its own credentials and its own Category Search below, since
-           category folder ids only ever mean something within the one
-           provider that issued them. Only one provider's editor/accordion
-           is ever live in the DOM at a time (switching tabs commits
-           whatever was checked back into that provider before swapping),
-           so every panel below this strip stays a single shared instance -
-           no need to duplicate ids per provider. -->
-      <div class="flex items-center justify-between mb-2">
-        <h3 class="font-bold text-sm text-[#e6e6e6]/75">Providers</h3>
-      </div>
-      <div id="provider-tabs" class="flex items-center gap-2 mb-4 overflow-x-auto pb-1"></div>
-
-      <!-- Add Provider (collapsed until the "+ Add Provider" tab is clicked) -->
-      <div id="add-provider-panel" class="hidden bg-[#3b4d58]/60 border border-[#e6e6e6]/15 rounded-lg p-4 mb-6">
-        <div id="add-provider-choose" class="space-y-3">
-          <h4 class="font-bold text-sm text-[#e6e6e6]/75 mb-1">How do you want to connect?</h4>
-          <button type="button" onclick="addProviderGoToXtream()" class="w-full text-left bg-[#2f3e47] hover:bg-[#3b4d58] border border-[#e6e6e6]/15 hover:border-[#3b8fc4]/50 rounded-lg px-4 py-3 transition">
-            <div class="font-bold text-sm text-[#e6e6e6]">Xtream</div>
-            <div class="text-xs text-[#e6e6e6]/55 mt-0.5">Server URL, username, and password</div>
-          </button>
-          <button type="button" onclick="addProviderGoToM3u()" class="w-full text-left bg-[#2f3e47] hover:bg-[#3b4d58] border border-[#e6e6e6]/15 hover:border-[#3b8fc4]/50 rounded-lg px-4 py-3 transition">
-            <div class="font-bold text-sm text-[#e6e6e6]">M3U</div>
-            <div class="text-xs text-[#e6e6e6]/55 mt-0.5">A playlist URL and an EPG URL</div>
-          </button>
-          <button type="button" onclick="cancelAddProvider()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">Cancel</button>
-        </div>
-
-        <div id="add-provider-xtream" class="hidden space-y-3">
-          <input type="text" id="add-provider-xtream-url" autocomplete="off" oninput="updateAddProviderXtreamButton()" placeholder="Server URL (http://...)" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
-          <input type="text" id="add-provider-xtream-username" autocomplete="off" oninput="updateAddProviderXtreamButton()" placeholder="Username" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
-          <input type="password" id="add-provider-xtream-password" autocomplete="new-password" oninput="updateAddProviderXtreamButton()" placeholder="Password" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
-          <div id="add-provider-xtream-error" class="hidden text-xs text-[#e56a6a] font-semibold"></div>
-          <div class="grid grid-cols-2 gap-3">
-            <button type="button" onclick="cancelAddProvider()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">Cancel</button>
-            <button type="button" id="add-provider-xtream-btn" onclick="testAddProviderXtream()" disabled class="w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-xs cursor-not-allowed">
-              <i class="fa-solid fa-plug"></i> Test &amp; Add
-            </button>
-          </div>
-        </div>
-
-        <div id="add-provider-m3u" class="hidden space-y-3">
-          <input type="text" id="add-provider-m3u-playlist-url" autocomplete="off" oninput="updateAddProviderM3uButton()" placeholder="Playlist URL (http://...)" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
-          <input type="text" id="add-provider-m3u-epg-url" autocomplete="off" oninput="updateAddProviderM3uButton()" placeholder="EPG URL (http://...)" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
-          <div id="add-provider-m3u-error" class="hidden text-xs text-[#e56a6a] font-semibold"></div>
-          <div id="add-provider-m3u-importing" class="hidden text-xs text-[#5aa8d1] font-semibold flex items-center gap-2">
-            <i class="fa-solid fa-spinner fa-spin"></i>
-            Importing. Please wait.
-          </div>
-          <div class="grid grid-cols-2 gap-3">
-            <button type="button" onclick="cancelAddProvider()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">Cancel</button>
-            <button type="button" id="add-provider-m3u-btn" onclick="importAddProviderM3u()" disabled class="w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-xs cursor-not-allowed">
-              <i class="fa-solid fa-file-import"></i> Import &amp; Add
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div class="flex items-center justify-between mb-3">
-        <h3 class="font-bold text-sm text-[#e6e6e6]/75">Category Search</h3>
-        <button id="expand-all-btn" onclick="toggleAllAccordions()" class="text-xs font-bold text-[#5aa8d1] hover:text-[#6bb5dd] flex items-center gap-1.5 transition">
-          <i class="fa-solid fa-expand"></i>
-          Expand All
-        </button>
-      </div>
-
-      <div id="sports-config-container" class="space-y-6">
-        <!-- Dynamically injected sports inputs -->
-      </div>
-
       <!-- Shared action row -->
-      <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-2 mt-6">Settings</h3>
-      <div class="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-4">
+      <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-2">Settings</h3>
+      <div class="grid grid-cols-2 sm:grid-cols-6 gap-3 mb-4">
+        <button id="sources-trigger-btn" onclick="toggleSourcesPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
+          <i class="fa-solid fa-server"></i>
+          Sources
+        </button>
         <button id="edit-xtream-trigger-btn" onclick="toggleEditXtreamPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
           <i class="fa-solid fa-pen-to-square"></i>
           Edit Xtream
@@ -323,6 +257,81 @@
           <i class="fa-solid fa-satellite-dish"></i>
           Channel EPG
         </button>
+      </div>
+
+      <!-- Sources: Providers + Category Search (collapsed via the "Sources" trigger
+           above like every other settings panel, but shown by default on login/signup
+           since it's what most users come back to change). -->
+      <div id="sources-panel" class="bg-[#3b4d58]/60 border border-[#e6e6e6]/15 rounded-lg p-4 mb-6">
+        <!-- Provider tabs - one per IPTV connection on this account. Each tab
+             has its own credentials and its own Category Search below, since
+             category folder ids only ever mean something within the one
+             provider that issued them. Only one provider's editor/accordion
+             is ever live in the DOM at a time (switching tabs commits
+             whatever was checked back into that provider before swapping),
+             so every panel below this strip stays a single shared instance -
+             no need to duplicate ids per provider. -->
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="font-bold text-sm text-[#e6e6e6]/75">Providers</h3>
+        </div>
+        <div id="provider-tabs" class="flex items-center gap-2 mb-4 overflow-x-auto pb-1"></div>
+
+        <!-- Add Provider (collapsed until the "+ Add Provider" tab is clicked) -->
+        <div id="add-provider-panel" class="hidden bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-4 mb-6">
+          <div id="add-provider-choose" class="space-y-3">
+            <h4 class="font-bold text-sm text-[#e6e6e6]/75 mb-1">How do you want to connect?</h4>
+            <button type="button" onclick="addProviderGoToXtream()" class="w-full text-left bg-[#3b4d58] hover:bg-[#465a67] border border-[#e6e6e6]/15 hover:border-[#3b8fc4]/50 rounded-lg px-4 py-3 transition">
+              <div class="font-bold text-sm text-[#e6e6e6]">Xtream</div>
+              <div class="text-xs text-[#e6e6e6]/55 mt-0.5">Server URL, username, and password</div>
+            </button>
+            <button type="button" onclick="addProviderGoToM3u()" class="w-full text-left bg-[#3b4d58] hover:bg-[#465a67] border border-[#e6e6e6]/15 hover:border-[#3b8fc4]/50 rounded-lg px-4 py-3 transition">
+              <div class="font-bold text-sm text-[#e6e6e6]">M3U</div>
+              <div class="text-xs text-[#e6e6e6]/55 mt-0.5">A playlist URL and an EPG URL</div>
+            </button>
+            <button type="button" onclick="cancelAddProvider()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">Cancel</button>
+          </div>
+
+          <div id="add-provider-xtream" class="hidden space-y-3">
+            <input type="text" id="add-provider-xtream-url" autocomplete="off" oninput="updateAddProviderXtreamButton()" placeholder="Server URL (http://...)" class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+            <input type="text" id="add-provider-xtream-username" autocomplete="off" oninput="updateAddProviderXtreamButton()" placeholder="Username" class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+            <input type="password" id="add-provider-xtream-password" autocomplete="new-password" oninput="updateAddProviderXtreamButton()" placeholder="Password" class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+            <div id="add-provider-xtream-error" class="hidden text-xs text-[#e56a6a] font-semibold"></div>
+            <div class="grid grid-cols-2 gap-3">
+              <button type="button" onclick="cancelAddProvider()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">Cancel</button>
+              <button type="button" id="add-provider-xtream-btn" onclick="testAddProviderXtream()" disabled class="w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-xs cursor-not-allowed">
+                <i class="fa-solid fa-plug"></i> Test &amp; Add
+              </button>
+            </div>
+          </div>
+
+          <div id="add-provider-m3u" class="hidden space-y-3">
+            <input type="text" id="add-provider-m3u-playlist-url" autocomplete="off" oninput="updateAddProviderM3uButton()" placeholder="Playlist URL (http://...)" class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+            <input type="text" id="add-provider-m3u-epg-url" autocomplete="off" oninput="updateAddProviderM3uButton()" placeholder="EPG URL (http://...)" class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+            <div id="add-provider-m3u-error" class="hidden text-xs text-[#e56a6a] font-semibold"></div>
+            <div id="add-provider-m3u-importing" class="hidden text-xs text-[#5aa8d1] font-semibold flex items-center gap-2">
+              <i class="fa-solid fa-spinner fa-spin"></i>
+              Importing. Please wait.
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <button type="button" onclick="cancelAddProvider()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">Cancel</button>
+              <button type="button" id="add-provider-m3u-btn" onclick="importAddProviderM3u()" disabled class="w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-xs cursor-not-allowed">
+                <i class="fa-solid fa-file-import"></i> Import &amp; Add
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex items-center justify-between mb-3 mt-6">
+          <h3 class="font-bold text-sm text-[#e6e6e6]/75">Category Search</h3>
+          <button id="expand-all-btn" onclick="toggleAllAccordions()" class="text-xs font-bold text-[#5aa8d1] hover:text-[#6bb5dd] flex items-center gap-1.5 transition">
+            <i class="fa-solid fa-expand"></i>
+            Expand All
+          </button>
+        </div>
+
+        <div id="sports-config-container" class="space-y-6">
+          <!-- Dynamically injected sports inputs -->
+        </div>
       </div>
 
       <!-- Xtream Credentials (collapsed until Edit Xtream is clicked) -->
@@ -464,13 +473,14 @@
 
       <!-- Deliberately pushed well away from the routine settings above and
            styled brighter/more alarming, to make an accidental click here
-           genuinely difficult -->
+           genuinely difficult. Still a collapsible row like every other
+           settings panel - collapsed by default. -->
       <button onclick="toggleDeleteAccountPanel()" class="w-full bg-[#c0392b] hover:bg-[#d8483a] border border-[#e56a6a]/50 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2 text-white mt-12 mb-4">
         <i class="fa-solid fa-trash"></i>
-        Delete
+        Delete account
       </button>
 
-      <!-- Delete Account (collapsed until Delete is clicked) -->
+      <!-- Delete Account (collapsed until "Delete account" is clicked) -->
       <div id="delete-account-panel" class="hidden bg-[#3b4d58]/60 border border-[#c0392b]/40 rounded-lg p-4 mb-6">
         <div class="flex items-start gap-2 mb-3">
           <i class="fa-solid fa-triangle-exclamation text-[#e56a6a] mt-0.5"></i>
@@ -1053,6 +1063,7 @@
           // needed before this first render.
           renderActiveProviderPanel();
           markDashboardClean();
+          resetDashboardPanels();
           showView('dashboard');
         } else {
           errorEl.textContent = data.error || 'Failed to create account.';
@@ -1080,6 +1091,7 @@
           activeUser = { uuid, password, providers: data.providers || [], timeZone: data.timeZone, sportOrder: data.sportOrder || [], nameFormat: data.nameFormat, titleFormat: data.titleFormat };
           activeProviderIndex = 0;
           document.getElementById('active-uuid-display').textContent = uuid;
+          resetDashboardPanels();
           showView('dashboard');
 
           await refreshCategoriesForActiveProvider();
@@ -1177,6 +1189,7 @@
     // regardless of which specific action opened or closed a panel.
     function updateSettingsButtonStates() {
       const pairs = [
+        ['sources-trigger-btn', 'sources-panel'],
         ['edit-xtream-trigger-btn', 'edit-xtream-panel'],
         ['edit-m3u-trigger-btn', 'edit-m3u-panel'],
         ['manage-sports-btn', 'manage-sports-panel'],
@@ -1205,9 +1218,54 @@
       });
     }
 
+    // Called right before the dashboard is shown after a fresh login or
+    // signup, so returning to it (possibly as a different account, after
+    // account deletion sends someone back to the landing screen) always
+    // starts from the same place: every settings panel closed and Sources
+    // - the one users come back to most - open by default.
+    function resetDashboardPanels() {
+      closeEditXtreamPanelSilently();
+      closeEditM3uPanelSilently();
+      closeManageSportsPanelSilently();
+      closeChangeTimezonePanelSilently();
+      closeDeleteAccountPanelSilently();
+      closeFormatterPanelSilently();
+      closeChannelEpgPanelSilently();
+      document.getElementById('sources-panel').classList.remove('hidden');
+      updateSettingsButtonStates();
+    }
+
+    // --- Sources panel: Providers + Category Search. Shown by default on
+    // login/signup (see resetDashboardPanels), and reachable afterward like
+    // any other settings panel via its own trigger button.
+
+    function toggleSourcesPanel() {
+      const panel = document.getElementById('sources-panel');
+      if (panel.classList.contains('hidden')) {
+        closeEditXtreamPanelSilently();
+        closeEditM3uPanelSilently();
+        closeManageSportsPanelSilently();
+        closeChangeTimezonePanelSilently();
+        closeDeleteAccountPanelSilently();
+        closeFormatterPanelSilently();
+        closeChannelEpgPanelSilently();
+        panel.classList.remove('hidden');
+      } else {
+        closeSourcesPanelSilently();
+      }
+      updateSettingsButtonStates();
+    }
+
+    function closeSourcesPanelSilently() {
+      document.getElementById('sources-panel').classList.add('hidden');
+      cancelAddProvider();
+      updateSettingsButtonStates();
+    }
+
     function toggleEditXtreamPanel() {
       const panel = document.getElementById('edit-xtream-panel');
       if (panel.classList.contains('hidden')) {
+        closeSourcesPanelSilently();
         closeEditM3uPanelSilently();
         closeManageSportsPanelSilently();
         closeChangeTimezonePanelSilently();
@@ -1344,6 +1402,7 @@
     function toggleEditM3uPanel() {
       const panel = document.getElementById('edit-m3u-panel');
       if (panel.classList.contains('hidden')) {
+        closeSourcesPanelSilently();
         closeEditXtreamPanelSilently();
         closeManageSportsPanelSilently();
         closeChangeTimezonePanelSilently();
@@ -1793,6 +1852,7 @@
     function toggleManageSportsPanel() {
       const panel = document.getElementById('manage-sports-panel');
       if (panel.classList.contains('hidden')) {
+        closeSourcesPanelSilently();
         closeEditXtreamPanelSilently();
         closeEditM3uPanelSilently();
         closeChangeTimezonePanelSilently();
@@ -1866,6 +1926,7 @@
     function toggleChangeTimezonePanel() {
       const panel = document.getElementById('change-timezone-panel');
       if (panel.classList.contains('hidden')) {
+        closeSourcesPanelSilently();
         closeEditXtreamPanelSilently();
         closeEditM3uPanelSilently();
         closeManageSportsPanelSilently();
@@ -1952,6 +2013,7 @@
     function toggleFormatterPanel() {
       const panel = document.getElementById('formatter-panel');
       if (panel.classList.contains('hidden')) {
+        closeSourcesPanelSilently();
         closeEditXtreamPanelSilently();
         closeEditM3uPanelSilently();
         closeManageSportsPanelSilently();
@@ -2018,6 +2080,7 @@
     function toggleChannelEpgPanel() {
       const panel = document.getElementById('channel-epg-panel');
       if (panel.classList.contains('hidden')) {
+        closeSourcesPanelSilently();
         closeEditXtreamPanelSilently();
         closeEditM3uPanelSilently();
         closeManageSportsPanelSilently();
@@ -2449,6 +2512,7 @@
     function toggleDeleteAccountPanel() {
       const panel = document.getElementById('delete-account-panel');
       if (panel.classList.contains('hidden')) {
+        closeSourcesPanelSilently();
         closeEditXtreamPanelSilently();
         closeEditM3uPanelSilently();
         closeManageSportsPanelSilently();
