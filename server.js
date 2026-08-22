@@ -2095,10 +2095,11 @@ app.post('/api/xtream/streams', async (req, res) => {
   });
 });
 
-// Lists every channel id available across the sources an admin has
-// actually enabled and that are already cached (see
-// epgshare.getEnabledChannelCatalog) - the browsable list the Channel EPG
-// picker searches to pick an override target. Any logged-in user can call
+// Lists every channel id available, grouped by source, across the
+// sources an admin has actually enabled and that are already cached (see
+// epgshare.getEnabledChannelCatalog) - the browsable catalog the Channel
+// EPG picker searches (optionally scoped to one source) to pick an
+// override target. Any logged-in user can call
 // this (it's read-only, public EPGShare01 metadata, not account-specific)
 // - the uuid/password check here is just to keep it consistent with every
 // other user-facing route rather than leaving one route as a genuine
@@ -2119,7 +2120,7 @@ app.post('/api/epgshare/channels', async (req, res) => {
   }
   clearFailedAttempts(ip);
 
-  return res.json({ success: true, channelIds: epgshare.getEnabledChannelCatalog(epgShareSettings.enabledSources) });
+  return res.json({ success: true, sources: epgshare.getEnabledChannelCatalog(epgShareSettings.enabledSources) });
 });
 
 app.post('/api/user/register', async (req, res) => {
@@ -2924,10 +2925,16 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
           startTimestamp: epg.startTimestamp,
           streamUrl: `${provider.xtream.url.replace(/\/+$/, '')}/live/${encodeURIComponent(provider.xtream.username)}/${encodeURIComponent(provider.xtream.password)}/${s.stream_id}.m3u8`,
           categoryLabel: getCategoryName(s),
-          // Xtream's own tvg-id equivalent - not used by anything Xtream-
-          // specific here, only kept so the EPGShare01 override above can
-          // join against it.
-          channelId: s.epg_channel_id || '',
+          // stream_id, not epg_channel_id - confirmed against real
+          // provider data that epg_channel_id is frequently empty AND,
+          // worse, sometimes identical across genuinely different
+          // channels on the same account (some providers just don't
+          // populate it meaningfully). stream_id is the one field Xtream
+          // guarantees is present and unique per channel, so it's the
+          // only safe join key for a per-channel override - not used by
+          // anything Xtream-specific here, only kept so the EPGShare01
+          // override above can join against it.
+          channelId: String(s.stream_id),
           ...(showProviderLabel ? { providerLabel: provider.label } : {})
         };
       });

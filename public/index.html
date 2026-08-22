@@ -544,15 +544,22 @@
 
     // Channel EPG state. channelEpgChannels is the active provider's own
     // channel list (id/name/categoryIds), re-fetched each time the panel
-    // opens. epgShareChannelCatalog is the merged, admin-enabled EPGShare01
-    // channel id list the editor searches/suggests from - loaded once per
-    // page session (not per provider/panel-open) since it's the same
-    // global list regardless of which provider or channel is being
-    // edited. channelEpgExpandedCategories/channelEpgSelectedChannelId
-    // track the left accordion's open sections and which channel (if any)
-    // the right-hand editor is currently showing.
+    // opens. epgShareSourcesCatalog is the admin-enabled EPGShare01
+    // catalog, grouped by source file ([{file, channelIds}]) so the
+    // editor can offer "search just this source" as well as "search
+    // everything" - loaded once per page session (not per provider/
+    // panel-open) since it's the same global list regardless of which
+    // provider or channel is being edited. channelEpgManualSourceFilter
+    // is which source (a filename, or '' for all of them merged) the
+    // manual picker is currently scoped to - deliberately persists across
+    // selecting different channels, since a user narrowing down to one
+    // source is likely to want that same source for the next channel too.
+    // channelEpgExpandedCategories/channelEpgSelectedChannelId track the
+    // left accordion's open sections and which channel (if any) the
+    // right-hand editor is currently showing.
     let channelEpgChannels = [];
-    let epgShareChannelCatalog = null;
+    let epgShareSourcesCatalog = null;
+    let channelEpgManualSourceFilter = '';
     let channelEpgExpandedCategories = new Set();
     let channelEpgSelectedChannelId = null;
 
@@ -2096,25 +2103,35 @@
           });
           const data = await res.json();
           if (data.success) {
-            channelEpgChannels = data.streams
-              .filter(s => s.epg_channel_id)
-              .map(s => ({
-                id: s.epg_channel_id,
-                name: s.name,
-                // Always coerced to strings - provider.sportCategories
-                // (and therefore the category ids the left accordion
-                // groups by) is always string-valued, since it's built
-                // from checkbox .value attributes in Category Search, but
-                // Xtream's own API can hand back category_ids as an array
-                // of raw numbers rather than strings. Left uncoerced, this
-                // silently produces zero matches for every category
-                // (`[5].includes('5')` is false) even though the data is
-                // otherwise completely correct.
-                categoryIds: (s.category_ids && s.category_ids.length > 0
-                  ? s.category_ids
-                  : (s.category_id != null ? [s.category_id] : [])
-                ).map(String)
-              }));
+            // Keyed by stream_id, not epg_channel_id - confirmed against
+            // real provider data that epg_channel_id is frequently empty
+            // and, worse, sometimes identical across genuinely different
+            // channels (some providers just don't populate it
+            // meaningfully). Using it as the id both under-counted
+            // channels here (anything with a blank epg_channel_id got
+            // silently dropped) and broke selection once two channels
+            // shared one (clicking either always showed/highlighted
+            // whichever happened to come first). stream_id is the one
+            // field Xtream guarantees is present and unique per channel,
+            // and must match the same field the server's stream-building
+            // route now uses for its override join key.
+            channelEpgChannels = data.streams.map(s => ({
+              id: String(s.stream_id),
+              name: s.name,
+              // Always coerced to strings - provider.sportCategories (and
+              // therefore the category ids the left accordion groups by)
+              // is always string-valued, since it's built from checkbox
+              // .value attributes in Category Search, but Xtream's own
+              // API can hand back category_ids as an array of raw numbers
+              // rather than strings. Left uncoerced, this silently
+              // produces zero matches for every category
+              // (`[5].includes('5')` is false) even though the data is
+              // otherwise completely correct.
+              categoryIds: (s.category_ids && s.category_ids.length > 0
+                ? s.category_ids
+                : (s.category_id != null ? [s.category_id] : [])
+              ).map(String)
+            }));
             statusEl.textContent = `${channelEpgChannels.length} channel${channelEpgChannels.length === 1 ? '' : 's'}.`;
           } else {
             statusEl.textContent = data.error || 'Failed to load channels.';
@@ -2242,7 +2259,7 @@
     // --- Right panel: editor for the currently selected channel ---
 
     async function loadEpgShareChannelCatalog() {
-      if (epgShareChannelCatalog !== null) return;
+      if (epgShareSourcesCatalog !== null) return;
       try {
         const res = await fetch('/api/epgshare/channels', {
           method: 'POST',
@@ -2250,11 +2267,29 @@
           body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password })
         });
         const data = await res.json();
-        epgShareChannelCatalog = data.success ? data.channelIds : [];
+        epgShareSourcesCatalog = data.success ? data.sources : [];
       } catch (err) {
-        epgShareChannelCatalog = [];
+        epgShareSourcesCatalog = [];
       }
       renderChannelEpgEditor();
+    }
+
+    // A short, human-friendly label derived from the raw filename (e.g.
+    // "epg_ripper_US_SPORTS1.xml.gz" -> "US SPORTS1") - same derivation
+    // the admin's EPG Editor uses for the same files, so a source reads
+    // the same way in both places.
+    function epgShareSourceLabel(file) {
+      return file.replace(/^epg_ripper_/, '').replace(/\.xml\.gz$/, '').replace(/_/g, ' ');
+    }
+
+    // All enabled sources' channel ids merged into one deduped list - used
+    // for "All EPG sources" in the manual picker and for suggestion
+    // scoring (which deliberately searches everything regardless of which
+    // single source the manual picker might currently be scoped to).
+    function getMergedEpgShareChannelIds() {
+      const ids = new Set();
+      (epgShareSourcesCatalog || []).forEach(s => s.channelIds.forEach(id => ids.add(id)));
+      return [...ids].sort();
     }
 
     // Reduces a string to lowercase alphanumeric tokens - used on both
@@ -2285,7 +2320,7 @@
     }
 
     function getSuggestedEpgShareMatches(channelName, limit = 5) {
-      return (epgShareChannelCatalog || [])
+      return getMergedEpgShareChannelIds()
         .map(id => ({ id, score: scoreEpgShareMatch(channelName, id) }))
         .filter(x => x.score > 0)
         .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
@@ -2312,13 +2347,25 @@
         : `<div class="text-xs text-[#e6e6e6]/55 bg-[#3b4d58] rounded-lg px-3 py-2 mb-3">Using: <span class="font-semibold text-[#e6e6e6]/80">Provider EPG</span> (default)</div>`;
 
       const suggestions = getSuggestedEpgShareMatches(channel.name);
-      const suggestionsHtml = epgShareChannelCatalog === null
+      const suggestionsHtml = epgShareSourcesCatalog === null
         ? '<p class="text-xs text-[#e6e6e6]/55 italic">Loading suggestions...</p>'
         : suggestions.length > 0
           ? suggestions.map(id => `
               <button type="button" onclick="applyEpgShareOverrideToSelected('${escapeJsAttr(id)}')" class="w-full text-left px-3 py-1.5 text-xs font-mono rounded-lg transition ${id === overrideTarget ? 'bg-[#3b8fc4]/30 text-[#5aa8d1]' : 'bg-[#3b4d58] hover:bg-[#455c69]'}">${escapeHtml(id)}</button>
             `).join('')
           : '<p class="text-xs text-[#e6e6e6]/55 italic">No close matches found - search manually below.</p>';
+
+      // Source dropdown: "All EPG sources" (merged, the default) plus one
+      // option per admin-enabled+cached source, each labeled with its
+      // channel count - lets a user narrow the manual search down to a
+      // specific source instead of always searching everything merged
+      // together, and doubles as visibility into exactly which source(s)
+      // are actually available right now.
+      const sources = epgShareSourcesCatalog || [];
+      const totalChannels = getMergedEpgShareChannelIds().length;
+      const sourceOptionsHtml = sources.map(s => `
+        <option value="${escapeHtml(s.file)}" ${s.file === channelEpgManualSourceFilter ? 'selected' : ''}>${escapeHtml(epgShareSourceLabel(s.file))} (${s.channelIds.length})</option>
+      `).join('');
 
       editor.innerHTML = `
         <div class="text-sm font-bold truncate">${escapeHtml(channel.name)}</div>
@@ -2327,6 +2374,10 @@
         <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Suggested matches</label>
         <div class="space-y-1 mb-4">${suggestionsHtml}</div>
         <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Or choose manually</label>
+        <select id="channel-epg-manual-source" onchange="onChannelEpgManualSourceChange()" class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none mb-2">
+          <option value="" ${channelEpgManualSourceFilter === '' ? 'selected' : ''}>All EPG sources (${totalChannels})</option>
+          ${sourceOptionsHtml}
+        </select>
         <div class="relative mb-2">
           <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-xs text-[#e6e6e6]/55"></i>
           <input type="text" id="channel-epg-manual-search" oninput="renderManualEpgShareList()" placeholder="Search EPG channels..." class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg pl-8 pr-3 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none">
@@ -2336,12 +2387,18 @@
       renderManualEpgShareList();
     }
 
+    function onChannelEpgManualSourceChange() {
+      channelEpgManualSourceFilter = document.getElementById('channel-epg-manual-source').value;
+      renderManualEpgShareList();
+    }
+
     function renderManualEpgShareList() {
       const listEl = document.getElementById('channel-epg-manual-list');
       if (!listEl) return;
       const provider = activeUser && activeUser.providers[activeProviderIndex];
       const overrideTarget = provider && provider.epgOverrides && provider.epgOverrides[channelEpgSelectedChannelId];
-      const catalog = epgShareChannelCatalog || [];
+      const selectedSource = (epgShareSourcesCatalog || []).find(s => s.file === channelEpgManualSourceFilter);
+      const catalog = selectedSource ? selectedSource.channelIds : getMergedEpgShareChannelIds();
       const term = document.getElementById('channel-epg-manual-search').value.trim().toLowerCase();
       const filtered = term ? catalog.filter(id => id.toLowerCase().includes(term)) : catalog;
 
