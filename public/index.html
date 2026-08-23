@@ -484,41 +484,35 @@
           <i class="fa-solid fa-plug text-[9px]"></i><span></span>
         </span>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 md:gap-0">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div>
-            <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-1">Presets</h3>
-            <p class="text-xs text-[#e6e6e6]/55 mb-3">For best results, make sure your IPTV provider matches that of the preset.</p>
+            <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-1">Provider presets</h3>
+            <p class="text-xs text-[#e6e6e6]/55 mb-3">Preconfigured Leagues/sources and EPG overrides for various providers.</p>
             <div id="preset-grid" class="grid grid-cols-3 sm:grid-cols-4 gap-2 max-h-64 overflow-y-auto bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3 mb-3"></div>
-            <div class="flex justify-end">
-              <button type="button" id="apply-preset-btn" onclick="applySelectedPreset()" disabled class="bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2 px-4 rounded-lg text-xs cursor-not-allowed transition">
-                Apply
-              </button>
-            </div>
+            <button type="button" id="apply-preset-btn" onclick="applySelectedPreset()" disabled class="bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2 px-4 rounded-lg text-xs cursor-not-allowed transition">
+              Apply
+            </button>
             <div id="preset-apply-result" class="hidden text-xs bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3 mt-3 space-y-1"></div>
           </div>
 
-          <div class="md:pl-6 md:border-l md:border-[#e6e6e6]/15">
+          <div>
             <div class="mb-5">
               <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-1">Export</h3>
               <p class="text-xs text-[#e6e6e6]/55 mb-3">Export your currently selected Leagues/sources and EPG overrides to a configuration file.</p>
-              <div class="flex justify-end">
-                <button onclick="exportProviderSettings()" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2">
-                  <i class="fa-solid fa-download"></i>
-                  Export Config
-                </button>
-              </div>
+              <button onclick="exportProviderSettings()" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2">
+                <i class="fa-solid fa-upload"></i>
+                Export Config
+              </button>
             </div>
 
             <div class="pt-4 border-t border-[#e6e6e6]/15">
               <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-1">Import</h3>
               <p class="text-xs text-[#e6e6e6]/55 mb-3">Import a configuration file. This will overwrite your current Leagues/sources and EPG overrides.</p>
               <input type="file" id="export-import-file-input" accept="application/json" class="hidden" onchange="handleImportFileSelected(event)">
-              <div class="flex justify-end">
-                <button onclick="document.getElementById('export-import-file-input').click()" class="bg-[#56707d] hover:bg-[#66818f] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2">
-                  <i class="fa-solid fa-upload"></i>
-                  Import Config
-                </button>
-              </div>
+              <button onclick="document.getElementById('export-import-file-input').click()" class="bg-[#56707d] hover:bg-[#66818f] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2">
+                <i class="fa-solid fa-download"></i>
+                Import Config
+              </button>
               <div id="export-import-error" class="hidden text-xs text-[#e56a6a] font-semibold mt-3"></div>
               <div id="export-import-result" class="hidden text-xs bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3 mt-3 space-y-1"></div>
             </div>
