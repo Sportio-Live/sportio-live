@@ -282,7 +282,6 @@
            same strip but kept red and pushed to the far edge via ml-auto, so it
            reads as a tab like the rest while staying visually set apart. -->
       <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-2">Settings</h3>
-      <p class="text-xs text-[#e6e6e6]/55 mb-3"><i>Sources</i> and <i>Channel EPG</i> settings are provider specific. If you have more than 1 provider configured, verify the desired one is selected in the <i>Providers</i> panel above.</p>
       <div class="flex flex-wrap items-end gap-1 sm:gap-6 border-b border-[#e6e6e6]/15 mb-6">
         <button id="sources-trigger-btn" onclick="toggleSourcesPanel()" class="bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
           <i class="fa-solid fa-server"></i>
@@ -324,6 +323,9 @@
           <div class="min-w-0">
             <div class="flex items-center gap-3">
               <h3 class="font-bold text-sm text-[#e6e6e6]/75">Category Search</h3>
+              <span id="sources-provider-badge" class="hidden flex items-center gap-1.5 bg-[#3b8fc4]/15 border border-[#3b8fc4]/40 text-[#5aa8d1] rounded-full px-2 py-0.5 text-[10px] font-bold">
+                <i class="fa-solid fa-plug text-[9px]"></i><span></span>
+              </span>
               <button id="expand-all-btn" onclick="toggleAllAccordions()" class="text-xs font-bold text-[#5aa8d1] hover:text-[#6bb5dd] flex items-center gap-1.5 transition">
                 <i class="fa-solid fa-expand"></i>
                 Expand All
@@ -425,7 +427,12 @@
            left - empty/placeholder until one is clicked. -->
       <div id="channel-epg-panel" class="hidden bg-[#3b4d58]/60 border border-[#e6e6e6]/15 rounded-lg p-4 mb-6">
         <div class="flex items-start justify-between gap-4 mb-3">
-          <p class="text-xs text-[#e6e6e6]/55 min-w-0">Pick a channel on the left, then choose an EPG source for it on the right. Only categories you've selected in Category Search are shown.</p>
+          <div class="min-w-0">
+            <span id="channel-epg-provider-badge" class="hidden flex items-center gap-1.5 mb-1.5 bg-[#3b8fc4]/15 border border-[#3b8fc4]/40 text-[#5aa8d1] rounded-full px-2 py-0.5 text-[10px] font-bold">
+              <i class="fa-solid fa-plug text-[9px]"></i><span></span>
+            </span>
+            <p class="text-xs text-[#e6e6e6]/55 min-w-0">Pick a channel on the left, then choose an EPG source for it on the right. Only categories you've selected in Category Search are shown.</p>
+          </div>
           <button onclick="refreshCategoriesForChannelEpg()" class="shrink-0 bg-[#c9992e] hover:bg-[#dba93e] text-[#1a1a1a] text-xs font-bold py-2 px-4 rounded-lg transition flex items-center">
             <i class="fa-solid fa-rotate mr-2"></i>Refresh Categories
           </button>
@@ -2836,6 +2843,28 @@
           <i class="fa-solid fa-plus"></i> Add Provider
         </button>
       `;
+      updateProviderContextBadges();
+    }
+
+    // Sources and Channel EPG are the only two settings panels that read
+    // from the active provider tab rather than the whole account - this
+    // names that provider right on each panel instead of a standing
+    // disclaimer, and only when there's actually more than one provider to
+    // disambiguate between. Driven off renderProviderTabs() (rather than
+    // called separately) so it can never drift out of sync with the tab
+    // strip - rename/add/remove/switch all funnel through there already.
+    function updateProviderContextBadges() {
+      const multiProvider = !!(activeUser && activeUser.providers.length > 1);
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      const label = provider ? (provider.label || `Provider ${activeProviderIndex + 1}`) : '';
+      const icon = provider && provider.connectionType === 'm3u' ? 'fa-list' : 'fa-plug';
+      ['sources-provider-badge', 'channel-epg-provider-badge'].forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.classList.toggle('hidden', !multiProvider);
+        el.querySelector('i').className = `fa-solid ${icon} text-[9px]`;
+        el.querySelector('span').textContent = label;
+      });
     }
 
     function renameProviderTab(index) {
