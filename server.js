@@ -448,6 +448,103 @@ function savePresets(list) {
 
 let presets = loadPresets();
 
+// Gates a preset from reaching users (via /api/presets and
+// /api/presets/public) until an admin has actually looked at it - a preset
+// authored through the admin panel's own create flow (see
+// /api/admin/presets/create) already gets that look right there via the
+// missing-EPG-source prompt, but presets can also arrive by shipping an
+// updated presets.json in a code update, with no admin interaction at all.
+// Without a gate, a preset like that goes live for every account the
+// instant the update is deployed, EPG overrides included - and if those
+// overrides need an EPGShare01 source this admin hasn't enabled, they just
+// silently resolve to nothing.
+//
+// Keyed by preset id -> a content hash, not just a plain "seen it" flag, so
+// a later edit to an already-published preset (say, a future update adds
+// more EPG overrides to one that's already live) drops it back into
+// pending too - editing a live preset is exactly as capable of introducing
+// an unreviewed EPG dependency as adding a brand new one. This also means
+// there is deliberately no separate "pending" field to remember to set on
+// a preset when authoring one by hand - a preset becomes pending purely by
+// its id+content not already being in this file, so it can't be forgotten.
+const REVIEWED_PRESETS_FILE = path.join(DATA_DIR, 'reviewed-presets.json');
+
+// Object order doesn't reflect anything meaningful (insertion order across
+// however presets.json happens to be edited/merged), and JSON.stringify's
+// key order for JS objects generally follows insertion order - so without
+// sorting, an edit that's a no-op for hashing purposes (a git merge that
+// reorders sportCategories keys, for instance) would still flip a preset
+// back to pending. Array order is left alone: those lists (selectedSports,
+// category names, epgSources) come straight from a real export/authoring
+// action, and reordering happens to matter for at least one of them
+// downstream, so array order is treated as meaningful content.
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + stableStringify(value[k])).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function hashPresetContent(preset) {
+  const content = {
+    name: preset.name,
+    icon: preset.icon,
+    connectionType: preset.connectionType,
+    selectedSports: preset.selectedSports,
+    sportCategories: preset.sportCategories,
+    epgOverrides: preset.epgOverrides,
+    epgSources: preset.epgSources || []
+  };
+  return crypto.createHash('sha256').update(stableStringify(content)).digest('hex');
+}
+
+function loadReviewedPresets() {
+  if (!fs.existsSync(REVIEWED_PRESETS_FILE)) return null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(REVIEWED_PRESETS_FILE, 'utf8'));
+    return (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+  } catch (err) {
+    console.error('[Storage] Error loading reviewed-presets.json, treating as empty:', err.message);
+    return {};
+  }
+}
+
+function saveReviewedPresets(map) {
+  try {
+    fs.writeFileSync(REVIEWED_PRESETS_FILE, JSON.stringify(map, null, 2), 'utf8');
+  } catch (err) {
+    console.error('[Storage] Failed to save reviewed-presets.json:', err.message);
+  }
+}
+
+let reviewedPresets = loadReviewedPresets();
+if (reviewedPresets === null) {
+  // No review file yet - either a fresh install, or an upgrade from before
+  // this gate existed. Either way, whatever's already sitting in
+  // presets.json predates the concept of review and may already be live
+  // for users, so it's grandfathered in as reviewed rather than yanked out
+  // from under them. Only presets added or edited from this point on need
+  // an actual look.
+  reviewedPresets = {};
+  presets.forEach(p => { reviewedPresets[p.id] = hashPresetContent(p); });
+  saveReviewedPresets(reviewedPresets);
+}
+
+function isPresetReviewed(preset) {
+  return reviewedPresets[preset.id] === hashPresetContent(preset);
+}
+
+function markPresetReviewed(preset) {
+  reviewedPresets = { ...reviewedPresets, [preset.id]: hashPresetContent(preset) };
+  saveReviewedPresets(reviewedPresets);
+}
+
+function computeMissingSourcesForPreset(preset) {
+  const validEpgSources = Array.isArray(preset.epgSources) ? preset.epgSources.filter(f => epgshare.isKnownSourceFile(f)) : [];
+  return validEpgSources.filter(f => !epgShareSettings.enabledSources.includes(f));
+}
+
 // App-managed admin credentials - lets a fresh install set an admin
 // password through the UI itself, rather than requiring a manual
 // docker-compose.yml/.env edit and restart before the admin panel is
@@ -2247,7 +2344,11 @@ app.post('/api/presets', async (req, res) => {
   }
   clearFailedAttempts(ip);
 
-  return res.json({ success: true, presets });
+  // Unreviewed presets (brand new or edited since a shipped update, not yet
+  // looked at by this admin - see isPresetReviewed above) are withheld
+  // entirely rather than shown with a caveat, since an unreviewed preset
+  // may reference an EPG source this admin hasn't enabled yet.
+  return res.json({ success: true, presets: presets.filter(isPresetReviewed) });
 });
 
 // Same read-only, account-agnostic preset list as /api/presets above, but
@@ -2257,7 +2358,7 @@ app.post('/api/presets', async (req, res) => {
 // there's nothing here worth gating behind auth; same reasoning as the
 // wizard's own pre-account /api/xtream/categories and /api/m3u/import.
 app.post('/api/presets/public', (req, res) => {
-  return res.json({ success: true, presets });
+  return res.json({ success: true, presets: presets.filter(isPresetReviewed) });
 });
 
 app.post('/api/user/register', async (req, res) => {
@@ -2746,7 +2847,14 @@ app.post('/api/admin/presets', async (req, res) => {
   }
   clearFailedAttempts(ip);
 
-  return res.json({ success: true, presets });
+  // Unlike the user-facing /api/presets, the admin's own list shows
+  // everything including unreviewed presets - reviewed/missingSources are
+  // computed per preset so admin.html can flag which ones still need a
+  // look without a second round trip.
+  return res.json({
+    success: true,
+    presets: presets.map(p => ({ ...p, reviewed: isPresetReviewed(p), missingSources: computeMissingSourcesForPreset(p) }))
+  });
 });
 
 // Takes the exact payload exportProviderSettings() (index.html) produces
@@ -2824,8 +2932,51 @@ app.post('/api/admin/presets/create', async (req, res) => {
 
   presets = [...presets, preset];
   savePresets(presets);
+  // Created right here through this form, missing-source prompt included -
+  // that already is the review, so this doesn't also need to sit in the
+  // pending queue.
+  markPresetReviewed(preset);
 
   return res.json({ success: true, preset, epgShareSettings });
+});
+
+app.post('/api/admin/presets/review', async (req, res) => {
+  const { username, password, id, action } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  if (action !== 'publish' && action !== 'publish-and-enable') {
+    return res.status(400).json({ error: 'Invalid action.' });
+  }
+  const preset = presets.find(p => p.id === id);
+  if (!preset) {
+    return res.status(404).json({ error: 'Preset not found.' });
+  }
+
+  if (action === 'publish-and-enable') {
+    const missingSources = computeMissingSourcesForPreset(preset);
+    if (missingSources.length > 0) {
+      epgShareSettings = { enabledSources: [...new Set([...epgShareSettings.enabledSources, ...missingSources])] };
+      saveEpgShareSettings(epgShareSettings);
+      epgshare.refreshEnabledSources(missingSources).catch(err => {
+        console.error('[EPGShare01] Initial fetch for newly-enabled sources failed:', err.message);
+      });
+    }
+  }
+
+  markPresetReviewed(preset);
+
+  return res.json({ success: true, epgShareSettings });
 });
 
 app.post('/api/admin/presets/delete', async (req, res) => {
@@ -2845,6 +2996,11 @@ app.post('/api/admin/presets/delete', async (req, res) => {
 
   presets = presets.filter(p => p.id !== id);
   savePresets(presets);
+  if (Object.prototype.hasOwnProperty.call(reviewedPresets, id)) {
+    const { [id]: _removed, ...rest } = reviewedPresets;
+    reviewedPresets = rest;
+    saveReviewedPresets(reviewedPresets);
+  }
 
   return res.json({ success: true });
 });

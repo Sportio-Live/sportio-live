@@ -129,7 +129,19 @@
           </div>
         </div>
         <div id="section-body-presets" class="px-4 pb-4">
-        <p class="text-xs text-[#e6e6e6]/55 mb-4">Import a user's exported settings file (from their dashboard's Sources &gt; Export/Import panel), give it a name and an icon, and save it as a preset. An export never contains credentials, so nothing sensitive ends up here. How a user later applies a preset isn't built yet - this just authors them.</p>
+        <p class="text-xs text-[#e6e6e6]/55 mb-4">Import a user's exported settings file (from their dashboard's Sources &gt; Export/Import panel), give it a name and an icon, and save it as a preset. An export never contains credentials, so nothing sensitive ends up here.</p>
+
+        <!-- Presets added or edited by a code update (rather than through
+             the form below) land here first and are withheld from users
+             until reviewed - see isPresetReviewed in server.js. Hidden
+             entirely when there's nothing pending. -->
+        <div id="pending-presets-section" class="hidden bg-[#3a2f1f]/50 border border-[#c9992e]/40 rounded-lg p-4 mb-4">
+          <h3 id="pending-presets-heading" class="text-xs font-bold text-[#e6c88a] mb-1 flex items-center gap-2">
+            <i class="fa-solid fa-triangle-exclamation"></i><span></span>
+          </h3>
+          <p class="text-xs text-[#e6e6e6]/55 mb-3">These were added or changed by an update and aren't visible to users yet - review each one below.</p>
+          <div id="pending-presets-list" class="space-y-2"></div>
+        </div>
 
         <div class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-4 mb-4 max-w-md">
           <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Settings file</label>
@@ -843,6 +855,7 @@
         if (data.success) {
           presets = data.presets;
           renderPresetsList();
+          renderPendingPresetsList();
         }
       } catch (err) {
         console.error('Failed to load presets:', err.message);
@@ -1005,6 +1018,9 @@
         const badge = p.connectionType === 'm3u'
           ? '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#3b8fc4]/20 text-[#5aa8d1]">M3U</span>'
           : '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#4a9d52]/20 text-[#a8e0ac]">Xtream</span>';
+        const pendingBadge = p.reviewed
+          ? ''
+          : '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#c9992e]/20 text-[#e6c88a]">Pending Review</span>';
         return `
         <div class="flex items-center gap-3 bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2">
           <div class="w-8 h-8 shrink-0 flex items-center justify-center bg-[#3b4d58] rounded-lg text-[#5aa8d1]">
@@ -1014,6 +1030,7 @@
             <div class="flex items-center gap-2">
               <span class="text-xs font-semibold truncate">${escapeHtml(p.name)}</span>
               ${badge}
+              ${pendingBadge}
             </div>
             <div class="text-[10px] text-[#e6e6e6]/45">${p.selectedSports.length} league${p.selectedSports.length === 1 ? '' : 's'}, ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'}, ${overrideCount} override${overrideCount === 1 ? '' : 's'} - ${formatDate(p.createdAt)}</div>
           </div>
@@ -1023,6 +1040,76 @@
         </div>
       `;
       }).join('');
+    }
+
+    // Presets whose stored content hash doesn't match what this admin last
+    // reviewed - either brand new (added by a code update rather than
+    // through the form above) or edited since the last review (see
+    // isPresetReviewed/hashPresetContent in server.js). Withheld from users
+    // entirely (see /api/presets, /api/presets/public) until acted on here.
+    function renderPendingPresetsList() {
+      const pending = presets.filter(p => !p.reviewed);
+      const section = document.getElementById('pending-presets-section');
+      section.classList.toggle('hidden', pending.length === 0);
+      if (pending.length === 0) return;
+
+      document.getElementById('pending-presets-heading').querySelector('span').textContent =
+        `${pending.length} preset${pending.length === 1 ? '' : 's'} awaiting review`;
+
+      document.getElementById('pending-presets-list').innerHTML = pending.map(p => {
+        const categoryCount = Object.values(p.sportCategories).reduce((sum, arr) => sum + arr.length, 0);
+        const overrideCount = Object.keys(p.epgOverrides).length;
+        const badge = p.connectionType === 'm3u'
+          ? '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#3b8fc4]/20 text-[#5aa8d1]">M3U</span>'
+          : '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#4a9d52]/20 text-[#a8e0ac]">Xtream</span>';
+        const missingNote = p.missingSources.length > 0
+          ? `<p class="text-xs text-[#e6c88a] mb-2">Needs ${p.missingSources.length} EPG source${p.missingSources.length === 1 ? '' : 's'} you don't have enabled: ${p.missingSources.map(epgShareSourceLabel).join(', ')}.</p>`
+          : '';
+        const enableBtn = p.missingSources.length > 0
+          ? `<button type="button" onclick="reviewPreset('${p.id}', 'publish-and-enable')" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-1.5 px-3 rounded-lg text-xs transition">Enable sources and publish</button>`
+          : '';
+        return `
+        <div class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3">
+          <div class="flex items-center gap-3 mb-2">
+            <div class="w-8 h-8 shrink-0 flex items-center justify-center bg-[#3b4d58] rounded-lg text-[#5aa8d1]">
+              <i class="fa-solid fa-${p.icon}"></i>
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2">
+                <span class="text-xs font-semibold truncate">${escapeHtml(p.name)}</span>
+                ${badge}
+              </div>
+              <div class="text-[10px] text-[#e6e6e6]/45">${p.selectedSports.length} league${p.selectedSports.length === 1 ? '' : 's'}, ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'}, ${overrideCount} override${overrideCount === 1 ? '' : 's'}</div>
+            </div>
+          </div>
+          ${missingNote}
+          <div class="flex flex-wrap gap-2">
+            ${enableBtn}
+            <button type="button" onclick="reviewPreset('${p.id}', 'publish')" class="bg-[#56707d] hover:bg-[#66818f] font-bold py-1.5 px-3 rounded-lg text-xs transition">${p.missingSources.length > 0 ? 'Publish anyway' : 'Publish'}</button>
+            <button type="button" onclick="deletePreset('${p.id}')" class="text-[#e6e6e6]/55 hover:text-[#e6e6e6] font-bold py-1.5 px-3 rounded-lg text-xs transition">Delete</button>
+          </div>
+        </div>
+      `;
+      }).join('');
+    }
+
+    async function reviewPreset(id, action) {
+      try {
+        const res = await fetch('/api/admin/presets/review', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...adminCreds, id, action })
+        });
+        const data = await res.json();
+        if (data.success) {
+          await loadPresets();
+          showAdminStatus(action === 'publish-and-enable' ? 'Sources enabled and preset published.' : 'Preset published.');
+        } else {
+          showAdminStatus(data.error || 'Failed to publish preset.', true);
+        }
+      } catch (err) {
+        showAdminStatus('Network error while publishing the preset.', true);
+      }
     }
 
     async function deletePreset(id) {
@@ -1041,6 +1128,7 @@
         if (data.success) {
           presets = presets.filter(p => p.id !== id);
           renderPresetsList();
+          renderPendingPresetsList();
           showAdminStatus('Preset deleted.');
         } else {
           showAdminStatus(data.error || 'Failed to delete preset.', true);
