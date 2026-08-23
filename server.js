@@ -139,9 +139,11 @@ if (!fs.existsSync(DATA_DIR)) {
 
 // Deliberately NOT under DATA_DIR - data/ is gitignored and excluded from
 // the Docker build context (instance-local runtime state: accounts,
-// admin credentials, caches), but presets are curated, shippable content
-// an operator explicitly wants committed and distributed with the repo.
-// Built from __dirname directly so it can never drift under data/.
+// admin credentials, caches), but stock presets are curated, shippable
+// content an operator explicitly wants committed and distributed with the
+// repo. Built from __dirname directly so it can never drift under data/.
+// Never written to at runtime (see LOCAL_PRESETS_FILE below for that) -
+// this file only ever changes by editing it and shipping a code update.
 const PRESETS_DIR = path.join(__dirname, 'presets');
 const PRESETS_FILE = path.join(PRESETS_DIR, 'presets.json');
 
@@ -149,6 +151,13 @@ if (!fs.existsSync(PRESETS_DIR)) {
   fs.mkdirSync(PRESETS_DIR, { recursive: true });
   console.log(`[Storage] Created presets directory at ${PRESETS_DIR}`);
 }
+
+// The instance-local counterpart to PRESETS_FILE: presets an admin creates
+// through this instance's own admin panel. Lives under DATA_DIR precisely
+// because it must NOT be shipped/committed - it's this deployment's own
+// content, and it must survive pulling a code update that ships a new
+// PRESETS_FILE without being clobbered by (or clobbering) that update.
+const LOCAL_PRESETS_FILE = path.join(DATA_DIR, 'local-presets.json');
 
 app.use(cors());
 app.use(express.json());
@@ -426,28 +435,46 @@ function isValidStoredPreset(p) {
     && (p.epgSources === undefined || (Array.isArray(p.epgSources) && p.epgSources.every(f => typeof f === 'string')));
 }
 
-function loadPresets() {
-  if (!fs.existsSync(PRESETS_FILE)) return [];
+function loadPresets(file, label) {
+  if (!fs.existsSync(file)) return [];
   try {
-    const raw = JSON.parse(fs.readFileSync(PRESETS_FILE, 'utf8'));
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
     return Array.isArray(raw)
       ? raw.filter(isValidStoredPreset).map(p => ({ ...p, epgSources: p.epgSources || [] }))
       : [];
   } catch (err) {
-    console.error('[Storage] Error loading presets.json, using an empty list:', err.message);
+    console.error(`[Storage] Error loading ${label}, using an empty list:`, err.message);
     return [];
   }
 }
 
-function savePresets(list) {
+// Stock presets are never written at runtime - only shipped via the repo -
+// so there is deliberately no saveStockPresets. Local presets are this
+// instance's own, so they get the usual load/save pair.
+function loadStockPresets() {
+  return loadPresets(PRESETS_FILE, 'presets.json');
+}
+
+function loadLocalPresets() {
+  return loadPresets(LOCAL_PRESETS_FILE, 'local-presets.json');
+}
+
+function saveLocalPresets(list) {
   try {
-    fs.writeFileSync(PRESETS_FILE, JSON.stringify(list, null, 2), 'utf8');
+    fs.writeFileSync(LOCAL_PRESETS_FILE, JSON.stringify(list, null, 2), 'utf8');
   } catch (err) {
-    console.error('[Storage] Failed to save presets.json:', err.message);
+    console.error('[Storage] Failed to save local-presets.json:', err.message);
   }
 }
 
-let presets = loadPresets();
+let stockPresets = loadStockPresets();
+let localPresets = loadLocalPresets();
+
+// The combined view every read site actually serves - callers never need to
+// care which file a given preset came from.
+function getAllPresets() {
+  return [...stockPresets, ...localPresets];
+}
 
 // Gates a preset from reaching users (via /api/presets and
 // /api/presets/public) until an admin has actually looked at it - a preset
@@ -528,7 +555,7 @@ if (reviewedPresets === null) {
   // from under them. Only presets added or edited from this point on need
   // an actual look.
   reviewedPresets = {};
-  presets.forEach(p => { reviewedPresets[p.id] = hashPresetContent(p); });
+  getAllPresets().forEach(p => { reviewedPresets[p.id] = hashPresetContent(p); });
   saveReviewedPresets(reviewedPresets);
 }
 
@@ -2510,7 +2537,7 @@ app.post('/api/presets', async (req, res) => {
   // looked at by this admin - see isPresetReviewed above) are withheld
   // entirely rather than shown with a caveat, since an unreviewed preset
   // may reference an EPG source this admin hasn't enabled yet.
-  return res.json({ success: true, presets: presets.filter(isPresetReviewed) });
+  return res.json({ success: true, presets: getAllPresets().filter(isPresetReviewed) });
 });
 
 // Same read-only, account-agnostic preset list as /api/presets above, but
@@ -2520,7 +2547,7 @@ app.post('/api/presets', async (req, res) => {
 // there's nothing here worth gating behind auth; same reasoning as the
 // wizard's own pre-account /api/xtream/categories and /api/m3u/import.
 app.post('/api/presets/public', (req, res) => {
-  return res.json({ success: true, presets: presets.filter(isPresetReviewed) });
+  return res.json({ success: true, presets: getAllPresets().filter(isPresetReviewed) });
 });
 
 app.post('/api/user/register', async (req, res) => {
@@ -3015,7 +3042,7 @@ app.post('/api/admin/presets', async (req, res) => {
   // look without a second round trip.
   return res.json({
     success: true,
-    presets: presets.map(p => ({ ...p, reviewed: isPresetReviewed(p), missingSources: computeMissingSourcesForPreset(p) }))
+    presets: getAllPresets().map(p => ({ ...p, isStock: stockPresets.some(sp => sp.id === p.id), reviewed: isPresetReviewed(p), missingSources: computeMissingSourcesForPreset(p) }))
   });
 });
 
@@ -3092,8 +3119,12 @@ app.post('/api/admin/presets/create', async (req, res) => {
     createdAt: new Date().toISOString()
   };
 
-  presets = [...presets, preset];
-  savePresets(presets);
+  // Written to LOCAL_PRESETS_FILE, never PRESETS_FILE - this is this
+  // instance's own preset, not something this deployment ships to anyone
+  // else. To make a preset part of the stock set distributed with the repo,
+  // it has to be added to presets/presets.json by hand and committed.
+  localPresets = [...localPresets, preset];
+  saveLocalPresets(localPresets);
   // Created right here through this form, missing-source prompt included -
   // that already is the review, so this doesn't also need to sit in the
   // pending queue.
@@ -3120,7 +3151,7 @@ app.post('/api/admin/presets/review', async (req, res) => {
   if (action !== 'publish' && action !== 'publish-and-enable') {
     return res.status(400).json({ error: 'Invalid action.' });
   }
-  const preset = presets.find(p => p.id === id);
+  const preset = getAllPresets().find(p => p.id === id);
   if (!preset) {
     return res.status(404).json({ error: 'Preset not found.' });
   }
@@ -3156,8 +3187,18 @@ app.post('/api/admin/presets/delete', async (req, res) => {
   }
   clearFailedAttempts(ip);
 
-  presets = presets.filter(p => p.id !== id);
-  savePresets(presets);
+  // Stock presets ship with the repo and are only ever removed by editing
+  // presets/presets.json and shipping an update - this endpoint can only
+  // remove this instance's own local presets.
+  if (stockPresets.some(p => p.id === id)) {
+    return res.status(400).json({ error: 'This is a built-in preset - it can only be removed by shipping a code update, not from an instance admin panel.' });
+  }
+  const beforeCount = localPresets.length;
+  localPresets = localPresets.filter(p => p.id !== id);
+  if (localPresets.length === beforeCount) {
+    return res.status(404).json({ error: 'Preset not found.' });
+  }
+  saveLocalPresets(localPresets);
   if (Object.prototype.hasOwnProperty.call(reviewedPresets, id)) {
     const { [id]: _removed, ...rest } = reviewedPresets;
     reviewedPresets = rest;

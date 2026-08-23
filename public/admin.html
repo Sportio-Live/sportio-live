@@ -1021,6 +1021,17 @@
         const pendingBadge = p.reviewed
           ? ''
           : '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#c9992e]/20 text-[#e6c88a]">Pending Review</span>';
+        // Stock presets ship with the repo and can only be removed by
+        // editing presets/presets.json and shipping an update (see
+        // /api/admin/presets/delete) - no delete button here for those.
+        const stockBadge = p.isStock
+          ? '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#56707d]/30 text-[#e6e6e6]/70">Built-in</span>'
+          : '';
+        const deleteBtn = p.isStock
+          ? ''
+          : `<button type="button" onclick="deletePreset('${p.id}')" class="shrink-0 bg-[#c0392b] hover:bg-[#d8483a] text-white text-xs font-bold py-1.5 px-3 rounded-lg transition">
+            <i class="fa-solid fa-trash"></i>
+          </button>`;
         return `
         <div class="flex items-center gap-3 bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2">
           <div class="w-8 h-8 shrink-0 flex items-center justify-center bg-[#3b4d58] rounded-lg text-[#5aa8d1]">
@@ -1030,13 +1041,12 @@
             <div class="flex items-center gap-2">
               <span class="text-xs font-semibold truncate">${escapeHtml(p.name)}</span>
               ${badge}
+              ${stockBadge}
               ${pendingBadge}
             </div>
             <div class="text-[10px] text-[#e6e6e6]/45">${p.selectedSports.length} league${p.selectedSports.length === 1 ? '' : 's'}, ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'}, ${overrideCount} override${overrideCount === 1 ? '' : 's'} - ${formatDate(p.createdAt)}</div>
           </div>
-          <button type="button" onclick="deletePreset('${p.id}')" class="shrink-0 bg-[#c0392b] hover:bg-[#d8483a] text-white text-xs font-bold py-1.5 px-3 rounded-lg transition">
-            <i class="fa-solid fa-trash"></i>
-          </button>
+          ${deleteBtn}
         </div>
       `;
       }).join('');
