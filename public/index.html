@@ -490,7 +490,7 @@
 
         <div class="pt-4 border-t border-[#e6e6e6]/15">
           <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-1">Import</h3>
-          <p class="text-xs text-[#e6e6e6]/55 mb-3">Import someone else's settings file. Only entries that actually match something on your own account are applied - anything else is skipped and reported below.</p>
+          <p class="text-xs text-[#e6e6e6]/55 mb-3">Import someone else's settings file. This <span class="text-[#e6e6e6]/80 font-semibold">replaces your current leagues and category assignments</span> with theirs. Your own EPG overrides are kept - the file only overwrites overrides for a channel it also sets. Only entries that actually match something on your own account are applied; anything else is skipped and reported below.</p>
           <input type="file" id="export-import-file-input" accept="application/json" class="hidden" onchange="handleImportFileSelected(event)">
           <button onclick="document.getElementById('export-import-file-input').click()" class="bg-[#56707d] hover:bg-[#66818f] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2">
             <i class="fa-solid fa-upload"></i>
@@ -2342,27 +2342,31 @@
       const categoryIdByName = {};
       fetchedCategories.forEach(c => { categoryIdByName[c.category_name] = String(c.category_id); });
 
-      provider.sportCategories = provider.sportCategories || {};
-      provider.selectedSports = provider.selectedSports || [];
+      // Categories and leagues are a full replacement, not a merge - an
+      // imported file represents someone's complete league/category setup,
+      // and leaving the importing user's own prior selections mixed in
+      // would produce a hybrid neither side actually asked for. EPG
+      // overrides below are the opposite: kept, with the file only
+      // overwriting entries for a channel it explicitly names.
+      provider.sportCategories = {};
+      provider.selectedSports = [];
       const allowedSports = new Set([...SPORTS, 'GLOBAL']);
 
       let categoriesApplied = 0;
       let categoriesSkipped = 0;
-      let sportsEnabled = 0;
 
       Object.entries(data.sportCategories).forEach(([sport, names]) => {
         if (!allowedSports.has(sport) || !Array.isArray(names)) return;
-        const existing = new Set(provider.sportCategories[sport] || []);
+        const resolved = new Set();
         names.forEach(name => {
           const id = categoryIdByName[name];
-          if (id) { existing.add(id); categoriesApplied++; }
+          if (id) { resolved.add(id); categoriesApplied++; }
           else categoriesSkipped++;
         });
-        if (existing.size > 0) {
-          provider.sportCategories[sport] = [...existing];
+        if (resolved.size > 0) {
+          provider.sportCategories[sport] = [...resolved];
           if (sport !== 'GLOBAL' && !provider.selectedSports.includes(sport)) {
             provider.selectedSports.push(sport);
-            sportsEnabled++;
           }
         }
       });
@@ -2371,7 +2375,6 @@
         data.selectedSports.forEach(sport => {
           if (allowedSports.has(sport) && sport !== 'GLOBAL' && !provider.selectedSports.includes(sport)) {
             provider.selectedSports.push(sport);
-            sportsEnabled++;
           }
         });
       }
@@ -2412,7 +2415,11 @@
       renderActiveProviderPanel();
       markDashboardDirty();
 
-      const lines = [`<div class="text-[#a8e0ac] font-semibold">Applied ${categoriesApplied} categor${categoriesApplied === 1 ? 'y' : 'ies'}${sportsEnabled > 0 ? ` (enabled ${sportsEnabled} new league${sportsEnabled === 1 ? '' : 's'})` : ''} and ${overridesApplied} EPG override${overridesApplied === 1 ? '' : 's'}.</div>`];
+      const leagueCount = provider.selectedSports.length;
+      const lines = [
+        `<div class="text-[#a8e0ac] font-semibold">Applied ${categoriesApplied} categor${categoriesApplied === 1 ? 'y' : 'ies'} across ${leagueCount} league${leagueCount === 1 ? '' : 's'} - this replaced your previous league/category selections for this provider.</div>`,
+        `<div class="text-[#a8e0ac]">Applied ${overridesApplied} EPG override${overridesApplied === 1 ? '' : 's'} - your own overrides were kept, with the file winning on any channel it also overrides.</div>`
+      ];
       const skippedParts = [];
       if (categoriesSkipped > 0) skippedParts.push(`${categoriesSkipped} categor${categoriesSkipped === 1 ? 'y' : 'ies'} not found`);
       if (overridesNotFound > 0) skippedParts.push(`${overridesNotFound} channel${overridesNotFound === 1 ? '' : 's'} not found`);
