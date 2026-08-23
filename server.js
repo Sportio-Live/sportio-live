@@ -3059,6 +3059,15 @@ function buildFormatterFields(game, stream) {
   };
 }
 
+// Reserved provider.epgOverrides value meaning "use this channel's own
+// (live) name as its description" instead of an EPGShare01 channel id -
+// mirrored exactly in public/index.html, which is the only other place
+// this string is written or compared. Safe to reserve: real EPGShare01
+// ids look like "365BLK.us2"/"NBA-BostonCeltics.us", never
+// double-underscore-wrapped. See applyChannelEpgOverrides below for
+// where it's actually resolved.
+const EPG_OVERRIDE_SELF_NAME = '__CHANNEL_NAME__';
+
 app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
   const user = userConfigs[req.params.uuid];
   if (!user) return res.json({ streams: [] });
@@ -3136,6 +3145,12 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
     return streams.map(s => {
       const targetChannelId = overrides[s.channelId];
       if (!targetChannelId) return s;
+      // No external source involved at all - reads the channel's current
+      // name fresh off this candidate on every request, so it tracks the
+      // channel's own name automatically as it changes, with no caching.
+      if (targetChannelId === EPG_OVERRIDE_SELF_NAME) {
+        return { ...s, description: s.name };
+      }
       const override = epgshare.findOverrideProgramme(targetChannelId, epgShareSettings.enabledSources, gameTimestamp);
       if (!override) return s;
       // description, not title - findOverrideProgramme already falls back

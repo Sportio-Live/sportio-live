@@ -285,7 +285,7 @@
         </button>
         <button id="channel-epg-btn" onclick="toggleChannelEpgPanel()" class="bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
           <i class="fa-solid fa-satellite-dish"></i>
-          Channel EPG
+          EPG Overrides
         </button>
         <button id="export-import-btn" onclick="toggleExportImportPanel()" class="bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
           <i class="fa-solid fa-file-export"></i>
@@ -635,6 +635,28 @@
     let channelEpgExpandedCategories = new Set();
     let channelEpgSelectedChannelId = null;
     let channelEpgOnlyOverrides = false;
+
+    // Multi-select (shift/ctrl-click) state for the bulk "use channel name
+    // as description" action. channelEpgSelectedChannelId (above) is still
+    // the single-select source of truth the existing per-channel editor
+    // reads - kept in sync below rather than replaced, so that editor needs
+    // no changes at all. channelEpgVisibleOrder is rebuilt on every
+    // renderChannelEpgCategories() call and is what a shift-click range is
+    // computed against - only currently-expanded/visible rows are
+    // range-selectable, same as most file managers.
+    let channelEpgSelectedChannelIds = new Set();
+    let channelEpgSelectionAnchor = null;
+    let channelEpgVisibleOrder = [];
+
+    // Reserved sentinel for provider.epgOverrides values - every other
+    // value in that map is a real EPGShare01 channel id (e.g.
+    // "365BLK.us2"), which never looks like this. Mirrored exactly in
+    // server.js's applyChannelEpgOverrides, which is what actually
+    // resolves it into a live description at request time (reading the
+    // channel's current name fresh on every request, not a stored
+    // snapshot - "updating when the channel's name updates" falls out of
+    // that for free).
+    const EPG_OVERRIDE_SELF_NAME = '__CHANNEL_NAME__';
 
     // Setup wizard state (new-account creation only)
     let wizardSelectedSports = [];
@@ -2163,6 +2185,8 @@
         document.getElementById('channel-epg-search').value = '';
         channelEpgExpandedCategories = new Set();
         channelEpgSelectedChannelId = null;
+        channelEpgSelectedChannelIds = new Set();
+        channelEpgSelectionAnchor = null;
         channelEpgSuggestResults = null;
         channelEpgOnlyOverrides = false;
         document.getElementById('channel-epg-only-overrides').checked = false;
@@ -2707,6 +2731,10 @@
         .map(id => ({ id, name: getCategoryNameById(id) }))
         .sort((a, b) => a.name.localeCompare(b.name));
 
+      // Rebuilt from scratch on every render - only rows actually visible
+      // right now are valid shift-click range endpoints.
+      channelEpgVisibleOrder = [];
+
       if (channelEpgChannels.length === 0) {
         container.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No channels loaded yet.</p>';
         return;
@@ -2736,13 +2764,14 @@
         const isExpanded = isFiltering ? true : channelEpgExpandedCategories.has(catId);
 
         const channelsHtml = isExpanded ? matchingChannels.map(ch => {
+          channelEpgVisibleOrder.push(ch.id);
           const overrideTarget = provider.epgOverrides && provider.epgOverrides[ch.id];
-          const isSelected = ch.id === channelEpgSelectedChannelId;
+          const isSelected = channelEpgSelectedChannelIds.has(ch.id);
           const statusHtml = overrideTarget
-            ? `<span class="text-[10px] font-semibold text-[#5aa8d1]">&rarr; ${escapeHtml(overrideTarget)}</span>`
+            ? `<span class="text-[10px] font-semibold text-[#5aa8d1]">&rarr; ${overrideTarget === EPG_OVERRIDE_SELF_NAME ? 'Channel name' : escapeHtml(overrideTarget)}</span>`
             : `<span class="text-[10px] text-[#e6e6e6]/45">Provider EPG</span>`;
           return `
-            <button type="button" onclick="selectChannelForEpgEdit('${escapeJsAttr(ch.id)}')" class="w-full text-left pl-7 pr-3 py-1.5 transition ${isSelected ? 'bg-[#3b8fc4]/20 border-l-2 border-[#3b8fc4]' : 'border-l-2 border-transparent hover:bg-[#3b4d58]'}">
+            <button type="button" onclick="selectChannelForEpgEdit('${escapeJsAttr(ch.id)}', event)" class="w-full text-left pl-7 pr-3 py-1.5 transition ${isSelected ? 'bg-[#3b8fc4]/20 border-l-2 border-[#3b8fc4]' : 'border-l-2 border-transparent hover:bg-[#3b4d58]'}">
               <div class="text-xs font-semibold truncate">${escapeHtml(ch.name)}</div>
               ${statusHtml}
             </button>
@@ -2789,13 +2818,106 @@
       renderChannelEpgCategories();
     }
 
-    function selectChannelForEpgEdit(channelId) {
-      channelEpgSelectedChannelId = channelId;
+    // Standard file-manager-style modifier behavior: plain click collapses
+    // to just this row, ctrl/cmd-click toggles this row in/out of whatever
+    // was already selected (and becomes the new range anchor), shift-click
+    // selects the visible-order range between the anchor and this row. An
+    // anchor that's since scrolled out of the visible set (category
+    // collapsed, search changed) can't anchor a range, so that falls back
+    // to a plain single-select rather than doing something surprising.
+    function selectChannelForEpgEdit(channelId, event) {
+      if (event && event.shiftKey && channelEpgSelectionAnchor) {
+        const anchorIdx = channelEpgVisibleOrder.indexOf(channelEpgSelectionAnchor);
+        const clickedIdx = channelEpgVisibleOrder.indexOf(channelId);
+        if (anchorIdx !== -1 && clickedIdx !== -1) {
+          const [start, end] = anchorIdx < clickedIdx ? [anchorIdx, clickedIdx] : [clickedIdx, anchorIdx];
+          channelEpgSelectedChannelIds = new Set(channelEpgVisibleOrder.slice(start, end + 1));
+        } else {
+          channelEpgSelectedChannelIds = new Set([channelId]);
+          channelEpgSelectionAnchor = channelId;
+        }
+      } else if (event && (event.ctrlKey || event.metaKey)) {
+        if (channelEpgSelectedChannelIds.has(channelId)) {
+          channelEpgSelectedChannelIds.delete(channelId);
+        } else {
+          channelEpgSelectedChannelIds.add(channelId);
+        }
+        channelEpgSelectionAnchor = channelId;
+      } else {
+        channelEpgSelectedChannelIds = new Set([channelId]);
+        channelEpgSelectionAnchor = channelId;
+      }
+
+      channelEpgSelectedChannelId = channelEpgSelectedChannelIds.size === 1
+        ? [...channelEpgSelectedChannelIds][0]
+        : null;
       // Last channel's matches would be actively misleading here - source
       // choice stays, but the results themselves are always per-channel.
       channelEpgSuggestResults = null;
       renderChannelEpgCategories();
+      if (channelEpgSelectedChannelIds.size >= 2) {
+        renderChannelEpgMultiEditor();
+      } else {
+        renderChannelEpgEditor();
+      }
+    }
+
+    // Bulk action: set every selected channel's override to the reserved
+    // "use this channel's own name" sentinel in one shot, instead of
+    // picking an EPGShare01 source per channel one at a time.
+    function renderChannelEpgMultiEditor() {
+      const editor = document.getElementById('channel-epg-editor');
+      const count = channelEpgSelectedChannelIds.size;
+      editor.innerHTML = `
+        <div class="flex flex-col items-center text-center gap-4 py-6">
+          <p class="text-sm font-semibold">${count} channels selected</p>
+          <p class="text-xs text-[#e6e6e6]/55 max-w-[220px]">Display channel names as descriptions?</p>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" id="multi-epg-name-toggle" onchange="updateMultiEpgApplyState()" class="sr-only peer">
+            <div class="w-9 h-5 bg-[#56707d] rounded-full peer-checked:bg-[#3b8fc4] transition"></div>
+            <div class="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full transition peer-checked:translate-x-4"></div>
+          </label>
+          <div class="flex gap-2">
+            <button type="button" onclick="cancelMultiEpgSelection()" class="bg-[#56707d] hover:bg-[#66818f] font-bold py-2 px-4 rounded-lg text-xs transition">Cancel</button>
+            <button type="button" id="multi-epg-apply-btn" onclick="applyMultiEpgSelfName()" disabled class="bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2 px-4 rounded-lg text-xs cursor-not-allowed transition">Apply</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function updateMultiEpgApplyState() {
+      const toggle = document.getElementById('multi-epg-name-toggle');
+      const btn = document.getElementById('multi-epg-apply-btn');
+      const ready = !!(toggle && toggle.checked);
+      btn.disabled = !ready;
+      btn.className = ready
+        ? 'bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2 px-4 rounded-lg text-xs transition'
+        : 'bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2 px-4 rounded-lg text-xs cursor-not-allowed transition';
+    }
+
+    function cancelMultiEpgSelection() {
+      channelEpgSelectedChannelIds = new Set();
+      channelEpgSelectionAnchor = null;
+      channelEpgSelectedChannelId = null;
+      renderChannelEpgCategories();
       renderChannelEpgEditor();
+    }
+
+    function applyMultiEpgSelfName() {
+      const toggle = document.getElementById('multi-epg-name-toggle');
+      if (!toggle || !toggle.checked) return;
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      if (!provider) return;
+      provider.epgOverrides = provider.epgOverrides || {};
+      channelEpgSelectedChannelIds.forEach(id => {
+        provider.epgOverrides[id] = EPG_OVERRIDE_SELF_NAME;
+      });
+      channelEpgSelectedChannelIds = new Set();
+      channelEpgSelectionAnchor = null;
+      channelEpgSelectedChannelId = null;
+      renderChannelEpgCategories();
+      renderChannelEpgEditor();
+      markDashboardDirty();
     }
 
     // --- Right panel: editor for the currently selected channel ---
@@ -2900,7 +3022,7 @@
       const overrideTarget = provider.epgOverrides && provider.epgOverrides[channel.id];
       const currentHtml = overrideTarget
         ? `<div class="shrink-0 max-w-[55%] flex items-center gap-2 bg-[#3b4d58] rounded-lg px-2.5 py-1.5">
-             <div class="text-xs text-right min-w-0"><span class="text-[#e6e6e6]/55">Using:</span> <span class="font-mono text-[#5aa8d1] break-all">${escapeHtml(overrideTarget)}</span></div>
+             <div class="text-xs text-right min-w-0"><span class="text-[#e6e6e6]/55">Using:</span> <span class="font-mono text-[#5aa8d1] break-all">${overrideTarget === EPG_OVERRIDE_SELF_NAME ? 'Channel name' : escapeHtml(overrideTarget)}</span></div>
              <button type="button" onclick="clearSelectedChannelEpgOverride()" class="text-[10px] font-bold text-[#e56a6a] hover:text-[#f0b8b8] transition shrink-0">Reset</button>
            </div>`
         : `<div class="shrink-0 text-xs text-[#e6e6e6]/55 bg-[#3b4d58] rounded-lg px-2.5 py-1.5 whitespace-nowrap">Using: <span class="font-semibold text-[#e6e6e6]/80">Provider EPG</span> (default)</div>`;
