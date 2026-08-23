@@ -1277,7 +1277,14 @@
       updateSettingsButtonStates();
     }
 
+    // Commits whatever's currently checked in Category Search into
+    // provider.sportCategories before the checkboxes disappear from the
+    // DOM - the only reason another settings panel would ever need to
+    // warn about "unsaved category changes" is this step being skipped,
+    // so every path that hides Sources runs through here rather than
+    // leaving that to chance.
     function closeSourcesPanelSilently() {
+      commitActiveProviderCategoryState();
       document.getElementById('sources-panel').classList.add('hidden');
       cancelAddProvider();
       updateSettingsButtonStates();
@@ -2661,16 +2668,16 @@
     // pick from whatever's left. Both write straight into the active
     // provider's selectedSports the moment they're clicked, matching every
     // other setting on this page. Re-rendering Category Search right away
-    // (via renderActiveProviderPanel) is what the UNSAVED_CHANGES_WARNING
-    // guard protects: that render rebuilds the category checkboxes from
-    // provider.sportCategories, discarding any not-yet-saved checkbox
-    // picks - same hazard confirmEditXtream/confirmEditM3u guard against.
+    // (via renderActiveProviderPanel) would normally rebuild the category
+    // checkboxes from provider.sportCategories, discarding any not-yet-
+    // saved checkbox picks - committing them first (same helper
+    // switchProviderTab uses) folds them in before that happens, so
+    // there's nothing left to lose and no need to interrupt with a
+    // confirm() for an edit that never leaves this panel.
 
     function removeLeagueFromCategorySearch(sport) {
-      if (dashboardHasUnsavedChanges && !confirm(UNSAVED_CHANGES_WARNING)) {
-        return;
-      }
       const provider = activeUser.providers[activeProviderIndex];
+      commitActiveProviderCategoryState();
       provider.selectedSports = [...getVisibleSports(provider)];
       const idx = provider.selectedSports.indexOf(sport);
       if (idx !== -1) provider.selectedSports.splice(idx, 1);
@@ -2679,10 +2686,8 @@
     }
 
     function addLeagueToCategorySearch(sport) {
-      if (dashboardHasUnsavedChanges && !confirm(UNSAVED_CHANGES_WARNING)) {
-        return;
-      }
       const provider = activeUser.providers[activeProviderIndex];
+      commitActiveProviderCategoryState();
       provider.selectedSports = [...getVisibleSports(provider)];
       if (!provider.selectedSports.includes(sport)) provider.selectedSports.push(sport);
       document.getElementById('add-league-panel').classList.add('hidden');
