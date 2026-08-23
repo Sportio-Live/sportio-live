@@ -287,6 +287,10 @@
           <i class="fa-solid fa-satellite-dish"></i>
           Channel EPG
         </button>
+        <button id="export-import-btn" onclick="toggleExportImportPanel()" class="bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
+          <i class="fa-solid fa-file-export"></i>
+          Export/Import
+        </button>
         <button id="formatter-btn" onclick="toggleFormatterPanel()" class="bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
           <i class="fa-solid fa-font"></i>
           Formatter
@@ -464,6 +468,36 @@
               <p class="text-xs text-[#e6e6e6]/55 italic">Select a channel on the left to edit its EPG source.</p>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- Export/Import (collapsed until Export/Import is clicked). Shares
+           category assignments and EPG overrides between two accounts on
+           the same catalog - see exportProviderSettings/
+           importProviderSettings for how "same catalog" gets resolved
+           without ever trusting a claimed match, since there's no reliable
+           signal from two independent logins that they're the same
+           provider. -->
+      <div id="export-import-panel" class="hidden bg-[#3b4d58]/60 border border-[#e6e6e6]/15 rounded-lg p-4 mb-6">
+        <div class="mb-5">
+          <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-1">Export</h3>
+          <p class="text-xs text-[#e6e6e6]/55 mb-3">Download this provider's league/category assignments and EPG overrides as a file you can share with another user on the same IPTV catalog.</p>
+          <button onclick="exportProviderSettings()" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2">
+            <i class="fa-solid fa-download"></i>
+            Download Settings File
+          </button>
+        </div>
+
+        <div class="pt-4 border-t border-[#e6e6e6]/15">
+          <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-1">Import</h3>
+          <p class="text-xs text-[#e6e6e6]/55 mb-3">Import someone else's settings file. Only entries that actually match something on your own account are applied - anything else is skipped and reported below.</p>
+          <input type="file" id="export-import-file-input" accept="application/json" class="hidden" onchange="handleImportFileSelected(event)">
+          <button onclick="document.getElementById('export-import-file-input').click()" class="bg-[#56707d] hover:bg-[#66818f] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2">
+            <i class="fa-solid fa-upload"></i>
+            Choose Settings File
+          </button>
+          <div id="export-import-error" class="hidden text-xs text-[#e56a6a] font-semibold mt-3"></div>
+          <div id="export-import-result" class="hidden text-xs bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3 mt-3 space-y-1"></div>
         </div>
       </div>
 
@@ -1223,7 +1257,8 @@
         ['edit-m3u-trigger-btn', 'edit-m3u-panel'],
         ['change-timezone-btn', 'change-timezone-panel'],
         ['formatter-btn', 'formatter-panel'],
-        ['channel-epg-btn', 'channel-epg-panel']
+        ['channel-epg-btn', 'channel-epg-panel'],
+        ['export-import-btn', 'export-import-panel']
       ];
       pairs.forEach(([btnId, panelId]) => {
         const btn = document.getElementById(btnId);
@@ -1270,6 +1305,7 @@
       closeDeleteAccountPanelSilently();
       closeFormatterPanelSilently();
       closeChannelEpgPanelSilently();
+      closeExportImportPanelSilently();
       document.getElementById('sources-panel').classList.remove('hidden');
       updateSettingsButtonStates();
     }
@@ -1287,6 +1323,7 @@
         closeDeleteAccountPanelSilently();
         closeFormatterPanelSilently();
         closeChannelEpgPanelSilently();
+        closeExportImportPanelSilently();
         panel.classList.remove('hidden');
       } else {
         closeSourcesPanelSilently();
@@ -1316,6 +1353,7 @@
         closeDeleteAccountPanelSilently();
         closeFormatterPanelSilently();
         closeChannelEpgPanelSilently();
+        closeExportImportPanelSilently();
         const activeProvider = activeUser && activeUser.providers[activeProviderIndex];
         const x = (activeProvider && activeProvider.xtream) || {};
         editXtreamOriginalValues = { url: x.url || '', username: x.username || '', password: x.password || '' };
@@ -1451,6 +1489,7 @@
         closeDeleteAccountPanelSilently();
         closeFormatterPanelSilently();
         closeChannelEpgPanelSilently();
+        closeExportImportPanelSilently();
         const activeProvider = activeUser && activeUser.providers[activeProviderIndex];
         const m = (activeProvider && activeProvider.m3u) || {};
         editM3uOriginalValues = { playlistUrl: m.playlistUrl || '', epgUrl: m.epgUrl || '' };
@@ -1952,6 +1991,7 @@
         closeDeleteAccountPanelSilently();
         closeFormatterPanelSilently();
         closeChannelEpgPanelSilently();
+        closeExportImportPanelSilently();
         dashboardTimezoneSelection = (activeUser && activeUser.timeZone) || 'America/New_York';
         document.getElementById('dashboard-timezone-search').value = '';
         renderDashboardTimezoneList();
@@ -2034,6 +2074,7 @@
         closeChangeTimezonePanelSilently();
         closeDeleteAccountPanelSilently();
         closeChannelEpgPanelSilently();
+        closeExportImportPanelSilently();
         renderFormatterLegend();
         document.getElementById('formatter-name-input').value = (activeUser && activeUser.nameFormat) || DEFAULT_NAME_FORMAT;
         document.getElementById('formatter-title-input').value = (activeUser && activeUser.titleFormat) || DEFAULT_TITLE_FORMAT;
@@ -2096,6 +2137,7 @@
         closeChangeTimezonePanelSilently();
         closeDeleteAccountPanelSilently();
         closeFormatterPanelSilently();
+        closeExportImportPanelSilently();
         document.getElementById('channel-epg-search').value = '';
         channelEpgExpandedCategories = new Set();
         channelEpgSelectedChannelId = null;
@@ -2115,6 +2157,274 @@
     function closeChannelEpgPanelSilently() {
       document.getElementById('channel-epg-panel').classList.add('hidden');
       updateSettingsButtonStates();
+    }
+
+    // --- Export/Import: share Category Search + Channel EPG settings
+    // between two accounts on the same IPTV catalog. See
+    // exportProviderSettings/importProviderSettings below for the actual
+    // logic - this pair is just the same open/close plumbing every other
+    // settings panel on this page uses.
+
+    function toggleExportImportPanel() {
+      const panel = document.getElementById('export-import-panel');
+      if (panel.classList.contains('hidden')) {
+        closeSourcesPanelSilently();
+        closeEditXtreamPanelSilently();
+        closeEditM3uPanelSilently();
+        closeChangeTimezonePanelSilently();
+        closeDeleteAccountPanelSilently();
+        closeFormatterPanelSilently();
+        closeChannelEpgPanelSilently();
+        resetExportImportPanel();
+        panel.classList.remove('hidden');
+      } else {
+        closeExportImportPanelSilently();
+      }
+      updateSettingsButtonStates();
+    }
+
+    function closeExportImportPanelSilently() {
+      document.getElementById('export-import-panel').classList.add('hidden');
+      updateSettingsButtonStates();
+    }
+
+    function resetExportImportPanel() {
+      document.getElementById('export-import-file-input').value = '';
+      document.getElementById('export-import-error').classList.add('hidden');
+      document.getElementById('export-import-result').classList.add('hidden');
+    }
+
+    function showExportImportResult(html) {
+      const el = document.getElementById('export-import-result');
+      el.innerHTML = html;
+      el.classList.remove('hidden');
+    }
+
+    function showExportImportError(msg) {
+      const el = document.getElementById('export-import-error');
+      el.textContent = msg;
+      el.classList.remove('hidden');
+    }
+
+    // Xtream category/stream ids are generated per-account by the reseller
+    // panel - two different logins have no guaranteed shared id space. So
+    // rather than exporting/importing raw ids (which would silently
+    // misassign categories, or just match nothing, on a different
+    // account), everything below translates through NAMES instead: export
+    // writes category/channel names, import resolves those names back
+    // against the importing account's own live catalog. M3U is the
+    // opposite - category ids are just the raw group-title string, and
+    // channel ids are the playlist's own tvg-id (see m3u.js's
+    // parseM3UPlaylist) - both already portable across anyone using the
+    // same M3U source, so M3U needs no translation step at all.
+    //
+    // This also means there's no attempt anywhere here to "verify" two
+    // accounts are on the same provider - nothing in an Xtream/M3U login
+    // gives a reliable signal for that. Import instead just reports how
+    // much of the file actually matched something real on the importing
+    // account; a large skip count IS the signal that it wasn't the same
+    // catalog.
+    async function fetchXtreamChannelsForCategories(xtream, categoryIds) {
+      if (!xtream || !xtream.url || !categoryIds || categoryIds.length === 0) return [];
+      try {
+        const { url, username, password } = xtream;
+        const res = await fetch('/api/xtream/streams', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, username, password, categoryIds })
+        });
+        const data = await res.json();
+        return data.success ? data.streams.map(s => ({ id: String(s.stream_id), name: s.name })) : [];
+      } catch (err) {
+        return [];
+      }
+    }
+
+    async function exportProviderSettings() {
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      if (!provider) return;
+
+      await refreshCategoriesForActiveProvider();
+      const categoryNameById = {};
+      fetchedCategories.forEach(c => { categoryNameById[String(c.category_id)] = c.category_name; });
+
+      const sportCategoriesByName = {};
+      let categoriesSkipped = 0;
+      Object.entries(provider.sportCategories || {}).forEach(([sport, ids]) => {
+        const names = [];
+        (ids || []).forEach(id => {
+          const name = categoryNameById[String(id)];
+          if (name) names.push(name);
+          else categoriesSkipped++;
+        });
+        if (names.length > 0) sportCategoriesByName[sport] = names;
+      });
+
+      const epgOverridesOut = {};
+      let overridesSkipped = 0;
+      const overrideEntries = Object.entries(provider.epgOverrides || {});
+      if (provider.connectionType === 'm3u') {
+        // tvg-id is already portable - no lookup needed.
+        overrideEntries.forEach(([tvgId, epgShareId]) => { epgOverridesOut[tvgId] = epgShareId; });
+      } else if (overrideEntries.length > 0) {
+        const usedCategoryIds = [...new Set(Object.values(provider.sportCategories || {}).flat().map(String))];
+        const channels = await fetchXtreamChannelsForCategories(provider.xtream, usedCategoryIds);
+        const nameById = {};
+        channels.forEach(ch => { nameById[ch.id] = ch.name; });
+        overrideEntries.forEach(([channelId, epgShareId]) => {
+          const name = nameById[String(channelId)];
+          if (name) epgOverridesOut[name] = epgShareId;
+          else overridesSkipped++;
+        });
+      }
+
+      const exportData = {
+        sportioExportVersion: 1,
+        exportedAt: new Date().toISOString(),
+        connectionType: provider.connectionType,
+        selectedSports: provider.selectedSports || [],
+        sportCategories: sportCategoriesByName,
+        epgOverrides: epgOverridesOut
+      };
+
+      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const slug = (provider.label || 'provider').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'provider';
+      link.href = blobUrl;
+      link.download = `sportio-settings-${slug}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(blobUrl);
+
+      const categoryCount = Object.values(sportCategoriesByName).reduce((sum, arr) => sum + arr.length, 0);
+      const overrideCount = Object.keys(epgOverridesOut).length;
+      const lines = [`<div class="text-[#a8e0ac] font-semibold">Exported ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'} and ${overrideCount} EPG override${overrideCount === 1 ? '' : 's'}.</div>`];
+      if (categoriesSkipped > 0 || overridesSkipped > 0) {
+        lines.push(`<div class="text-[#e6e6e6]/55">${categoriesSkipped} categor${categoriesSkipped === 1 ? 'y' : 'ies'} and ${overridesSkipped} override${overridesSkipped === 1 ? '' : 's'} couldn't be named and were left out.</div>`);
+      }
+      showExportImportResult(lines.join(''));
+    }
+
+    function handleImportFileSelected(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      document.getElementById('export-import-error').classList.add('hidden');
+      document.getElementById('export-import-result').classList.add('hidden');
+
+      const reader = new FileReader();
+      reader.onload = async () => {
+        let data;
+        try {
+          data = JSON.parse(reader.result);
+        } catch (err) {
+          showExportImportError("That file isn't valid JSON.");
+          return;
+        }
+        if (!data || typeof data !== 'object' || data.sportioExportVersion !== 1
+          || typeof data.sportCategories !== 'object' || typeof data.epgOverrides !== 'object') {
+          showExportImportError("That doesn't look like a Sportio settings export.");
+          return;
+        }
+        await importProviderSettings(data);
+        event.target.value = '';
+      };
+      reader.onerror = () => showExportImportError('Could not read that file.');
+      reader.readAsText(file);
+    }
+
+    async function importProviderSettings(data) {
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      if (!provider) return;
+
+      await refreshCategoriesForActiveProvider();
+      const categoryIdByName = {};
+      fetchedCategories.forEach(c => { categoryIdByName[c.category_name] = String(c.category_id); });
+
+      provider.sportCategories = provider.sportCategories || {};
+      provider.selectedSports = provider.selectedSports || [];
+      const allowedSports = new Set([...SPORTS, 'GLOBAL']);
+
+      let categoriesApplied = 0;
+      let categoriesSkipped = 0;
+      let sportsEnabled = 0;
+
+      Object.entries(data.sportCategories).forEach(([sport, names]) => {
+        if (!allowedSports.has(sport) || !Array.isArray(names)) return;
+        const existing = new Set(provider.sportCategories[sport] || []);
+        names.forEach(name => {
+          const id = categoryIdByName[name];
+          if (id) { existing.add(id); categoriesApplied++; }
+          else categoriesSkipped++;
+        });
+        if (existing.size > 0) {
+          provider.sportCategories[sport] = [...existing];
+          if (sport !== 'GLOBAL' && !provider.selectedSports.includes(sport)) {
+            provider.selectedSports.push(sport);
+            sportsEnabled++;
+          }
+        }
+      });
+
+      if (Array.isArray(data.selectedSports)) {
+        data.selectedSports.forEach(sport => {
+          if (allowedSports.has(sport) && sport !== 'GLOBAL' && !provider.selectedSports.includes(sport)) {
+            provider.selectedSports.push(sport);
+            sportsEnabled++;
+          }
+        });
+      }
+
+      provider.epgOverrides = provider.epgOverrides || {};
+      let overridesApplied = 0;
+      let overridesNotFound = 0;
+      let overridesAmbiguous = 0;
+      const importedOverrides = data.epgOverrides || {};
+
+      if (provider.connectionType === 'm3u') {
+        // tvg-id is already local-compatible - apply directly.
+        Object.entries(importedOverrides).forEach(([tvgId, epgShareId]) => {
+          provider.epgOverrides[tvgId] = epgShareId;
+          overridesApplied++;
+        });
+      } else if (Object.keys(importedOverrides).length > 0) {
+        const usedCategoryIds = [...new Set(Object.values(provider.sportCategories).flat().map(String))];
+        const channels = await fetchXtreamChannelsForCategories(provider.xtream, usedCategoryIds);
+        const idsByName = {};
+        channels.forEach(ch => { (idsByName[ch.name] = idsByName[ch.name] || []).push(ch.id); });
+        Object.entries(importedOverrides).forEach(([channelName, epgShareId]) => {
+          const matches = idsByName[channelName] || [];
+          if (matches.length === 1) {
+            provider.epgOverrides[matches[0]] = epgShareId;
+            overridesApplied++;
+          } else if (matches.length === 0) {
+            overridesNotFound++;
+          } else {
+            // Multiple channels share this name - applying to either would
+            // be a guess, and a wrong EPG assignment is worse than a
+            // missing one, so this is left for the user to set by hand.
+            overridesAmbiguous++;
+          }
+        });
+      }
+
+      renderActiveProviderPanel();
+      markDashboardDirty();
+
+      const lines = [`<div class="text-[#a8e0ac] font-semibold">Applied ${categoriesApplied} categor${categoriesApplied === 1 ? 'y' : 'ies'}${sportsEnabled > 0 ? ` (enabled ${sportsEnabled} new league${sportsEnabled === 1 ? '' : 's'})` : ''} and ${overridesApplied} EPG override${overridesApplied === 1 ? '' : 's'}.</div>`];
+      const skippedParts = [];
+      if (categoriesSkipped > 0) skippedParts.push(`${categoriesSkipped} categor${categoriesSkipped === 1 ? 'y' : 'ies'} not found`);
+      if (overridesNotFound > 0) skippedParts.push(`${overridesNotFound} channel${overridesNotFound === 1 ? '' : 's'} not found`);
+      if (overridesAmbiguous > 0) skippedParts.push(`${overridesAmbiguous} channel${overridesAmbiguous === 1 ? '' : 's'} ambiguous (multiple matches)`);
+      if (skippedParts.length > 0) {
+        lines.push(`<div class="text-[#e6e6e6]/55">Skipped: ${skippedParts.join(', ')}.</div>`);
+      }
+      if (data.connectionType && data.connectionType !== provider.connectionType) {
+        lines.push(`<div class="text-[#c9992e]">Heads up: this file was exported from an ${data.connectionType === 'm3u' ? 'M3U' : 'Xtream'} provider, but you're importing into an ${provider.connectionType === 'm3u' ? 'M3U' : 'Xtream'} one - that's likely why some entries didn't match.</div>`);
+      }
+      lines.push(`<div class="text-[#e6e6e6]/40 text-[10px] mt-1">Not saved yet - click Save and Copy Link to keep these changes.</div>`);
+      showExportImportResult(lines.join(''));
     }
 
     // Fetches the active provider's own channel list, branching by
@@ -2601,6 +2911,7 @@
         closeChangeTimezonePanelSilently();
         closeFormatterPanelSilently();
         closeChannelEpgPanelSilently();
+        closeExportImportPanelSilently();
         document.getElementById('delete-confirm-input').value = '';
         updateDeleteButton();
         panel.classList.remove('hidden');
@@ -2906,6 +3217,7 @@
       closeDeleteAccountPanelSilently();
       closeFormatterPanelSilently();
       closeChannelEpgPanelSilently();
+      closeExportImportPanelSilently();
       commitActiveProviderCategoryState();
       activeProviderIndex = index;
       await refreshCategoriesForActiveProvider();
@@ -3000,6 +3312,7 @@
       closeDeleteAccountPanelSilently();
       closeFormatterPanelSilently();
       closeChannelEpgPanelSilently();
+      closeExportImportPanelSilently();
 
       document.getElementById('add-provider-choose').classList.remove('hidden');
       document.getElementById('add-provider-xtream').classList.add('hidden');
