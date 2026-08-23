@@ -326,15 +326,18 @@
               <span id="sources-provider-badge" class="hidden flex items-center gap-1.5 bg-[#3b8fc4]/15 border border-[#3b8fc4]/40 text-[#5aa8d1] rounded-full px-2 py-0.5 text-[10px] font-bold">
                 <i class="fa-solid fa-plug text-[9px]"></i><span></span>
               </span>
-              <button id="expand-all-btn" onclick="toggleAllAccordions()" class="text-xs font-bold text-[#5aa8d1] hover:text-[#6bb5dd] flex items-center gap-1.5 transition">
-                <i class="fa-solid fa-expand"></i>
-                Expand All
-              </button>
             </div>
             <p class="text-xs text-[#e6e6e6]/55 mt-1">Too many <i>Global</i> sources can result in false positives.</p>
           </div>
           <button onclick="refreshCategories()" class="shrink-0 bg-[#c9992e] hover:bg-[#dba93e] text-[#1a1a1a] text-xs font-bold py-2 px-4 rounded-lg transition flex items-center">
             <i class="fa-solid fa-rotate mr-2"></i>Refresh Categories
+          </button>
+        </div>
+
+        <div class="flex justify-end mb-2">
+          <button id="expand-all-btn" onclick="toggleAllAccordions()" class="text-xs font-bold text-[#5aa8d1] hover:text-[#6bb5dd] flex items-center gap-1.5 transition">
+            <i class="fa-solid fa-expand"></i>
+            Expand All
           </button>
         </div>
 
@@ -1778,8 +1781,8 @@
               <span class="font-bold text-sm text-[#e6e6e6]">${sectionLabel}</span>
             </div>
             <div class="flex items-center gap-3">
-              <span id="${idPrefix}badge-${sport}" class="text-xs font-semibold px-2 py-0.5 rounded-full ${badgeClass}">${effectiveCount} selected</span>
               <i id="${idPrefix}chevron-${sport}" class="fa-solid fa-chevron-down text-[#e6e6e6]/55 text-xs transition-transform"></i>
+              <span id="${idPrefix}badge-${sport}" class="text-xs font-semibold px-2 py-0.5 rounded-full ${badgeClass}">${effectiveCount} selected</span>
               ${removeLeagueBtn}
             </div>
           </div>
