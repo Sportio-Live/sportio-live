@@ -362,6 +362,7 @@
           <i class="fa-solid fa-plug"></i>
           Test
         </button>
+        <div id="edit-xtream-confirm" class="hidden text-xs text-[#a8e0ac] font-semibold"></div>
       </div>
 
       <!-- M3U URLs (collapsed until Edit M3U is clicked) -->
@@ -377,6 +378,7 @@
           <i class="fa-solid fa-file-import"></i>
           Import
         </button>
+        <div id="edit-m3u-confirm" class="hidden text-xs text-[#a8e0ac] font-semibold"></div>
       </div>
 
       <!-- Change Timezone (collapsed until Change Timezone is clicked) -->
@@ -641,6 +643,18 @@
       el.className = `fixed top-4 right-4 z-50 max-w-sm rounded-lg p-4 text-sm font-semibold shadow-2xl ${isError ? 'bg-[#3a1f1f]/50 text-[#f0b8b8] border border-[#c0392b]' : 'bg-[#1f3a21]/50 text-[#a8e0ac] border border-[#4a9d52]'}`;
       el.classList.remove('hidden');
       setTimeout(() => el.classList.add('hidden'), 5000);
+    }
+
+    // In-panel equivalent of showStatus, for confirmations that should be
+    // read next to the control that triggered them rather than in the
+    // corner - same auto-hide idea, just a shorter window and no color
+    // variants since these are success-only callers.
+    function showInlineConfirmation(elId, msg) {
+      const el = document.getElementById(elId);
+      el.textContent = msg;
+      el.classList.remove('hidden');
+      clearTimeout(el._hideTimer);
+      el._hideTimer = setTimeout(() => el.classList.add('hidden'), 2000);
     }
 
     // --- Setup Wizard: Step 1, Choose your leagues ---
@@ -1306,6 +1320,7 @@
         document.getElementById('edit-xtream-username').value = editXtreamOriginalValues.username;
         document.getElementById('edit-xtream-password').value = editXtreamOriginalValues.password;
         document.getElementById('edit-xtream-error').classList.add('hidden');
+        document.getElementById('edit-xtream-confirm').classList.add('hidden');
         resetEditXtreamState();
         panel.classList.remove('hidden');
       } else {
@@ -1439,6 +1454,7 @@
         document.getElementById('edit-m3u-playlist-url').value = editM3uOriginalValues.playlistUrl;
         document.getElementById('edit-m3u-epg-url').value = editM3uOriginalValues.epgUrl;
         document.getElementById('edit-m3u-error').classList.add('hidden');
+        document.getElementById('edit-m3u-confirm').classList.add('hidden');
         resetEditM3uState();
         panel.classList.remove('hidden');
       } else {
@@ -1551,11 +1567,10 @@
       }
 
       activeUser.providers[activeProviderIndex].m3u = editM3uImportedValues;
-      document.getElementById('edit-m3u-panel').classList.add('hidden');
       resetEditM3uState();
       renderActiveProviderPanel();
       markDashboardDirty();
-      showStatus('M3U URLs updated for this session - click Save and Copy Link to save.');
+      showInlineConfirmation('edit-m3u-confirm', 'M3U URLs updated for this session - click Save and Copy Link to save.');
       updateSettingsButtonStates();
     }
 
@@ -1569,11 +1584,10 @@
       }
 
       activeUser.providers[activeProviderIndex].xtream = editXtreamTestedCredentials;
-      document.getElementById('edit-xtream-panel').classList.add('hidden');
       resetEditXtreamState();
       renderActiveProviderPanel();
       markDashboardDirty();
-      showStatus('Xtream credentials updated for this session - click Save and Copy Link to save.');
+      showInlineConfirmation('edit-xtream-confirm', 'Xtream credentials updated for this session - click Save and Copy Link to save.');
       updateSettingsButtonStates();
     }
 
@@ -2005,7 +2019,7 @@
     }
 
     function copyFormatterPlaceholder(key) {
-      copyTextToClipboard(`{${key}}`, 'Placeholder copied - paste it into a field below!');
+      copyTextToClipboard(`{${key}}`, null);
     }
 
     function toggleFormatterPanel() {
@@ -3033,7 +3047,6 @@
           cancelAddProvider();
           renderActiveProviderPanel();
           markDashboardDirty();
-          showStatus('Provider added for this session - click Save and Copy Link to save.');
         } else {
           errorEl.textContent = "Couldn't connect. Please check credentials.";
           errorEl.classList.remove('hidden');
@@ -3093,7 +3106,6 @@
           cancelAddProvider();
           renderActiveProviderPanel();
           markDashboardDirty();
-          showStatus('Provider added for this session - click Save and Copy Link to save.');
         } else {
           errorEl.textContent = data.error || "Couldn't import. Please check both URLs.";
           errorEl.classList.remove('hidden');
@@ -3182,13 +3194,17 @@
     // Shared by the manifest link button and every Formatter preview's
     // copy button, rather than each keeping its own copy of this logic.
     function copyTextToClipboard(text, successMessage) {
+      // successMessage === null means "copy silently" - the caller has its
+      // own confirmation UI and doesn't want the corner toast at all,
+      // as opposed to undefined which falls back to the default toast text.
+      const silent = successMessage === null;
       const message = successMessage || 'Copied to clipboard!';
       if (navigator.clipboard && window.isSecureContext) {
         navigator.clipboard.writeText(text)
-          .then(() => showStatus(message))
-          .catch(() => fallbackCopy(text, message));
+          .then(() => { if (!silent) showStatus(message); })
+          .catch(() => fallbackCopy(text, successMessage));
       } else {
-        fallbackCopy(text, message);
+        fallbackCopy(text, successMessage);
       }
     }
 
@@ -3210,7 +3226,7 @@
       document.body.removeChild(textarea);
 
       if (copied) {
-        showStatus(successMessage || 'Link copied to clipboard!');
+        if (successMessage !== null) showStatus(successMessage || 'Link copied to clipboard!');
       } else {
         showStatus(`Couldn't auto-copy. Manifest URL: ${text}`, true);
       }
