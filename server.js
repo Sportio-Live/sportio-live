@@ -370,7 +370,7 @@ const ALLOWED_PRESET_ICONS = new Set([
   // Sports & achievement
   'trophy', 'medal', 'award', 'ranking-star', 'futbol', 'basketball', 'baseball', 'football',
   'volleyball', 'hockey-puck', 'golf-ball-tee', 'bowling-ball', 'table-tennis-paddle-ball',
-  'dumbbell', 'person-running', 'person-biking', 'person-swimming', 'person-skiing',
+  'dumbbell', 'hand-fist', 'person-running', 'person-biking', 'person-swimming', 'person-skiing',
   'person-snowboarding', 'stopwatch', 'flag-checkered',
   // Media & entertainment
   'tv', 'film', 'video', 'music', 'headphones', 'microphone', 'camera', 'clapperboard',
