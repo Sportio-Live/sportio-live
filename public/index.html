@@ -496,13 +496,14 @@
            logins (or an admin's own upload) that they're the same
            provider. -->
       <div id="export-import-panel" class="hidden bg-[#3b4d58]/60 border border-[#e6e6e6]/15 rounded-lg p-4 mb-6">
-        <span id="export-import-provider-badge" class="hidden flex items-center gap-1.5 mb-4 bg-[#3b8fc4]/15 border border-[#3b8fc4]/40 text-[#5aa8d1] rounded-full px-2 py-0.5 text-[10px] font-bold w-fit">
-          <i class="fa-solid fa-plug text-[9px]"></i><span></span>
-        </span>
-
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div>
-            <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-1">Provider presets</h3>
+            <div class="flex items-center gap-3 mb-1">
+              <h3 class="font-bold text-sm text-[#e6e6e6]/75">Provider presets</h3>
+              <span id="preset-provider-badge" class="hidden flex items-center gap-1.5 bg-[#3b8fc4]/15 border border-[#3b8fc4]/40 text-[#5aa8d1] rounded-full px-2 py-0.5 text-[10px] font-bold">
+                <i class="fa-solid fa-plug text-[9px]"></i><span></span>
+              </span>
+            </div>
             <p class="text-xs text-[#e6e6e6]/55 mb-3">Preconfigured Leagues/sources and EPG overrides for various providers.</p>
             <div id="preset-grid" class="grid grid-cols-3 sm:grid-cols-4 gap-2 max-h-64 overflow-y-auto bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3 mb-3"></div>
             <button type="button" id="apply-preset-btn" onclick="applySelectedPreset()" disabled class="bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2 px-4 rounded-lg text-xs cursor-not-allowed transition">
@@ -513,19 +514,29 @@
 
           <div>
             <div class="mb-5">
-              <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-1">Export</h3>
+              <div class="flex items-center gap-3 mb-1">
+                <h3 class="font-bold text-sm text-[#e6e6e6]/75">Export</h3>
+                <span id="export-provider-badge" class="hidden flex items-center gap-1.5 bg-[#3b8fc4]/15 border border-[#3b8fc4]/40 text-[#5aa8d1] rounded-full px-2 py-0.5 text-[10px] font-bold">
+                  <i class="fa-solid fa-plug text-[9px]"></i><span></span>
+                </span>
+              </div>
               <p class="text-xs text-[#e6e6e6]/55 mb-3">Export your currently selected Leagues/sources and EPG overrides to a configuration file.</p>
-              <button onclick="exportProviderSettings()" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2">
+              <button id="export-config-btn" onclick="exportProviderSettings()" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2">
                 <i class="fa-solid fa-upload"></i>
                 Export Config
               </button>
             </div>
 
             <div class="pt-4 border-t border-[#e6e6e6]/15">
-              <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-1">Import</h3>
+              <div class="flex items-center gap-3 mb-1">
+                <h3 class="font-bold text-sm text-[#e6e6e6]/75">Import</h3>
+                <span id="import-provider-badge" class="hidden flex items-center gap-1.5 bg-[#3b8fc4]/15 border border-[#3b8fc4]/40 text-[#5aa8d1] rounded-full px-2 py-0.5 text-[10px] font-bold">
+                  <i class="fa-solid fa-plug text-[9px]"></i><span></span>
+                </span>
+              </div>
               <p class="text-xs text-[#e6e6e6]/55 mb-3">Import a configuration file. This will overwrite your current Leagues/sources and EPG overrides.</p>
               <input type="file" id="export-import-file-input" accept="application/json" class="hidden" onchange="handleImportFileSelected(event)">
-              <button onclick="document.getElementById('export-import-file-input').click()" class="bg-[#56707d] hover:bg-[#66818f] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2">
+              <button id="import-config-btn" onclick="document.getElementById('export-import-file-input').click()" class="bg-[#56707d] hover:bg-[#66818f] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2">
                 <i class="fa-solid fa-download"></i>
                 Import Config
               </button>
@@ -1122,6 +1133,10 @@
 
     function updateApplyWizardPresetButtonState() {
       const btn = document.getElementById('wizard-apply-preset-btn');
+      // Reset back from "Applying..." in case this is a fresh visit to the
+      // preset step after an earlier apply on a previous run of the wizard
+      // within the same page session.
+      btn.innerHTML = 'Apply';
       if (wizardAvailablePresets.length === 0) {
         btn.classList.add('hidden');
         return;
@@ -1151,6 +1166,11 @@
     async function applyWizardPreset() {
       const preset = wizardAvailablePresets.find(p => p.id === selectedWizardPresetId);
       if (!preset) return;
+
+      const btn = document.getElementById('wizard-apply-preset-btn');
+      btn.disabled = true;
+      btn.className = 'w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-sm cursor-not-allowed transition';
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Applying...';
 
       const categoryIdByName = {};
       fetchedCategories.forEach(c => { categoryIdByName[c.category_name] = String(c.category_id); });
@@ -2479,10 +2499,17 @@
     async function applySelectedPreset() {
       const preset = availablePresets.find(p => p.id === selectedPresetId);
       if (!preset) return;
+      const btn = document.getElementById('apply-preset-btn');
+      btn.disabled = true;
+      btn.className = 'bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2 px-4 rounded-lg text-xs cursor-not-allowed transition flex items-center justify-center gap-2';
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Applying...';
       try {
         await importProviderSettings(preset, 'preset-apply-result');
       } catch (err) {
         showStatus('Network error while applying the preset.', true);
+      } finally {
+        btn.innerHTML = 'Apply';
+        updateApplyPresetButtonState();
       }
     }
 
@@ -2536,98 +2563,109 @@
       const provider = activeUser && activeUser.providers[activeProviderIndex];
       if (!provider) return;
 
-      await refreshCategoriesForActiveProvider();
-      const categoryNameById = {};
-      fetchedCategories.forEach(c => { categoryNameById[String(c.category_id)] = c.category_name; });
+      const btn = document.getElementById('export-config-btn');
+      btn.disabled = true;
+      btn.className = 'bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 px-4 rounded-lg text-xs cursor-not-allowed transition flex items-center gap-2';
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Exporting...';
 
-      const sportCategoriesByName = {};
-      let categoriesSkipped = 0;
-      Object.entries(provider.sportCategories || {}).forEach(([sport, ids]) => {
-        const names = [];
-        (ids || []).forEach(id => {
-          const name = categoryNameById[String(id)];
-          if (name) names.push(name);
-          else categoriesSkipped++;
-        });
-        if (names.length > 0) sportCategoriesByName[sport] = names;
-      });
+      try {
+        await refreshCategoriesForActiveProvider();
+        const categoryNameById = {};
+        fetchedCategories.forEach(c => { categoryNameById[String(c.category_id)] = c.category_name; });
 
-      const epgOverridesOut = {};
-      let overridesSkipped = 0;
-      const overrideEntries = Object.entries(provider.epgOverrides || {});
-      if (provider.connectionType === 'm3u') {
-        // tvg-id is already portable - no lookup needed.
-        overrideEntries.forEach(([tvgId, epgShareId]) => { epgOverridesOut[tvgId] = epgShareId; });
-      } else if (overrideEntries.length > 0) {
-        const usedCategoryIds = [...new Set(Object.values(provider.sportCategories || {}).flat().map(String))];
-        const channels = await fetchXtreamChannelsForCategories(provider.xtream, usedCategoryIds);
-        const nameById = {};
-        channels.forEach(ch => { nameById[ch.id] = ch.name; });
-        overrideEntries.forEach(([channelId, epgShareId]) => {
-          const name = nameById[String(channelId)];
-          if (name) epgOverridesOut[name] = epgShareId;
-          else overridesSkipped++;
-        });
-      }
-
-      // Purely informational, additive metadata - lets whoever imports this
-      // (in practice, an admin building a preset from it) know which
-      // EPGShare01 source file(s) these overrides actually need enabled to
-      // resolve to anything, without forcing a specific source into
-      // epgOverrides itself (findOverrideProgramme deliberately searches
-      // every enabled source for a bare channel id - the same id can
-      // legitimately live in more than one, so nothing here should start
-      // pinning one). Never blocks the export if it fails.
-      let epgSourcesOut = [];
-      if (Object.keys(epgOverridesOut).length > 0) {
-        try {
-          const res = await fetch('/api/epgshare/channels', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password })
+        const sportCategoriesByName = {};
+        let categoriesSkipped = 0;
+        Object.entries(provider.sportCategories || {}).forEach(([sport, ids]) => {
+          const names = [];
+          (ids || []).forEach(id => {
+            const name = categoryNameById[String(id)];
+            if (name) names.push(name);
+            else categoriesSkipped++;
           });
-          const data = await res.json();
-          if (data.success) {
-            const targetIds = new Set(Object.values(epgOverridesOut));
-            const matchedFiles = new Set();
-            data.sources.forEach(({ file, channelIds }) => {
-              if (channelIds.some(id => targetIds.has(id))) matchedFiles.add(file);
-            });
-            epgSourcesOut = [...matchedFiles].sort();
-          }
-        } catch (err) {
-          // epgSources is informational only - the export itself still succeeds.
+          if (names.length > 0) sportCategoriesByName[sport] = names;
+        });
+
+        const epgOverridesOut = {};
+        let overridesSkipped = 0;
+        const overrideEntries = Object.entries(provider.epgOverrides || {});
+        if (provider.connectionType === 'm3u') {
+          // tvg-id is already portable - no lookup needed.
+          overrideEntries.forEach(([tvgId, epgShareId]) => { epgOverridesOut[tvgId] = epgShareId; });
+        } else if (overrideEntries.length > 0) {
+          const usedCategoryIds = [...new Set(Object.values(provider.sportCategories || {}).flat().map(String))];
+          const channels = await fetchXtreamChannelsForCategories(provider.xtream, usedCategoryIds);
+          const nameById = {};
+          channels.forEach(ch => { nameById[ch.id] = ch.name; });
+          overrideEntries.forEach(([channelId, epgShareId]) => {
+            const name = nameById[String(channelId)];
+            if (name) epgOverridesOut[name] = epgShareId;
+            else overridesSkipped++;
+          });
         }
+
+        // Purely informational, additive metadata - lets whoever imports this
+        // (in practice, an admin building a preset from it) know which
+        // EPGShare01 source file(s) these overrides actually need enabled to
+        // resolve to anything, without forcing a specific source into
+        // epgOverrides itself (findOverrideProgramme deliberately searches
+        // every enabled source for a bare channel id - the same id can
+        // legitimately live in more than one, so nothing here should start
+        // pinning one). Never blocks the export if it fails.
+        let epgSourcesOut = [];
+        if (Object.keys(epgOverridesOut).length > 0) {
+          try {
+            const res = await fetch('/api/epgshare/channels', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password })
+            });
+            const data = await res.json();
+            if (data.success) {
+              const targetIds = new Set(Object.values(epgOverridesOut));
+              const matchedFiles = new Set();
+              data.sources.forEach(({ file, channelIds }) => {
+                if (channelIds.some(id => targetIds.has(id))) matchedFiles.add(file);
+              });
+              epgSourcesOut = [...matchedFiles].sort();
+            }
+          } catch (err) {
+            // epgSources is informational only - the export itself still succeeds.
+          }
+        }
+
+        const exportData = {
+          sportioExportVersion: 1,
+          exportedAt: new Date().toISOString(),
+          connectionType: provider.connectionType,
+          selectedSports: provider.selectedSports || [],
+          sportCategories: sportCategoriesByName,
+          epgOverrides: epgOverridesOut,
+          epgSources: epgSourcesOut
+        };
+
+        const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+        const blobUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        const slug = (provider.label || 'provider').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'provider';
+        link.href = blobUrl;
+        link.download = `sportio-settings-${slug}.json`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(blobUrl);
+
+        const categoryCount = Object.values(sportCategoriesByName).reduce((sum, arr) => sum + arr.length, 0);
+        const overrideCount = Object.keys(epgOverridesOut).length;
+        const lines = [`<div class="text-[#a8e0ac] font-semibold">Exported ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'} and ${overrideCount} EPG override${overrideCount === 1 ? '' : 's'}.</div>`];
+        if (categoriesSkipped > 0 || overridesSkipped > 0) {
+          lines.push(`<div class="text-[#e6e6e6]/55">${categoriesSkipped} categor${categoriesSkipped === 1 ? 'y' : 'ies'} and ${overridesSkipped} override${overridesSkipped === 1 ? '' : 's'} couldn't be named and were left out.</div>`);
+        }
+        showExportImportResult(lines.join(''));
+      } finally {
+        btn.disabled = false;
+        btn.className = 'bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2';
+        btn.innerHTML = '<i class="fa-solid fa-upload"></i> Export Config';
       }
-
-      const exportData = {
-        sportioExportVersion: 1,
-        exportedAt: new Date().toISOString(),
-        connectionType: provider.connectionType,
-        selectedSports: provider.selectedSports || [],
-        sportCategories: sportCategoriesByName,
-        epgOverrides: epgOverridesOut,
-        epgSources: epgSourcesOut
-      };
-
-      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-      const blobUrl = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      const slug = (provider.label || 'provider').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'provider';
-      link.href = blobUrl;
-      link.download = `sportio-settings-${slug}.json`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(blobUrl);
-
-      const categoryCount = Object.values(sportCategoriesByName).reduce((sum, arr) => sum + arr.length, 0);
-      const overrideCount = Object.keys(epgOverridesOut).length;
-      const lines = [`<div class="text-[#a8e0ac] font-semibold">Exported ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'} and ${overrideCount} EPG override${overrideCount === 1 ? '' : 's'}.</div>`];
-      if (categoriesSkipped > 0 || overridesSkipped > 0) {
-        lines.push(`<div class="text-[#e6e6e6]/55">${categoriesSkipped} categor${categoriesSkipped === 1 ? 'y' : 'ies'} and ${overridesSkipped} override${overridesSkipped === 1 ? '' : 's'} couldn't be named and were left out.</div>`);
-      }
-      showExportImportResult(lines.join(''));
     }
 
     function handleImportFileSelected(event) {
@@ -2636,6 +2674,16 @@
       document.getElementById('export-import-error').classList.add('hidden');
       document.getElementById('export-import-result').classList.add('hidden');
 
+      const btn = document.getElementById('import-config-btn');
+      btn.disabled = true;
+      btn.className = 'bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 px-4 rounded-lg text-xs cursor-not-allowed transition flex items-center gap-2';
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Importing...';
+      const restoreImportBtn = () => {
+        btn.disabled = false;
+        btn.className = 'bg-[#56707d] hover:bg-[#66818f] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2';
+        btn.innerHTML = '<i class="fa-solid fa-download"></i> Import Config';
+      };
+
       const reader = new FileReader();
       reader.onload = async () => {
         let data;
@@ -2643,17 +2691,23 @@
           data = JSON.parse(reader.result);
         } catch (err) {
           showExportImportError("That file isn't valid JSON.");
+          restoreImportBtn();
           return;
         }
         if (!data || typeof data !== 'object' || data.sportioExportVersion !== 1
           || typeof data.sportCategories !== 'object' || typeof data.epgOverrides !== 'object') {
           showExportImportError("That doesn't look like a Sportio settings export.");
+          restoreImportBtn();
           return;
         }
         await importProviderSettings(data);
         event.target.value = '';
+        restoreImportBtn();
       };
-      reader.onerror = () => showExportImportError('Could not read that file.');
+      reader.onerror = () => {
+        showExportImportError('Could not read that file.');
+        restoreImportBtn();
+      };
       reader.readAsText(file);
     }
 
@@ -2780,7 +2834,7 @@
       channelEpgChannels = [];
       if (!provider) { renderChannelEpgCategories(); return; }
 
-      statusEl.textContent = 'Loading your channels...';
+      statusEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1.5"></i>Loading your channels...';
 
       try {
         if (provider.connectionType === 'm3u') {
@@ -3035,16 +3089,25 @@
       }
     }
 
-    // Bulk action: set every selected channel's override to the reserved
-    // "use this channel's own name" sentinel in one shot, instead of
-    // picking an EPGShare01 source per channel one at a time.
+    // Bulk action: either set every selected channel's override to the
+    // reserved "use this channel's own name" sentinel, or clear every
+    // selected channel's override entirely - whichever is offered depends
+    // on whether the whole selection already has overrides applied, since
+    // "display channel names" is meaningless to offer on a selection that's
+    // already all set that way (or a mix), and "clear" is meaningless to
+    // offer on a selection with no overrides to clear.
     function renderChannelEpgMultiEditor() {
       const editor = document.getElementById('channel-epg-editor');
       const count = channelEpgSelectedChannelIds.size;
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      const overrides = (provider && provider.epgOverrides) || {};
+      const allOverridden = [...channelEpgSelectedChannelIds].every(id => overrides[id] !== undefined);
+      const question = allOverridden ? 'Clear EPG overrides?' : 'Display channel names as descriptions?';
+      const applyFn = allOverridden ? 'applyMultiEpgClear' : 'applyMultiEpgSelfName';
       editor.innerHTML = `
         <div class="flex flex-col items-center text-center gap-4 py-6">
           <p class="text-sm font-semibold">${count} channels selected</p>
-          <p class="text-xs text-[#e6e6e6]/55 max-w-[220px]">Display channel names as descriptions?</p>
+          <p class="text-xs text-[#e6e6e6]/55 max-w-[220px]">${question}</p>
           <label class="relative inline-flex items-center cursor-pointer">
             <input type="checkbox" id="multi-epg-name-toggle" onchange="updateMultiEpgApplyState()" class="sr-only peer">
             <div class="w-9 h-5 bg-[#56707d] rounded-full peer-checked:bg-[#3b8fc4] transition"></div>
@@ -3052,7 +3115,7 @@
           </label>
           <div class="flex gap-2">
             <button type="button" onclick="cancelMultiEpgSelection()" class="bg-[#56707d] hover:bg-[#66818f] font-bold py-2 px-4 rounded-lg text-xs transition">Cancel</button>
-            <button type="button" id="multi-epg-apply-btn" onclick="applyMultiEpgSelfName()" disabled class="bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2 px-4 rounded-lg text-xs cursor-not-allowed transition">Apply</button>
+            <button type="button" id="multi-epg-apply-btn" onclick="${applyFn}()" disabled class="bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2 px-4 rounded-lg text-xs cursor-not-allowed transition">Apply</button>
           </div>
         </div>
       `;
@@ -3084,6 +3147,23 @@
       provider.epgOverrides = provider.epgOverrides || {};
       channelEpgSelectedChannelIds.forEach(id => {
         provider.epgOverrides[id] = EPG_OVERRIDE_SELF_NAME;
+      });
+      channelEpgSelectedChannelIds = new Set();
+      channelEpgSelectionAnchor = null;
+      channelEpgSelectedChannelId = null;
+      renderChannelEpgCategories();
+      renderChannelEpgEditor();
+      markDashboardDirty();
+    }
+
+    function applyMultiEpgClear() {
+      const toggle = document.getElementById('multi-epg-name-toggle');
+      if (!toggle || !toggle.checked) return;
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      if (!provider) return;
+      provider.epgOverrides = provider.epgOverrides || {};
+      channelEpgSelectedChannelIds.forEach(id => {
+        delete provider.epgOverrides[id];
       });
       channelEpgSelectedChannelIds = new Set();
       channelEpgSelectionAnchor = null;
@@ -3602,7 +3682,7 @@
       const provider = activeUser && activeUser.providers[activeProviderIndex];
       const label = provider ? (provider.label || `Provider ${activeProviderIndex + 1}`) : '';
       const icon = provider && provider.connectionType === 'm3u' ? 'fa-list' : 'fa-plug';
-      ['sources-provider-badge', 'channel-epg-provider-badge', 'export-import-provider-badge'].forEach(id => {
+      ['sources-provider-badge', 'channel-epg-provider-badge', 'preset-provider-badge', 'export-provider-badge', 'import-provider-badge'].forEach(id => {
         const el = document.getElementById(id);
         if (!el) return;
         el.classList.toggle('hidden', !multiProvider);
