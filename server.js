@@ -2061,7 +2061,7 @@ app.post('/api/m3u/channels', async (req, res) => {
     ? source.channels.filter(ch => ch.categories.some(c => categorySet.has(c)))
     : source.channels;
 
-  return res.json({ success: true, channels: channels.map(ch => ({ id: ch.id, name: ch.name, logo: ch.logo })) });
+  return res.json({ success: true, channels: channels.map(ch => ({ id: ch.id, name: ch.name, logo: ch.logo, categories: ch.categories })) });
 });
 
 // Xtream's equivalent of /api/m3u/channels above - there's no cached

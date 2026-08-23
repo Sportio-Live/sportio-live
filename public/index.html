@@ -2136,6 +2136,11 @@
             renderChannelEpgCategories();
             return;
           }
+          if (getSelectedCategoryIds(provider).length === 0) {
+            statusEl.textContent = 'Select some leagues for this provider first (Add/Remove Leagues), then choose their categories in Category Search.';
+            renderChannelEpgCategories();
+            return;
+          }
           const res = await fetch('/api/m3u/channels', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
