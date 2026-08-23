@@ -364,8 +364,10 @@ let epgShareSettings = loadEpgShareSettings();
 // exportProviderSettings() already produces client-side (index.html):
 // category/channel NAMES rather than raw ids (so it's portable across
 // accounts the same way a user-to-user export is), never credentials.
-// How a user eventually applies one of these is a separate, not-yet-built
-// piece of UI - this store and its admin routes only cover authoring.
+// Applied either from the dashboard's Presets/Configs panel (existing
+// account) or from the setup wizard's preset step (new account, resolved
+// against the connection just tested/imported) - see importProviderSettings
+// and applyWizardPreset in index.html.
 const ALLOWED_PRESET_ICONS = new Set([
   // Sports & achievement
   'trophy', 'medal', 'award', 'ranking-star', 'futbol', 'basketball', 'baseball', 'football',
@@ -2248,11 +2250,21 @@ app.post('/api/presets', async (req, res) => {
   return res.json({ success: true, presets });
 });
 
+// Same read-only, account-agnostic preset list as /api/presets above, but
+// reachable before an account exists - the setup wizard needs to offer
+// presets between the connection step and account creation, and there's no
+// uuid/password yet at that point. No credentials ever live on a preset, so
+// there's nothing here worth gating behind auth; same reasoning as the
+// wizard's own pre-account /api/xtream/categories and /api/m3u/import.
+app.post('/api/presets/public', (req, res) => {
+  return res.json({ success: true, presets });
+});
+
 app.post('/api/user/register', async (req, res) => {
   if (!ENCRYPTION_KEY_CONFIGURED) {
     return res.status(503).json({ error: 'Encryption key not configured yet. See the homepage for setup instructions.' });
   }
-  const { xtream, m3u, connectionType, selectedSports, sportCategories, password, timeZone, sportOrder } = req.body;
+  const { xtream, m3u, connectionType, selectedSports, sportCategories, epgOverrides, password, timeZone, sportOrder } = req.body;
   if (!password || typeof password !== 'string' || password.length === 0) {
     return res.status(400).json({ error: 'A password is required.' });
   }
@@ -2275,7 +2287,11 @@ app.post('/api/user/register', async (req, res) => {
       xtream,
       m3u,
       selectedSports,
-      sportCategories
+      sportCategories,
+      // Only ever populated when the wizard's preset step resolved one -
+      // the manual leagues/categories path never sets this at registration,
+      // same as before this field existed.
+      epgOverrides: epgOverrides && typeof epgOverrides === 'object' ? epgOverrides : {}
     }],
     timeZone: timeZone || 'America/New_York',
     sportOrder,

@@ -103,20 +103,11 @@
         </form>
       </div>
 
-      <!-- Setup Wizard Step 1: Choose your leagues -->
-      <div id="wizard-leagues" class="glass rounded-xl p-6 shadow-2xl mb-8 max-w-[590px] mx-auto w-full hidden">
+      <!-- Setup Wizard Step 1: Select your timezone -->
+      <div id="wizard-timezone" class="glass rounded-xl p-6 shadow-2xl mb-8 max-w-[590px] mx-auto w-full hidden">
         <button onclick="showView('landing')" class="text-xs text-[#e6e6e6]/55 hover:text-[#e6e6e6] mb-5 flex items-center gap-1.5 transition">
           <i class="fa-solid fa-arrow-left"></i> Back
         </button>
-        <h3 class="text-lg font-bold text-[#e6e6e6] mb-4">Choose your leagues</h3>
-        <div id="wizard-league-grid" class="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6"></div>
-        <button id="wizard-leagues-next" onclick="wizardGoToTimezone()" disabled class="w-full bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-sm transition cursor-not-allowed">
-          Next
-        </button>
-      </div>
-
-      <!-- Setup Wizard Step 2: Select your timezone -->
-      <div id="wizard-timezone" class="glass rounded-xl p-6 shadow-2xl mb-8 max-w-[590px] mx-auto w-full hidden">
         <h3 class="text-lg font-bold text-[#e6e6e6] mb-4">Select your timezone</h3>
         <div id="wizard-timezone-selected" class="text-xs text-[#5aa8d1] font-semibold mb-2"></div>
         <div class="relative mb-2">
@@ -177,6 +168,28 @@
         </button>
       </div>
 
+      <!-- Setup Wizard Step 4: Apply a preset, or configure manually -->
+      <div id="wizard-presets" class="glass rounded-xl p-6 shadow-2xl mb-8 max-w-[590px] mx-auto w-full hidden">
+        <h3 class="text-lg font-bold text-[#e6e6e6] mb-1">Use a preset?</h3>
+        <p class="text-xs text-[#e6e6e6]/55 mb-4">Apply a preconfigured set of leagues, categories, and EPG sources for your provider - or skip and choose them yourself.</p>
+        <div id="wizard-preset-grid" class="grid grid-cols-3 sm:grid-cols-4 gap-2 max-h-64 overflow-y-auto bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3 mb-3"></div>
+        <button id="wizard-apply-preset-btn" onclick="applyWizardPreset()" disabled class="w-full bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-sm cursor-not-allowed transition">
+          Apply
+        </button>
+        <button onclick="wizardSkipPresets()" class="w-full flex items-center justify-center gap-1.5 text-xs text-[#e6e6e6]/55 hover:text-[#e6e6e6] mt-4 transition">
+          Skip presets. Configure manually. <i class="fa-solid fa-arrow-right text-[10px]"></i>
+        </button>
+      </div>
+
+      <!-- Setup Wizard Step 4a: Choose your leagues (manual path only) -->
+      <div id="wizard-leagues" class="glass rounded-xl p-6 shadow-2xl mb-8 max-w-[590px] mx-auto w-full hidden">
+        <h3 class="text-lg font-bold text-[#e6e6e6] mb-4">Choose your leagues</h3>
+        <div id="wizard-league-grid" class="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6"></div>
+        <button id="wizard-leagues-next" onclick="wizardGoToCategories()" disabled class="w-full bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-sm transition cursor-not-allowed">
+          Next
+        </button>
+      </div>
+
     </div>
   </div>
 
@@ -184,7 +197,7 @@
   <!-- Dashboard + status (normal top-aligned flow, not vertically centered) -->
   <div class="max-w-7xl mx-auto px-4 pb-8 w-full">
 
-    <!-- Setup Wizard Step 4: Select category folders (filtered to chosen leagues) -->
+    <!-- Setup Wizard Step 4b: Select category folders (filtered to chosen leagues, manual path only) -->
     <div id="wizard-categories" class="glass rounded-xl p-6 shadow-2xl mb-8 hidden">
       <h3 class="text-lg font-bold text-[#e6e6e6] mb-1">Category Search</h3>
       <p class="text-xs text-[#e6e6e6]/55 mb-4">Which categories should be searched when finding streams? Use Global to assign to all leagues.</p>
@@ -663,6 +676,7 @@
     let wizardTimezone = 'America/New_York';
     let wizardXtream = null;
     let wizardCategories = {};
+    let wizardEpgOverrides = {};
     let wizardSportOrder = [];
 
     // Views that should sit vertically centered in the space below the header.
@@ -679,11 +693,12 @@
       'encryption-setup': { id: 'encryption-setup-section', centered: true },
       landing: { id: 'landing-section', centered: true },
       login: { id: 'auth-section', centered: true },
-      'wizard-leagues': { id: 'wizard-leagues', centered: true },
       'wizard-timezone': { id: 'wizard-timezone', centered: true },
       'wizard-connection-type': { id: 'wizard-connection-type', centered: true },
       'wizard-xtream': { id: 'wizard-xtream', centered: true },
       'wizard-m3u': { id: 'wizard-m3u', centered: true },
+      'wizard-presets': { id: 'wizard-presets', centered: true },
+      'wizard-leagues': { id: 'wizard-leagues', centered: true },
       'wizard-categories': { id: 'wizard-categories', centered: false },
       'wizard-password': { id: 'wizard-password', centered: false },
       dashboard: { id: 'dashboard-section', centered: false }
@@ -738,14 +753,18 @@
       el._hideTimer = setTimeout(() => el.classList.add('hidden'), 2000);
     }
 
-    // --- Setup Wizard: Step 1, Choose your leagues ---
+    // --- Setup Wizard: Step 1, Select your timezone ---
 
     function startSetupWizard() {
       wizardSelectedSports = [];
       wizardTimezone = 'America/New_York';
       wizardXtream = null;
+      wizardM3u = null;
       wizardCategories = {};
+      wizardEpgOverrides = {};
       wizardSportOrder = [];
+      wizardAvailablePresets = [];
+      selectedWizardPresetId = null;
 
       // Clearing the JS tracking variable above isn't enough on its own -
       // the actual input elements keep whatever was typed during an
@@ -763,9 +782,10 @@
       xtreamBtn.disabled = true;
       xtreamBtn.className = 'w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-sm cursor-not-allowed';
 
-      renderWizardLeagueGrid();
-      updateWizardLeaguesNextButton();
-      showView('wizard-leagues');
+      document.getElementById('wizard-timezone-search').value = '';
+      renderWizardTimezoneList();
+      updateWizardTimezoneSelectedLabel();
+      showView('wizard-timezone');
     }
 
     // Shared by both the wizard's league picker and the dashboard's Manage
@@ -813,8 +833,6 @@
         btn.className = 'w-full bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-sm cursor-not-allowed';
       }
     }
-
-    // --- Setup Wizard: Step 2, Select your timezone ---
 
     // --- Shared timezone picker utilities (used by both the wizard and the
     // dashboard's Change Timezone editor) ---
@@ -897,13 +915,6 @@
       }).join('');
     }
 
-    function wizardGoToTimezone() {
-      document.getElementById('wizard-timezone-search').value = '';
-      renderWizardTimezoneList();
-      updateWizardTimezoneSelectedLabel();
-      showView('wizard-timezone');
-    }
-
     function renderWizardTimezoneList() {
       renderTimezoneList('wizard-timezone-list', wizardTimezone, 'selectWizardTimezone', document.getElementById('wizard-timezone-search').value);
     }
@@ -980,7 +991,7 @@
           // a group-title string serves as both the id and the display
           // name here, since M3U has no separate numeric-id concept.
           fetchedCategories = data.categories.map(c => ({ category_id: c.name, category_name: c.name }));
-          wizardGoToCategories();
+          wizardGoToPresets();
         } else {
           // Indicate which URL was the problem where the backend could
           // tell, rather than a generic failure message.
@@ -1041,7 +1052,7 @@
           fetchedCategories = data.categories;
           btn.dataset.mode = 'next';
           btn.innerHTML = 'Next';
-          btn.onclick = wizardGoToCategories;
+          btn.onclick = wizardGoToPresets;
           btn.className = 'w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 font-bold py-2.5 rounded-lg text-sm';
           successEl.textContent = 'Connection success. Click next.';
           successEl.classList.remove('hidden');
@@ -1055,7 +1066,165 @@
       }
     }
 
-    // --- Setup Wizard: Step 4, category folder selection (filtered) ---
+    // --- Setup Wizard: Step 4, apply a preset (or skip to configure manually) ---
+
+    // Same admin-curated presets as the dashboard's Presets/Configs panel
+    // (see loadPresetsForPanel/applySelectedPreset below), but fetched via
+    // the unauthenticated /api/presets/public since there's no account yet
+    // at this point in the wizard - and filtered to the connection type
+    // just chosen, since a preset built for the other type can never
+    // resolve here (see importProviderSettings's own connectionType check).
+    let wizardAvailablePresets = [];
+    let selectedWizardPresetId = null;
+
+    async function wizardGoToPresets() {
+      selectedWizardPresetId = null;
+      document.getElementById('wizard-preset-grid').innerHTML = '<p class="col-span-full text-xs text-[#e6e6e6]/55 italic py-2">Loading presets...</p>';
+      showView('wizard-presets');
+
+      const connectionType = wizardM3u ? 'm3u' : 'xtream';
+      try {
+        const res = await fetch('/api/presets/public', { method: 'POST' });
+        const data = await res.json();
+        const all = data.success ? data.presets : [];
+        wizardAvailablePresets = all.filter(p => p.connectionType === connectionType);
+      } catch (err) {
+        wizardAvailablePresets = [];
+      }
+      renderWizardPresetGrid();
+    }
+
+    function renderWizardPresetGrid() {
+      const grid = document.getElementById('wizard-preset-grid');
+      if (wizardAvailablePresets.length === 0) {
+        grid.innerHTML = '<p class="col-span-full text-xs text-[#e6e6e6]/55 italic py-2">No presets available yet for this connection type - skip below to configure manually.</p>';
+      } else {
+        grid.innerHTML = wizardAvailablePresets.map(p => {
+          const selected = p.id === selectedWizardPresetId;
+          const classes = selected
+            ? 'bg-[#3b8fc4] border-[#3b8fc4] text-white'
+            : 'bg-[#3b4d58] border-[#e6e6e6]/15 text-[#e6e6e6]/75 hover:border-[#3b8fc4]/50';
+          return `
+            <button type="button" onclick="selectWizardPresetTile('${p.id}')" class="flex flex-col items-center gap-1 p-2 rounded-lg border transition text-center ${classes}">
+              <i class="fa-solid fa-${p.icon} text-lg"></i>
+              <span class="text-[10px] leading-tight break-words">${escapeHtml(p.name)}</span>
+            </button>
+          `;
+        }).join('');
+      }
+      updateApplyWizardPresetButtonState();
+    }
+
+    function selectWizardPresetTile(id) {
+      selectedWizardPresetId = id;
+      renderWizardPresetGrid();
+    }
+
+    function updateApplyWizardPresetButtonState() {
+      const btn = document.getElementById('wizard-apply-preset-btn');
+      if (wizardAvailablePresets.length === 0) {
+        btn.classList.add('hidden');
+        return;
+      }
+      btn.classList.remove('hidden');
+      const ready = !!selectedWizardPresetId;
+      btn.disabled = !ready;
+      btn.className = ready
+        ? 'w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2.5 rounded-lg text-sm transition'
+        : 'w-full bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-sm cursor-not-allowed transition';
+    }
+
+    function wizardSkipPresets() {
+      renderWizardLeagueGrid();
+      updateWizardLeaguesNextButton();
+      showView('wizard-leagues');
+    }
+
+    // Resolves the selected preset's category/channel NAMES against
+    // fetchedCategories, which the connection step just populated from a
+    // live catalog - same name-resolution approach as the dashboard's
+    // importProviderSettings, just working off the wizard's in-progress
+    // connection instead of an already-saved provider. Applies whatever
+    // matches and reports what didn't, rather than blocking on a partial
+    // match - a preset built against a different package/subscription on
+    // the same provider will legitimately miss some categories.
+    async function applyWizardPreset() {
+      const preset = wizardAvailablePresets.find(p => p.id === selectedWizardPresetId);
+      if (!preset) return;
+
+      const categoryIdByName = {};
+      fetchedCategories.forEach(c => { categoryIdByName[c.category_name] = String(c.category_id); });
+
+      wizardCategories = {};
+      wizardSelectedSports = [];
+      const allowedSports = new Set([...SPORTS, 'GLOBAL']);
+
+      let categoriesApplied = 0;
+      let categoriesSkipped = 0;
+
+      Object.entries(preset.sportCategories || {}).forEach(([sport, names]) => {
+        if (!allowedSports.has(sport) || !Array.isArray(names)) return;
+        const resolved = new Set();
+        names.forEach(name => {
+          const id = categoryIdByName[name];
+          if (id) { resolved.add(id); categoriesApplied++; }
+          else categoriesSkipped++;
+        });
+        if (resolved.size > 0) {
+          wizardCategories[sport] = [...resolved];
+          if (sport !== 'GLOBAL' && !wizardSelectedSports.includes(sport)) {
+            wizardSelectedSports.push(sport);
+          }
+        }
+      });
+
+      (preset.selectedSports || []).forEach(sport => {
+        if (allowedSports.has(sport) && sport !== 'GLOBAL' && !wizardSelectedSports.includes(sport)) {
+          wizardSelectedSports.push(sport);
+        }
+      });
+
+      wizardEpgOverrides = {};
+      let overridesApplied = 0;
+      let overridesSkipped = 0;
+      const importedOverrides = preset.epgOverrides || {};
+
+      if (wizardM3u) {
+        // tvg-id is already local-compatible - apply directly.
+        Object.entries(importedOverrides).forEach(([tvgId, epgShareId]) => {
+          wizardEpgOverrides[tvgId] = epgShareId;
+          overridesApplied++;
+        });
+      } else if (Object.keys(importedOverrides).length > 0) {
+        const usedCategoryIds = [...new Set(Object.values(wizardCategories).flat().map(String))];
+        const channels = await fetchXtreamChannelsForCategories(wizardXtream, usedCategoryIds);
+        const idsByName = {};
+        channels.forEach(ch => { (idsByName[ch.name] = idsByName[ch.name] || []).push(ch.id); });
+        Object.entries(importedOverrides).forEach(([channelName, epgShareId]) => {
+          const matches = idsByName[channelName] || [];
+          if (matches.length === 1) {
+            wizardEpgOverrides[matches[0]] = epgShareId;
+            overridesApplied++;
+          } else {
+            // Not found, or the name matched more than one channel - either
+            // way a guess would risk a wrong EPG assignment, so it's left
+            // for the user to set by hand later.
+            overridesSkipped++;
+          }
+        });
+      }
+
+      const leagueCount = wizardSelectedSports.length;
+      let msg = `Applied preset "${preset.name}": ${categoriesApplied} categor${categoriesApplied === 1 ? 'y' : 'ies'} across ${leagueCount} league${leagueCount === 1 ? '' : 's'}, ${overridesApplied} EPG override${overridesApplied === 1 ? '' : 's'}.`;
+      if (categoriesSkipped > 0 || overridesSkipped > 0) {
+        msg += ` (${categoriesSkipped + overridesSkipped} skipped - not found on your provider.)`;
+      }
+      showStatus(msg);
+
+      showView('wizard-password');
+    }
+
+    // --- Setup Wizard: Step 4b, category folder selection (manual path, filtered) ---
 
     function wizardGoToCategories() {
       renderWizardCategoriesConfig();
@@ -1130,6 +1299,9 @@
             // chosen in the wizard, rather than showing all 11 sports.
             selectedSports: wizardSelectedSports,
             sportCategories: wizardCategories,
+            // Only ever non-empty if the preset step resolved one - the
+            // manual leagues/categories path never touches EPG overrides.
+            epgOverrides: wizardEpgOverrides,
             sportOrder: wizardSportOrder
           })
         });
@@ -1148,7 +1320,8 @@
               xtream: connectionType === 'xtream' ? wizardXtream : undefined,
               m3u: connectionType === 'm3u' ? wizardM3u : undefined,
               selectedSports: wizardSelectedSports,
-              sportCategories: wizardCategories
+              sportCategories: wizardCategories,
+              epgOverrides: wizardEpgOverrides
             }],
             timeZone: wizardTimezone,
             sportOrder: wizardSportOrder
