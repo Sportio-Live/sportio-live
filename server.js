@@ -6,6 +6,7 @@ const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const zlib = require('zlib');
 const m3u = require('./m3u.js');
 const epgshare = require('./epgshare01.js');
 
@@ -790,6 +791,40 @@ function getSvgGroupBounds(markup, groupId) {
   return { x: parseFloat(x[1]), y: parseFloat(y[1]), width: parseFloat(width[1]), height: parseFloat(height[1]) };
 }
 
+// Finds a top-level <g id="groupId">...</g> by counting nested <g> depth,
+// rather than assuming the first </g> is the match like getSvgGroupBounds/
+// replaceSvgGroup do - needed for the UFC template's Layer_1, which nests
+// several <g> elements of its own (the hex-pattern group), so a naive
+// non-greedy match would close early on one of those instead of the
+// layer's real closing tag.
+function findSvgGroupRange(markup, groupId) {
+  const openMatch = markup.match(new RegExp(`<g id="${groupId}"[^>]*>`));
+  if (!openMatch) return null;
+  const contentStart = openMatch.index + openMatch[0].length;
+  const tagPattern = /<g[\s>]|<\/g>/g;
+  tagPattern.lastIndex = contentStart;
+  let depth = 1;
+  let m;
+  while ((m = tagPattern.exec(markup))) {
+    if (m[0] === '</g>') {
+      depth--;
+      if (depth === 0) return { closeStart: m.index };
+    } else {
+      depth++;
+    }
+  }
+  return null;
+}
+
+// Inserts markup as the LAST child of a named group, i.e. rendered on top
+// of everything else already in that group - used to layer the UFC
+// poster's fighter images above its Layer_1 background/border art.
+function appendToSvgGroup(markup, groupId, insertion) {
+  const range = findSvgGroupRange(markup, groupId);
+  if (!range) return markup;
+  return markup.slice(0, range.closeStart) + insertion + markup.slice(range.closeStart);
+}
+
 function getBackgroundOverlayInline() {
   const filePath = path.join(__dirname, 'assets', 'background', 'overlay_background.svg');
   return getInlineSvgOverlay(filePath, 'bg-overlay');
@@ -917,6 +952,132 @@ async function getBase64ImageWithDimensions(url) {
     return { dataUri: `data:${contentType};base64,${base64}`, width: dimensions.width, height: dimensions.height };
   } catch (err) {
     console.error(`[ImageLoader] Failed to fetch image with dimensions: ${url}. Error: ${err.message}`);
+    return null;
+  }
+}
+
+// Finds the tightest bounding box of non-transparent pixels in an RGBA
+// PNG - needed because the real UFC league logo pulled from ESPN's CDN is
+// a 500x500 canvas where the actual wordmark only occupies its vertical
+// center (large transparent margins above/below), so positioning/scaling
+// off the raw canvas bounds (like getPngDimensions does) places the
+// visible logo well below - and narrower than - where it's meant to sit.
+// Only PNGs with an alpha channel can have this kind of padding; anything
+// else (a plain RGB/greyscale image, no transparency) has nothing to
+// trim, so this returns its full bounds untouched.
+function getPngContentBounds(buffer) {
+  const dimensions = getPngDimensions(buffer);
+  if (!dimensions) return null;
+  const fullBounds = { x: 0, y: 0, width: dimensions.width, height: dimensions.height };
+
+  let offset = 8;
+  let bitDepth, colorType;
+  const idatChunks = [];
+  while (offset < buffer.length) {
+    const len = buffer.readUInt32BE(offset);
+    const type = buffer.toString('ascii', offset + 4, offset + 8);
+    const data = buffer.slice(offset + 8, offset + 8 + len);
+    if (type === 'IHDR') {
+      bitDepth = data.readUInt8(8);
+      colorType = data.readUInt8(9);
+    } else if (type === 'IDAT') {
+      idatChunks.push(data);
+    } else if (type === 'IEND') {
+      break;
+    }
+    offset += 8 + len + 4;
+  }
+
+  // Only color types 4 (greyscale+alpha) and 6 (RGBA) carry a per-pixel
+  // alpha channel; anything else is fully opaque with nothing to trim.
+  // Interlaced/non-8-bit PNGs aren't worth the extra decoding complexity
+  // for what's just a positioning nicety, so those fall back untrimmed too.
+  if (bitDepth !== 8 || (colorType !== 4 && colorType !== 6)) return fullBounds;
+
+  try {
+    const { width, height } = dimensions;
+    const channels = colorType === 6 ? 4 : 2;
+    const stride = width * channels;
+    const raw = zlib.inflateSync(Buffer.concat(idatChunks));
+    const out = Buffer.alloc(height * stride);
+    let rawOffset = 0;
+    for (let y = 0; y < height; y++) {
+      const filterType = raw[rawOffset]; rawOffset++;
+      const rowStart = y * stride;
+      const prevRowStart = (y - 1) * stride;
+      for (let x = 0; x < stride; x++) {
+        const rawByte = raw[rawOffset + x];
+        const a = x >= channels ? out[rowStart + x - channels] : 0;
+        const b = y > 0 ? out[prevRowStart + x] : 0;
+        const c = (y > 0 && x >= channels) ? out[prevRowStart + x - channels] : 0;
+        let val;
+        switch (filterType) {
+          case 0: val = rawByte; break;
+          case 1: val = rawByte + a; break;
+          case 2: val = rawByte + b; break;
+          case 3: val = rawByte + Math.floor((a + b) / 2); break;
+          case 4: {
+            const p = a + b - c;
+            const pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+            val = rawByte + ((pa <= pb && pa <= pc) ? a : (pb <= pc ? b : c));
+            break;
+          }
+          default: val = rawByte;
+        }
+        out[rowStart + x] = val & 0xFF;
+      }
+      rawOffset += stride;
+    }
+
+    let minX = width, maxX = -1, minY = -1, maxY = -1;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const alpha = out[y * stride + x * channels + (channels - 1)];
+        if (alpha > 10) {
+          if (minY === -1) minY = y;
+          maxY = y;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+        }
+      }
+    }
+    if (minY === -1) return fullBounds;
+    return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+  } catch (err) {
+    console.error(`[ImageLoader] Failed to compute PNG content bounds:`, err.message);
+    return fullBounds;
+  }
+}
+
+// Same fetch as getBase64ImageWithDimensions, but also returns the image's
+// visible content bounding box (see getPngContentBounds) - needed for the
+// UFC poster's league logo, which must be sized/positioned by its actual
+// visible artwork, not the padded canvas ESPN serves it on.
+async function getBase64ImageWithContentBounds(url) {
+  try {
+    const response = await axios.get(url, {
+      responseType: 'arraybuffer',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        'Referer': 'https://www.espn.com/'
+      },
+      timeout: 5000
+    });
+    const contentType = response.headers['content-type'] || 'image/png';
+    const buffer = Buffer.from(response.data, 'binary');
+    const dimensions = getPngDimensions(buffer);
+    if (!dimensions) return null;
+    const contentBounds = getPngContentBounds(buffer);
+    const base64 = buffer.toString('base64');
+    return {
+      dataUri: `data:${contentType};base64,${base64}`,
+      width: dimensions.width,
+      height: dimensions.height,
+      contentBounds
+    };
+  } catch (err) {
+    console.error(`[ImageLoader] Failed to fetch image with content bounds: ${url}. Error: ${err.message}`);
     return null;
   }
 }
@@ -1137,64 +1298,64 @@ app.get('/poster/ufc/:fighterAId/:fighterBId.svg', async (req, res) => {
   const userTz = req.query.tz || 'America/New_York';
   const { fighterAId, fighterBId } = req.params;
 
-  // Fighter A (home) uses their LEFT stance image, anchored by its TOP-
-  // RIGHT corner; Fighter B (away) uses their RIGHT stance image,
-  // anchored by its TOP-LEFT corner - confirmed directly against the
-  // reference template's own marker names and positions, not assumed.
-  // Rendered at true native resolution (no scaling at all) - confirmed
-  // explicitly that having part of the image extend past the poster's
-  // edges is intentional, not something to avoid. Real pixel dimensions
-  // are needed up front for this (not left to the SVG renderer to infer
-  // implicitly), given known quirks in how some Stremio-ecosystem clients
-  // handle SVG.
+  // Fighter A (home) uses their LEFT stance image, Fighter B (away) uses
+  // their RIGHT stance image - both rendered 700px tall, scaled
+  // proportionately (real pixel dimensions needed up front for that, not
+  // left to the SVG renderer to infer implicitly, given known quirks in
+  // how some Stremio-ecosystem clients handle SVG), and each horizontally
+  // centered within its own half of the poster (home in x:0-300, away in
+  // x:300-600), 100px from the top edge.
   const [homeImage, awayImage] = await Promise.all([
     getBase64ImageWithDimensions(`https://a.espncdn.com/i/headshots/mma/players/stance/left/${fighterAId}.png`),
     getBase64ImageWithDimensions(`https://a.espncdn.com/i/headshots/mma/players/stance/right/${fighterBId}.png`)
   ]);
 
   // Real UFC league logo, same source already confirmed working for the
-  // /logo/ufc.svg route - unlike the fighter images above, this one
-  // scales PROPORTIONATELY to fit within its marker's bounds (not native
-  // resolution/intentionally cropped) - confirmed directly against what
-  // was asked for this specific marker.
+  // /logo/ufc.svg route - rendered 130px wide, scaled proportionately, so
+  // its real pixel dimensions are needed too (not just fit into a fixed
+  // box via preserveAspectRatio alone). Its content bounds are needed on
+  // top of that: the raw PNG ESPN serves is a 500x500 canvas with the
+  // wordmark occupying only its vertical center, so sizing/positioning
+  // off the padded canvas (rather than the visible artwork) would put
+  // the "top of the logo" well below where it's meant to sit.
   const ufcLogoUrl = await getRealLeagueLogoUrl('UFC');
-  const ufcLogoData = ufcLogoUrl ? await getBase64Image(ufcLogoUrl) : null;
+  const ufcLogoData = ufcLogoUrl ? await getBase64ImageWithContentBounds(ufcLogoUrl) : null;
 
   const template = getUfcPosterTemplateInline();
-
-  // Marker groups' own bounds - confirmed live against the real template:
-  // away's marker is a 10x10 rect at (139.23, 54.93), home's is a 10x10
-  // rect at (396.38, 54.93). Neither marker itself is meant to render -
-  // replaceSvgGroup swaps each one out entirely for the real fighter
-  // image, at that exact point in the document so layer order (fighter
-  // images below the logo/plaque layer that comes after them in the
-  // template) is preserved, not just appended at the end.
-  const homeMarkerBounds = getSvgGroupBounds(template.markup, 'home_fighter\\._left_stance\\._anchor_point');
-  const awayMarkerBounds = getSvgGroupBounds(template.markup, 'away_fighter\\._right_stance\\._anchor_point');
-  const ufcLogoBounds = getSvgGroupBounds(template.markup, 'ufc_logo');
-
   let markup = template.markup;
 
+  const FIGHTER_IMAGE_HEIGHT = 700;
+  const FIGHTER_IMAGE_TOP = 100;
+
+  const awayWidth = awayImage ? awayImage.width * (FIGHTER_IMAGE_HEIGHT / awayImage.height) : 0;
+  const awayX = 300 + (300 - awayWidth) / 2;
   const awayImageMarkup = awayImage
-    ? `<image href="${awayImage.dataUri}" x="${awayMarkerBounds.x}" y="${awayMarkerBounds.y}" width="${awayImage.width}" height="${awayImage.height}" />`
-    : (awayMarkerBounds ? buildLogoFallback(awayMarkerBounds.x, awayMarkerBounds.y, 300, fighterBName, '#c0392b') : '');
-  markup = replaceSvgGroup(markup, 'away_fighter\\._right_stance\\._anchor_point', awayImageMarkup);
+    ? `<image href="${awayImage.dataUri}" x="${awayX}" y="${FIGHTER_IMAGE_TOP}" width="${awayWidth}" height="${FIGHTER_IMAGE_HEIGHT}" />`
+    : buildLogoFallback(450, FIGHTER_IMAGE_TOP, 300, fighterBName, '#c0392b');
+  markup = appendToSvgGroup(markup, 'Layer_1', awayImageMarkup);
 
-  // Home's image is anchored by its TOP-RIGHT corner, not top-left like
-  // away and like every other image placement in this app - so its x
-  // position is the marker's x MINUS the image's own width, putting the
-  // image's right edge exactly at the marker rather than its left edge.
+  const homeWidth = homeImage ? homeImage.width * (FIGHTER_IMAGE_HEIGHT / homeImage.height) : 0;
+  const homeX = (300 - homeWidth) / 2;
   const homeImageMarkup = homeImage
-    ? `<image href="${homeImage.dataUri}" x="${homeMarkerBounds.x - homeImage.width}" y="${homeMarkerBounds.y}" width="${homeImage.width}" height="${homeImage.height}" />`
-    : (homeMarkerBounds ? buildLogoFallback(homeMarkerBounds.x - 300, homeMarkerBounds.y, 300, fighterAName, '#2a2a2a') : '');
-  markup = replaceSvgGroup(markup, 'home_fighter\\._left_stance\\._anchor_point', homeImageMarkup);
+    ? `<image href="${homeImage.dataUri}" x="${homeX}" y="${FIGHTER_IMAGE_TOP}" width="${homeWidth}" height="${FIGHTER_IMAGE_HEIGHT}" />`
+    : buildLogoFallback(150, FIGHTER_IMAGE_TOP, 300, fighterAName, '#2a2a2a');
+  markup = appendToSvgGroup(markup, 'Layer_1', homeImageMarkup);
 
-  const ufcLogoMarkup = ufcLogoBounds
-    ? (ufcLogoData
-        ? `<image href="${ufcLogoData}" x="${ufcLogoBounds.x}" y="${ufcLogoBounds.y}" width="${ufcLogoBounds.width}" height="${ufcLogoBounds.height}" preserveAspectRatio="xMidYMid meet" />`
-        : `<text x="${ufcLogoBounds.x + ufcLogoBounds.width / 2}" y="${ufcLogoBounds.y + ufcLogoBounds.height / 2 + 10}" font-family="'Trebuchet MS', Verdana, sans-serif" font-size="32" font-weight="800" fill="#ffffff" text-anchor="middle">UFC</text>`)
-    : '';
-  markup = replaceSvgGroup(markup, 'ufc_logo', ufcLogoMarkup);
+  const UFC_LOGO_WIDTH = 130;
+  const UFC_LOGO_TOP = 21;
+  const ufcLogoX = (600 - UFC_LOGO_WIDTH) / 2;
+  // A nested <svg> crops the padded source image down to just its content
+  // bounds: viewBox positions/sizes the crop window in the source image's
+  // own pixel space, while this element's own x/y/width/height place that
+  // cropped result on the poster - so the box the browser actually lays
+  // out (and that x="..." y="..." positions) is the visible logo itself.
+  const ufcLogoMarkup = ufcLogoData
+    ? (() => {
+        const { x: cx, y: cy, width: cw, height: ch } = ufcLogoData.contentBounds;
+        const displayHeight = ch * (UFC_LOGO_WIDTH / cw);
+        return `<svg x="${ufcLogoX}" y="${UFC_LOGO_TOP}" width="${UFC_LOGO_WIDTH}" height="${displayHeight}" viewBox="${cx} ${cy} ${cw} ${ch}"><image href="${ufcLogoData.dataUri}" x="0" y="0" width="${ufcLogoData.width}" height="${ufcLogoData.height}" /></svg>`;
+      })()
+    : `<text x="300" y="${UFC_LOGO_TOP + 40}" font-family="'Trebuchet MS', Verdana, sans-serif" font-size="32" font-weight="800" fill="#ffffff" text-anchor="middle">UFC</text>`;
 
   // The plaque itself is already fully rendered, visible static art from
   // the template (an unnamed rounded-rect path, part of the "keep 2"
@@ -1211,6 +1372,7 @@ app.get('/poster/ufc/:fighterAId/:fighterBId.svg', async (req, res) => {
     <defs>${template.defs}</defs>
     ${markup}
     ${timeMarkup}
+    ${ufcLogoMarkup}
   </svg>`;
 
   res.setHeader('Content-Type', 'image/svg+xml');
