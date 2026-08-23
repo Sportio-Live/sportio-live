@@ -484,7 +484,7 @@
           <i class="fa-solid fa-plug text-[9px]"></i><span></span>
         </span>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 md:gap-0">
           <div>
             <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-1">Presets</h3>
             <p class="text-xs text-[#e6e6e6]/55 mb-3">For best results, make sure your IPTV provider matches that of the preset.</p>
@@ -497,24 +497,28 @@
             <div id="preset-apply-result" class="hidden text-xs bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3 mt-3 space-y-1"></div>
           </div>
 
-          <div>
+          <div class="md:pl-6 md:border-l md:border-[#e6e6e6]/15">
             <div class="mb-5">
               <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-1">Export</h3>
               <p class="text-xs text-[#e6e6e6]/55 mb-3">Export your currently selected Leagues/sources and EPG overrides to a configuration file.</p>
-              <button onclick="exportProviderSettings()" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2">
-                <i class="fa-solid fa-download"></i>
-                Export Config
-              </button>
+              <div class="flex justify-end">
+                <button onclick="exportProviderSettings()" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2">
+                  <i class="fa-solid fa-download"></i>
+                  Export Config
+                </button>
+              </div>
             </div>
 
             <div class="pt-4 border-t border-[#e6e6e6]/15">
               <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-1">Import</h3>
-              <p class="text-xs text-[#e6e6e6]/55 mb-3">Import a configuration file. This will overwrite your current Leagues/sources. Imported EPG overrides will be merged with your current overrides.</p>
+              <p class="text-xs text-[#e6e6e6]/55 mb-3">Import a configuration file. This will overwrite your current Leagues/sources and EPG overrides.</p>
               <input type="file" id="export-import-file-input" accept="application/json" class="hidden" onchange="handleImportFileSelected(event)">
-              <button onclick="document.getElementById('export-import-file-input').click()" class="bg-[#56707d] hover:bg-[#66818f] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2">
-                <i class="fa-solid fa-upload"></i>
-                Import Config
-              </button>
+              <div class="flex justify-end">
+                <button onclick="document.getElementById('export-import-file-input').click()" class="bg-[#56707d] hover:bg-[#66818f] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2">
+                  <i class="fa-solid fa-upload"></i>
+                  Import Config
+                </button>
+              </div>
               <div id="export-import-error" class="hidden text-xs text-[#e56a6a] font-semibold mt-3"></div>
               <div id="export-import-result" class="hidden text-xs bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3 mt-3 space-y-1"></div>
             </div>
@@ -2463,16 +2467,28 @@
       const provider = activeUser && activeUser.providers[activeProviderIndex];
       if (!provider) return;
 
+      // Category/channel identity is resolved by name (Xtream) or tvg-id
+      // (M3U) - two entirely different id spaces with no meaningful
+      // cross-mapping between them, so a file/preset built for one
+      // connection type can never correctly apply to the other. Blocked
+      // outright rather than attempted-then-mostly-skipped.
+      if (data.connectionType && data.connectionType !== provider.connectionType) {
+        showExportImportResult(
+          `<div class="text-[#e56a6a] font-semibold">This configuration was made for an ${data.connectionType === 'm3u' ? 'M3U' : 'Xtream'} provider, but your active provider is ${provider.connectionType === 'm3u' ? 'M3U' : 'Xtream'}. Importing across different provider types isn't supported.</div>`,
+          resultElId
+        );
+        return;
+      }
+
       await refreshCategoriesForActiveProvider();
       const categoryIdByName = {};
       fetchedCategories.forEach(c => { categoryIdByName[c.category_name] = String(c.category_id); });
 
-      // Categories and leagues are a full replacement, not a merge - an
-      // imported file represents someone's complete league/category setup,
-      // and leaving the importing user's own prior selections mixed in
-      // would produce a hybrid neither side actually asked for. EPG
-      // overrides below are the opposite: kept, with the file only
-      // overwriting entries for a channel it explicitly names.
+      // Leagues, categories, and EPG overrides are all a full replacement,
+      // not a merge - an imported file/preset represents someone's
+      // complete setup, and leaving the importing user's own prior
+      // selections mixed in would produce a hybrid neither side actually
+      // asked for.
       provider.sportCategories = {};
       provider.selectedSports = [];
       const allowedSports = new Set([...SPORTS, 'GLOBAL']);
@@ -2504,7 +2520,7 @@
         });
       }
 
-      provider.epgOverrides = provider.epgOverrides || {};
+      provider.epgOverrides = {};
       let overridesApplied = 0;
       let overridesNotFound = 0;
       let overridesAmbiguous = 0;
@@ -2543,7 +2559,7 @@
       const leagueCount = provider.selectedSports.length;
       const lines = [
         `<div class="text-[#a8e0ac] font-semibold">Applied ${categoriesApplied} categor${categoriesApplied === 1 ? 'y' : 'ies'} across ${leagueCount} league${leagueCount === 1 ? '' : 's'} - this replaced your previous league/category selections for this provider.</div>`,
-        `<div class="text-[#a8e0ac]">Applied ${overridesApplied} EPG override${overridesApplied === 1 ? '' : 's'} - your own overrides were kept, with the file winning on any channel it also overrides.</div>`
+        `<div class="text-[#a8e0ac]">Applied ${overridesApplied} EPG override${overridesApplied === 1 ? '' : 's'} - this replaced your previous EPG overrides for this provider.</div>`
       ];
       const skippedParts = [];
       if (categoriesSkipped > 0) skippedParts.push(`${categoriesSkipped} categor${categoriesSkipped === 1 ? 'y' : 'ies'} not found`);
@@ -2551,9 +2567,6 @@
       if (overridesAmbiguous > 0) skippedParts.push(`${overridesAmbiguous} channel${overridesAmbiguous === 1 ? '' : 's'} ambiguous (multiple matches)`);
       if (skippedParts.length > 0) {
         lines.push(`<div class="text-[#e6e6e6]/55">Skipped: ${skippedParts.join(', ')}.</div>`);
-      }
-      if (data.connectionType && data.connectionType !== provider.connectionType) {
-        lines.push(`<div class="text-[#c9992e]">Heads up: this file was exported from an ${data.connectionType === 'm3u' ? 'M3U' : 'Xtream'} provider, but you're importing into an ${provider.connectionType === 'm3u' ? 'M3U' : 'Xtream'} one - that's likely why some entries didn't match.</div>`);
       }
       lines.push(`<div class="text-[#e6e6e6]/40 text-[10px] mt-1">Not saved yet - click Save and Copy Link to keep these changes.</div>`);
       showExportImportResult(lines.join(''), resultElId);
