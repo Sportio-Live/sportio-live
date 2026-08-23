@@ -136,6 +136,19 @@ if (!fs.existsSync(DATA_DIR)) {
   console.log(`[Storage] Created data directory at ${DATA_DIR}`);
 }
 
+// Deliberately NOT under DATA_DIR - data/ is gitignored and excluded from
+// the Docker build context (instance-local runtime state: accounts,
+// admin credentials, caches), but presets are curated, shippable content
+// an operator explicitly wants committed and distributed with the repo.
+// Built from __dirname directly so it can never drift under data/.
+const PRESETS_DIR = path.join(__dirname, 'presets');
+const PRESETS_FILE = path.join(PRESETS_DIR, 'presets.json');
+
+if (!fs.existsSync(PRESETS_DIR)) {
+  fs.mkdirSync(PRESETS_DIR, { recursive: true });
+  console.log(`[Storage] Created presets directory at ${PRESETS_DIR}`);
+}
+
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
@@ -346,6 +359,89 @@ function saveEpgShareSettings(settings) {
 }
 
 let epgShareSettings = loadEpgShareSettings();
+
+// Admin-curated presets - a named, iconed bundle of the exact payload
+// exportProviderSettings() already produces client-side (index.html):
+// category/channel NAMES rather than raw ids (so it's portable across
+// accounts the same way a user-to-user export is), never credentials.
+// How a user eventually applies one of these is a separate, not-yet-built
+// piece of UI - this store and its admin routes only cover authoring.
+const ALLOWED_PRESET_ICONS = new Set([
+  // Sports & achievement
+  'trophy', 'medal', 'award', 'ranking-star', 'futbol', 'basketball', 'baseball', 'football',
+  'volleyball', 'hockey-puck', 'golf-ball-tee', 'bowling-ball', 'table-tennis-paddle-ball',
+  'dumbbell', 'person-running', 'person-biking', 'person-swimming', 'person-skiing',
+  'person-snowboarding', 'stopwatch', 'flag-checkered',
+  // Media & entertainment
+  'tv', 'film', 'video', 'music', 'headphones', 'microphone', 'camera', 'clapperboard',
+  'gamepad', 'dice', 'chess', 'chess-king', 'puzzle-piece', 'ticket', 'masks-theater',
+  'record-vinyl', 'compact-disc',
+  // General objects & symbols
+  'star', 'heart', 'fire', 'bolt', 'crown', 'gem', 'shield', 'shield-halved', 'gift', 'key',
+  'lock', 'lock-open', 'bell', 'bookmark', 'tag', 'tags', 'box', 'briefcase', 'suitcase',
+  'thumbs-up', 'hand', 'peace', 'infinity', 'atom', 'certificate', 'flag', 'circle', 'square',
+  'compass',
+  // Nature & weather
+  'globe', 'sun', 'moon', 'cloud', 'snowflake', 'umbrella', 'mountain', 'tree', 'leaf',
+  'water', 'wind', 'cloud-sun', 'cloud-rain', 'temperature-high',
+  // Transportation
+  'car', 'truck', 'motorcycle', 'bicycle', 'plane', 'ship', 'train', 'rocket', 'bus',
+  'van-shuttle', 'anchor',
+  // Places & buildings
+  'map', 'map-pin', 'location-dot', 'clock', 'calendar', 'calendar-days', 'building', 'city',
+  'home', 'landmark', 'university', 'hospital', 'store', 'industry', 'warehouse',
+  // Tech
+  'satellite', 'satellite-dish', 'wifi', 'signal', 'microchip', 'server', 'desktop', 'mobile',
+  'tablet-screen-button',
+  // People
+  'users', 'user', 'user-group', 'child', 'hat-cowboy', 'mask',
+  // Food & drink
+  'pizza-slice', 'burger', 'mug-hot', 'beer-mug-empty', 'wine-glass', 'apple-whole', 'carrot',
+  // Animals
+  'feather', 'paw', 'dragon', 'dog', 'cat', 'fish', 'horse', 'spider', 'frog', 'kiwi-bird',
+  'crow', 'dove'
+]);
+
+const PRESET_NAME_MAX_LENGTH = 60;
+
+// Re-validated on every load (not just on save), same reasoning as
+// epgShareSettings above - a malformed or hand-edited presets.json (this
+// file is meant to be hand-editable/mergeable via git, unlike data/*)
+// should have its bad entries silently dropped rather than crash the
+// whole store or let bad data reach a client.
+function isValidStoredPreset(p) {
+  return !!p && typeof p === 'object'
+    && typeof p.id === 'string'
+    && typeof p.name === 'string'
+    && ALLOWED_PRESET_ICONS.has(p.icon)
+    && (p.connectionType === 'xtream' || p.connectionType === 'm3u')
+    && Array.isArray(p.selectedSports) && p.selectedSports.every(s => typeof s === 'string')
+    && typeof p.sportCategories === 'object' && p.sportCategories !== null
+    && Object.values(p.sportCategories).every(names => Array.isArray(names) && names.every(n => typeof n === 'string'))
+    && typeof p.epgOverrides === 'object' && p.epgOverrides !== null
+    && Object.values(p.epgOverrides).every(v => typeof v === 'string');
+}
+
+function loadPresets() {
+  if (!fs.existsSync(PRESETS_FILE)) return [];
+  try {
+    const raw = JSON.parse(fs.readFileSync(PRESETS_FILE, 'utf8'));
+    return Array.isArray(raw) ? raw.filter(isValidStoredPreset) : [];
+  } catch (err) {
+    console.error('[Storage] Error loading presets.json, using an empty list:', err.message);
+    return [];
+  }
+}
+
+function savePresets(list) {
+  try {
+    fs.writeFileSync(PRESETS_FILE, JSON.stringify(list, null, 2), 'utf8');
+  } catch (err) {
+    console.error('[Storage] Failed to save presets.json:', err.message);
+  }
+}
+
+let presets = loadPresets();
 
 // App-managed admin credentials - lets a fresh install set an admin
 // password through the UI itself, rather than requiring a manual
@@ -2588,6 +2684,99 @@ app.post('/api/admin/epgshare-settings/update', async (req, res) => {
   }
 
   return res.json({ success: true, settings: epgShareSettings });
+});
+
+app.post('/api/admin/presets', async (req, res) => {
+  const { username, password } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  return res.json({ success: true, presets });
+});
+
+// Takes the exact payload exportProviderSettings() (index.html) produces
+// - only those known fields are ever persisted, so a hand-edited upload
+// can't smuggle extra data (credentials were never in the export shape to
+// begin with) into what gets committed to the repo.
+app.post('/api/admin/presets/create', async (req, res) => {
+  const { username, password, name, icon, config } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  const trimmedName = typeof name === 'string' ? name.trim() : '';
+  if (!trimmedName || trimmedName.length > PRESET_NAME_MAX_LENGTH) {
+    return res.status(400).json({ error: `Name must be 1-${PRESET_NAME_MAX_LENGTH} characters.` });
+  }
+  if (!ALLOWED_PRESET_ICONS.has(icon)) {
+    return res.status(400).json({ error: 'Choose an icon from the picker.' });
+  }
+  if (!config || typeof config !== 'object' || config.sportioExportVersion !== 1
+    || typeof config.sportCategories !== 'object' || config.sportCategories === null
+    || typeof config.epgOverrides !== 'object' || config.epgOverrides === null) {
+    return res.status(400).json({ error: "That doesn't look like a settings export file." });
+  }
+
+  const preset = {
+    id: uuidv4(),
+    name: trimmedName,
+    icon,
+    connectionType: config.connectionType === 'm3u' ? 'm3u' : 'xtream',
+    selectedSports: Array.isArray(config.selectedSports) ? config.selectedSports.filter(s => typeof s === 'string') : [],
+    sportCategories: Object.fromEntries(
+      Object.entries(config.sportCategories).filter(([, names]) => Array.isArray(names))
+        .map(([sport, names]) => [sport, names.filter(n => typeof n === 'string')])
+    ),
+    epgOverrides: Object.fromEntries(
+      Object.entries(config.epgOverrides).filter(([, v]) => typeof v === 'string')
+    ),
+    createdAt: new Date().toISOString()
+  };
+
+  presets = [...presets, preset];
+  savePresets(presets);
+
+  return res.json({ success: true, preset });
+});
+
+app.post('/api/admin/presets/delete', async (req, res) => {
+  const { username, password, id } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  presets = presets.filter(p => p.id !== id);
+  savePresets(presets);
+
+  return res.json({ success: true });
 });
 
 app.post('/api/admin/user/delete', async (req, res) => {

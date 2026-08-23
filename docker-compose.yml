@@ -13,3 +13,4 @@ services:
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
     volumes:
       - ./data:/usr/src/app/data
+      - ./presets:/usr/src/app/presets

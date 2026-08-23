@@ -122,6 +122,46 @@
       </div>
 
       <div class="glass rounded-xl mb-4 overflow-hidden">
+        <div class="flex items-center justify-between gap-3 p-4 cursor-pointer select-none" onclick="toggleSection('presets')">
+          <div class="flex items-center gap-2">
+            <i id="section-chevron-presets" class="fa-solid fa-chevron-down text-xs text-[#e6e6e6]/55 transition-transform"></i>
+            <h2 class="text-sm font-bold">Presets</h2>
+          </div>
+        </div>
+        <div id="section-body-presets" class="px-4 pb-4">
+        <p class="text-xs text-[#e6e6e6]/55 mb-4">Import a user's exported settings file (from their dashboard's Sources &gt; Export/Import panel), give it a name and an icon, and save it as a preset. An export never contains credentials, so nothing sensitive ends up here. How a user later applies a preset isn't built yet - this just authors them.</p>
+
+        <div class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-4 mb-4 max-w-md">
+          <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Settings file</label>
+          <input type="file" id="preset-file-input" accept="application/json" class="hidden" onchange="handlePresetFileSelected(event)">
+          <button type="button" onclick="document.getElementById('preset-file-input').click()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2 px-3 rounded-lg transition flex items-center gap-2">
+            <i class="fa-solid fa-upload"></i> Choose Settings File
+          </button>
+          <div id="preset-file-status" class="text-xs text-[#e6e6e6]/55 mt-2"></div>
+          <div id="preset-file-error" class="hidden text-xs text-[#e56a6a] font-semibold mt-2"></div>
+
+          <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5 mt-4">Name</label>
+          <input type="text" id="preset-name-input" oninput="updateCreatePresetButtonState()" placeholder="e.g. NBA - Provider X" class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+
+          <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5 mt-4">Icon</label>
+          <button type="button" onclick="openIconPicker()" id="preset-icon-trigger" class="flex items-center gap-2 bg-[#3b4d58] border border-[#e6e6e6]/15 hover:border-[#3b8fc4]/50 rounded-lg px-3 py-2 text-xs transition">
+            <i id="preset-icon-trigger-icon" class="fa-solid fa-circle-question text-[#e6e6e6]/40"></i>
+            <span id="preset-icon-trigger-label" class="text-[#e6e6e6]/55">Choose icon...</span>
+          </button>
+
+          <div class="mt-4">
+            <button type="button" id="create-preset-btn" onclick="createPreset()" disabled class="bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2 px-4 rounded-lg text-xs cursor-not-allowed transition">
+              Create Preset
+            </button>
+          </div>
+        </div>
+
+        <div id="presets-empty" class="text-xs text-[#e6e6e6]/55 italic">No presets yet.</div>
+        <div id="presets-list" class="space-y-2"></div>
+        </div>
+      </div>
+
+      <div class="glass rounded-xl mb-4 overflow-hidden">
         <div class="flex items-center justify-between gap-3 p-4 cursor-pointer select-none" onclick="toggleSection('accounts')">
           <div class="flex items-center gap-2">
             <i id="section-chevron-accounts" class="fa-solid fa-chevron-down text-xs text-[#e6e6e6]/55 transition-transform"></i>
@@ -179,6 +219,20 @@
 
   <div id="admin-status-message" class="hidden fixed top-4 right-4 z-50 max-w-sm rounded-lg p-4 text-sm font-semibold shadow-2xl"></div>
 
+  <div id="icon-picker-overlay" class="hidden fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onclick="if (event.target === this) closeIconPicker()">
+    <div class="glass rounded-xl p-4 w-full max-w-lg max-h-[80vh] flex flex-col">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-bold">Choose an icon</h3>
+        <button type="button" onclick="closeIconPicker()" class="text-[#e6e6e6]/55 hover:text-[#e6e6e6] transition"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="relative mb-3 shrink-0">
+        <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-xs text-[#e6e6e6]/55"></i>
+        <input type="text" id="icon-picker-search" oninput="renderIconPickerGrid()" placeholder="Search icons..." class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg pl-8 pr-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+      </div>
+      <div id="icon-picker-grid" class="grid grid-cols-6 sm:grid-cols-8 gap-2 overflow-y-auto"></div>
+    </div>
+  </div>
+
   <script>
     // Credentials are kept in memory only, re-sent on every admin request -
     // the same stateless pattern the rest of this app uses (no server-side
@@ -219,6 +273,7 @@
           loadM3uSettings();
           loadEpgShareCatalog(false);
           loadEpgShareSettings();
+          loadPresets();
         } else {
           errorEl.textContent = data.error || 'Login failed.';
           errorEl.classList.remove('hidden');
@@ -715,6 +770,244 @@
         }
       } catch (err) {
         showAdminStatus('Network error while deleting account.', true);
+      }
+    }
+
+    // --- Presets: import a user's exported settings file, name + icon
+    // it, save it server-side. Mirrors the EPGShare01 catalog section
+    // above (load on login, render into a list, a save/create action) and
+    // the shape-validation index.html's handleImportFileSelected already
+    // does for the same export file format.
+
+    // Must match server.js's ALLOWED_PRESET_ICONS exactly - this is only
+    // the picker's offering, the server is the actual authority.
+    const PRESET_ICON_OPTIONS = [
+      'trophy', 'medal', 'award', 'ranking-star', 'futbol', 'basketball', 'baseball', 'football',
+      'volleyball', 'hockey-puck', 'golf-ball-tee', 'bowling-ball', 'table-tennis-paddle-ball',
+      'dumbbell', 'person-running', 'person-biking', 'person-swimming', 'person-skiing',
+      'person-snowboarding', 'stopwatch', 'flag-checkered',
+      'tv', 'film', 'video', 'music', 'headphones', 'microphone', 'camera', 'clapperboard',
+      'gamepad', 'dice', 'chess', 'chess-king', 'puzzle-piece', 'ticket', 'masks-theater',
+      'record-vinyl', 'compact-disc',
+      'star', 'heart', 'fire', 'bolt', 'crown', 'gem', 'shield', 'shield-halved', 'gift', 'key',
+      'lock', 'lock-open', 'bell', 'bookmark', 'tag', 'tags', 'box', 'briefcase', 'suitcase',
+      'thumbs-up', 'hand', 'peace', 'infinity', 'atom', 'certificate', 'flag', 'circle', 'square',
+      'compass',
+      'globe', 'sun', 'moon', 'cloud', 'snowflake', 'umbrella', 'mountain', 'tree', 'leaf',
+      'water', 'wind', 'cloud-sun', 'cloud-rain', 'temperature-high',
+      'car', 'truck', 'motorcycle', 'bicycle', 'plane', 'ship', 'train', 'rocket', 'bus',
+      'van-shuttle', 'anchor',
+      'map', 'map-pin', 'location-dot', 'clock', 'calendar', 'calendar-days', 'building', 'city',
+      'home', 'landmark', 'university', 'hospital', 'store', 'industry', 'warehouse',
+      'satellite', 'satellite-dish', 'wifi', 'signal', 'microchip', 'server', 'desktop', 'mobile',
+      'tablet-screen-button',
+      'users', 'user', 'user-group', 'child', 'hat-cowboy', 'mask',
+      'pizza-slice', 'burger', 'mug-hot', 'beer-mug-empty', 'wine-glass', 'apple-whole', 'carrot',
+      'feather', 'paw', 'dragon', 'dog', 'cat', 'fish', 'horse', 'spider', 'frog', 'kiwi-bird',
+      'crow', 'dove'
+    ];
+
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    let presets = [];
+    let pendingPresetConfig = null;
+    let pendingPresetIcon = null;
+
+    async function loadPresets() {
+      try {
+        const res = await fetch('/api/admin/presets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(adminCreds)
+        });
+        const data = await res.json();
+        if (data.success) {
+          presets = data.presets;
+          renderPresetsList();
+        }
+      } catch (err) {
+        console.error('Failed to load presets:', err.message);
+      }
+    }
+
+    function handlePresetFileSelected(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      pendingPresetConfig = null;
+      document.getElementById('preset-file-error').classList.add('hidden');
+      document.getElementById('preset-file-status').textContent = '';
+      updateCreatePresetButtonState();
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        let data;
+        try {
+          data = JSON.parse(reader.result);
+        } catch (err) {
+          showPresetFileError("That file isn't valid JSON.");
+          return;
+        }
+        if (!data || typeof data !== 'object' || data.sportioExportVersion !== 1
+          || typeof data.sportCategories !== 'object' || typeof data.epgOverrides !== 'object') {
+          showPresetFileError("That doesn't look like a settings export file.");
+          return;
+        }
+        pendingPresetConfig = data;
+        const categoryCount = Object.values(data.sportCategories).reduce((sum, arr) => sum + (Array.isArray(arr) ? arr.length : 0), 0);
+        const overrideCount = Object.keys(data.epgOverrides).length;
+        const leagueCount = Array.isArray(data.selectedSports) ? data.selectedSports.length : 0;
+        document.getElementById('preset-file-status').textContent =
+          `Loaded: ${data.connectionType === 'm3u' ? 'M3U' : 'Xtream'} - ${leagueCount} league${leagueCount === 1 ? '' : 's'}, ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'}, ${overrideCount} EPG override${overrideCount === 1 ? '' : 's'}.`;
+        updateCreatePresetButtonState();
+      };
+      reader.onerror = () => showPresetFileError('Could not read that file.');
+      reader.readAsText(file);
+    }
+
+    function showPresetFileError(msg) {
+      const el = document.getElementById('preset-file-error');
+      el.textContent = msg;
+      el.classList.remove('hidden');
+    }
+
+    function updateCreatePresetButtonState() {
+      const name = document.getElementById('preset-name-input').value.trim();
+      const btn = document.getElementById('create-preset-btn');
+      const ready = !!(pendingPresetConfig && name && pendingPresetIcon);
+      btn.disabled = !ready;
+      btn.className = ready
+        ? 'bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2 px-4 rounded-lg text-xs transition'
+        : 'bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2 px-4 rounded-lg text-xs cursor-not-allowed transition';
+    }
+
+    function openIconPicker() {
+      document.getElementById('icon-picker-search').value = '';
+      renderIconPickerGrid();
+      document.getElementById('icon-picker-overlay').classList.remove('hidden');
+    }
+
+    function closeIconPicker() {
+      document.getElementById('icon-picker-overlay').classList.add('hidden');
+    }
+
+    function renderIconPickerGrid() {
+      const term = document.getElementById('icon-picker-search').value.trim().toLowerCase();
+      const filtered = term
+        ? PRESET_ICON_OPTIONS.filter(name => name.replace(/-/g, ' ').includes(term))
+        : PRESET_ICON_OPTIONS;
+      const grid = document.getElementById('icon-picker-grid');
+      grid.innerHTML = filtered.length === 0
+        ? '<p class="text-xs text-[#e6e6e6]/55 italic col-span-full p-3">No icons match your search.</p>'
+        : filtered.map(name => `
+          <button type="button" onclick="selectPresetIcon('${name}')" title="${name}" class="aspect-square flex items-center justify-center bg-[#2f3e47] hover:bg-[#3b8fc4]/30 border border-[#e6e6e6]/15 hover:border-[#3b8fc4]/50 rounded-lg text-lg transition">
+            <i class="fa-solid fa-${name}"></i>
+          </button>
+        `).join('');
+    }
+
+    function selectPresetIcon(name) {
+      pendingPresetIcon = name;
+      document.getElementById('preset-icon-trigger-icon').className = `fa-solid fa-${name}`;
+      document.getElementById('preset-icon-trigger-label').textContent = name.replace(/-/g, ' ');
+      document.getElementById('preset-icon-trigger-label').className = 'text-[#e6e6e6]';
+      closeIconPicker();
+      updateCreatePresetButtonState();
+    }
+
+    async function createPreset() {
+      const name = document.getElementById('preset-name-input').value.trim();
+      if (!pendingPresetConfig || !name || !pendingPresetIcon) return;
+
+      try {
+        const res = await fetch('/api/admin/presets/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...adminCreds, name, icon: pendingPresetIcon, config: pendingPresetConfig })
+        });
+        const data = await res.json();
+        if (data.success) {
+          presets = [...presets, data.preset];
+          renderPresetsList();
+          resetPresetForm();
+          showAdminStatus('Preset created.');
+        } else {
+          showAdminStatus(data.error || 'Failed to create preset.', true);
+        }
+      } catch (err) {
+        showAdminStatus('Network error while creating the preset.', true);
+      }
+    }
+
+    function resetPresetForm() {
+      document.getElementById('preset-file-input').value = '';
+      document.getElementById('preset-file-status').textContent = '';
+      document.getElementById('preset-file-error').classList.add('hidden');
+      document.getElementById('preset-name-input').value = '';
+      pendingPresetConfig = null;
+      pendingPresetIcon = null;
+      document.getElementById('preset-icon-trigger-icon').className = 'fa-solid fa-circle-question text-[#e6e6e6]/40';
+      const label = document.getElementById('preset-icon-trigger-label');
+      label.textContent = 'Choose icon...';
+      label.className = 'text-[#e6e6e6]/55';
+      updateCreatePresetButtonState();
+    }
+
+    function renderPresetsList() {
+      const list = document.getElementById('presets-list');
+      const empty = document.getElementById('presets-empty');
+      empty.classList.toggle('hidden', presets.length > 0);
+      list.innerHTML = presets.map(p => {
+        const categoryCount = Object.values(p.sportCategories).reduce((sum, arr) => sum + arr.length, 0);
+        const overrideCount = Object.keys(p.epgOverrides).length;
+        const badge = p.connectionType === 'm3u'
+          ? '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#3b8fc4]/20 text-[#5aa8d1]">M3U</span>'
+          : '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#4a9d52]/20 text-[#a8e0ac]">Xtream</span>';
+        return `
+        <div class="flex items-center gap-3 bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2">
+          <div class="w-8 h-8 shrink-0 flex items-center justify-center bg-[#3b4d58] rounded-lg text-[#5aa8d1]">
+            <i class="fa-solid fa-${p.icon}"></i>
+          </div>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2">
+              <span class="text-xs font-semibold truncate">${escapeHtml(p.name)}</span>
+              ${badge}
+            </div>
+            <div class="text-[10px] text-[#e6e6e6]/45">${p.selectedSports.length} league${p.selectedSports.length === 1 ? '' : 's'}, ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'}, ${overrideCount} override${overrideCount === 1 ? '' : 's'} - ${formatDate(p.createdAt)}</div>
+          </div>
+          <button type="button" onclick="deletePreset('${p.id}')" class="shrink-0 bg-[#c0392b] hover:bg-[#d8483a] text-white text-xs font-bold py-1.5 px-3 rounded-lg transition">
+            <i class="fa-solid fa-trash"></i>
+          </button>
+        </div>
+      `;
+      }).join('');
+    }
+
+    async function deletePreset(id) {
+      const preset = presets.find(p => p.id === id);
+      if (!confirm(`Delete preset "${preset ? preset.name : id}"? This cannot be undone.`)) {
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/admin/presets/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...adminCreds, id })
+        });
+        const data = await res.json();
+        if (data.success) {
+          presets = presets.filter(p => p.id !== id);
+          renderPresetsList();
+          showAdminStatus('Preset deleted.');
+        } else {
+          showAdminStatus(data.error || 'Failed to delete preset.', true);
+        }
+      } catch (err) {
+        showAdminStatus('Network error while deleting the preset.', true);
       }
     }
 
