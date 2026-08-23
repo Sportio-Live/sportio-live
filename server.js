@@ -2222,6 +2222,32 @@ app.post('/api/epgshare/channels', async (req, res) => {
   return res.json({ success: true, sources: epgshare.getEnabledChannelCatalog(epgShareSettings.enabledSources) });
 });
 
+// The dashboard's Presets/Configs panel browsing list - read-only,
+// account-agnostic content (an admin-curated preset is never
+// account-specific and never carries credentials), so any logged-in
+// user can call this. Requiring {uuid, password} anyway keeps it
+// consistent with every other user-facing route rather than leaving
+// this one a genuine exception - same reasoning as
+// /api/epgshare/channels just above.
+app.post('/api/presets', async (req, res) => {
+  const { uuid, password } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  const user = userConfigs[uuid];
+  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid UUID or password.' });
+  }
+  clearFailedAttempts(ip);
+
+  return res.json({ success: true, presets });
+});
+
 app.post('/api/user/register', async (req, res) => {
   if (!ENCRYPTION_KEY_CONFIGURED) {
     return res.status(503).json({ error: 'Encryption key not configured yet. See the homepage for setup instructions.' });
