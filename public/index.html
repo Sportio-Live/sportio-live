@@ -480,7 +480,12 @@
            provider. -->
       <div id="export-import-panel" class="hidden bg-[#3b4d58]/60 border border-[#e6e6e6]/15 rounded-lg p-4 mb-6">
         <div class="mb-5">
-          <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-1">Export</h3>
+          <div class="flex items-center gap-3 mb-1">
+            <h3 class="font-bold text-sm text-[#e6e6e6]/75">Export</h3>
+            <span id="export-import-provider-badge" class="hidden flex items-center gap-1.5 bg-[#3b8fc4]/15 border border-[#3b8fc4]/40 text-[#5aa8d1] rounded-full px-2 py-0.5 text-[10px] font-bold">
+              <i class="fa-solid fa-plug text-[9px]"></i><span></span>
+            </span>
+          </div>
           <p class="text-xs text-[#e6e6e6]/55 mb-3">Download this provider's league/category assignments and EPG overrides as a file you can share with another user on the same IPTV catalog.</p>
           <button onclick="exportProviderSettings()" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2">
             <i class="fa-solid fa-download"></i>
@@ -3160,9 +3165,9 @@
       updateProviderContextBadges();
     }
 
-    // Sources and Channel EPG are the only two settings panels that read
-    // from the active provider tab rather than the whole account - this
-    // names that provider right on each panel instead of a standing
+    // Sources, Channel EPG, and Export/Import are the settings panels that
+    // read from the active provider tab rather than the whole account -
+    // this names that provider right on each panel instead of a standing
     // disclaimer, and only when there's actually more than one provider to
     // disambiguate between. Driven off renderProviderTabs() (rather than
     // called separately) so it can never drift out of sync with the tab
@@ -3172,7 +3177,7 @@
       const provider = activeUser && activeUser.providers[activeProviderIndex];
       const label = provider ? (provider.label || `Provider ${activeProviderIndex + 1}`) : '';
       const icon = provider && provider.connectionType === 'm3u' ? 'fa-list' : 'fa-plug';
-      ['sources-provider-badge', 'channel-epg-provider-badge'].forEach(id => {
+      ['sources-provider-badge', 'channel-epg-provider-badge', 'export-import-provider-badge'].forEach(id => {
         const el = document.getElementById(id);
         if (!el) return;
         el.classList.toggle('hidden', !multiProvider);
