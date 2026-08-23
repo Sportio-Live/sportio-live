@@ -288,10 +288,6 @@
           <i class="fa-solid fa-server"></i>
           Sources
         </button>
-        <button id="manage-sports-btn" onclick="toggleManageSportsPanel()" class="bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
-          <i class="fa-solid fa-sliders"></i>
-          Add/Remove Leagues
-        </button>
         <button id="channel-epg-btn" onclick="toggleChannelEpgPanel()" class="bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
           <i class="fa-solid fa-satellite-dish"></i>
           Channel EPG
@@ -343,6 +339,17 @@
         <div id="sports-config-container" class="space-y-6">
           <!-- Dynamically injected sports inputs -->
         </div>
+
+        <!-- Add League (collapsed until "+ Add League" is clicked; the
+             trigger itself is hidden once every available league is
+             already selected - see updateAddLeagueButtonVisibility) -->
+        <div id="add-league-panel" class="hidden bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-4 mt-4">
+          <div id="add-league-grid" class="grid grid-cols-2 sm:grid-cols-3 gap-3"></div>
+        </div>
+        <button id="add-league-btn" onclick="toggleAddLeaguePanel()" class="hidden w-full mt-4 border border-dashed border-[#e6e6e6]/30 text-[#e6e6e6]/55 hover:text-[#e6e6e6] hover:border-[#e6e6e6]/50 font-bold py-2.5 rounded-lg text-xs transition flex items-center justify-center gap-2">
+          <i class="fa-solid fa-plus"></i>
+          Add League
+        </button>
       </div>
 
       <!-- Xtream Credentials (collapsed until Edit Xtream is clicked) -->
@@ -456,11 +463,6 @@
       </div>
 
       <!-- Sport Configuration Sections -->
-      <div id="manage-sports-panel" class="hidden bg-[#3b4d58]/60 border border-[#e6e6e6]/15 rounded-lg p-4 mb-6">
-        <h4 class="font-bold text-sm text-[#e6e6e6]/75 mb-3">Choose your leagues</h4>
-        <div id="manage-sports-grid" class="grid grid-cols-2 sm:grid-cols-3 gap-3"></div>
-      </div>
-
       <!-- Delete Account (collapsed until "Delete account" is clicked) -->
       <div id="delete-account-panel" class="hidden bg-[#3b4d58]/60 border border-[#c0392b]/40 rounded-lg p-4 mb-6">
         <div class="flex items-start gap-2 mb-3">
@@ -1202,7 +1204,6 @@
         ['sources-trigger-btn', 'sources-panel'],
         ['edit-xtream-trigger-btn', 'edit-xtream-panel'],
         ['edit-m3u-trigger-btn', 'edit-m3u-panel'],
-        ['manage-sports-btn', 'manage-sports-panel'],
         ['change-timezone-btn', 'change-timezone-panel'],
         ['formatter-btn', 'formatter-panel'],
         ['channel-epg-btn', 'channel-epg-panel']
@@ -1248,7 +1249,6 @@
     function resetDashboardPanels() {
       closeEditXtreamPanelSilently();
       closeEditM3uPanelSilently();
-      closeManageSportsPanelSilently();
       closeChangeTimezonePanelSilently();
       closeDeleteAccountPanelSilently();
       closeFormatterPanelSilently();
@@ -1266,7 +1266,6 @@
       if (panel.classList.contains('hidden')) {
         closeEditXtreamPanelSilently();
         closeEditM3uPanelSilently();
-        closeManageSportsPanelSilently();
         closeChangeTimezonePanelSilently();
         closeDeleteAccountPanelSilently();
         closeFormatterPanelSilently();
@@ -1289,7 +1288,6 @@
       if (panel.classList.contains('hidden')) {
         closeSourcesPanelSilently();
         closeEditM3uPanelSilently();
-        closeManageSportsPanelSilently();
         closeChangeTimezonePanelSilently();
         closeDeleteAccountPanelSilently();
         closeFormatterPanelSilently();
@@ -1424,7 +1422,6 @@
       if (panel.classList.contains('hidden')) {
         closeSourcesPanelSilently();
         closeEditXtreamPanelSilently();
-        closeManageSportsPanelSilently();
         closeChangeTimezonePanelSilently();
         closeDeleteAccountPanelSilently();
         closeFormatterPanelSilently();
@@ -1679,8 +1676,20 @@
           : 'Please choose which categories should be searched when sourcing game streams.';
         const dragHandle = isGlobalSection ? '' : '<i class="fa-solid fa-grip-vertical text-[#e6e6e6]/40 text-sm cursor-grab active:cursor-grabbing"></i>';
 
+        // Only the real dashboard (idPrefix === '') can remove a league
+        // in place - the wizard's own leagues step has no
+        // provider/selectedSports yet to remove one from. A real <button>
+        // rather than the wizard's plain accordion <button> wrapper, since
+        // nesting a button inside a button is invalid HTML - the whole
+        // header becomes a <div> with its own onclick instead, and this
+        // stops that click from also firing (same event.stopPropagation
+        // pattern the provider tabs' own remove button already uses).
+        const removeLeagueBtn = (idPrefix === '' && !isGlobalSection)
+          ? `<button type="button" onclick="event.stopPropagation(); removeLeagueFromCategorySearch('${sport}')" class="text-[#e6e6e6]/45 hover:text-[#e56a6a] transition px-1" title="Remove league"><i class="fa-solid fa-xmark"></i></button>`
+          : '';
+
         section.innerHTML = `
-          <button type="button" onclick="toggleAccordionSection('${idPrefix}', '${sport}')" class="w-full flex items-center justify-between px-4 py-3 hover:bg-[#3b4d58]/40 transition text-left">
+          <div role="button" tabindex="0" onclick="toggleAccordionSection('${idPrefix}', '${sport}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAccordionSection('${idPrefix}', '${sport}');}" class="w-full flex items-center justify-between px-4 py-3 hover:bg-[#3b4d58]/40 transition text-left cursor-pointer">
             <div class="flex items-center gap-3">
               ${dragHandle}
               <i class="fa-solid ${icon} text-[#5aa8d1] text-base w-5 text-center"></i>
@@ -1689,8 +1698,9 @@
             <div class="flex items-center gap-3">
               <span id="${idPrefix}badge-${sport}" class="text-xs font-semibold px-2 py-0.5 rounded-full ${badgeClass}">${effectiveCount} selected</span>
               <i id="${idPrefix}chevron-${sport}" class="fa-solid fa-chevron-down text-[#e6e6e6]/55 text-xs transition-transform"></i>
+              ${removeLeagueBtn}
             </div>
-          </button>
+          </div>
           <div id="${idPrefix}body-${sport}" class="hidden px-4 pb-4">
             <p class="text-xs text-[#e6e6e6]/55 mb-3">${instructionText}</p>
             <div class="relative mb-2">
@@ -1867,33 +1877,6 @@
       return SPORTS;
     }
 
-    function toggleManageSportsPanel() {
-      const panel = document.getElementById('manage-sports-panel');
-      if (panel.classList.contains('hidden')) {
-        closeSourcesPanelSilently();
-        closeEditXtreamPanelSilently();
-        closeEditM3uPanelSilently();
-        closeChangeTimezonePanelSilently();
-        closeDeleteAccountPanelSilently();
-        closeFormatterPanelSilently();
-        closeChannelEpgPanelSilently();
-        const provider = activeUser.providers[activeProviderIndex];
-        renderLeagueGrid('manage-sports-grid', getVisibleSports(provider), 'toggleManagedSport');
-        panel.classList.remove('hidden');
-      } else {
-        closeManageSportsPanelSilently();
-      }
-      updateSettingsButtonStates();
-    }
-
-    // Used when another editor needs to take over, so only one is ever open
-    // at a time - nothing to revert here since toggleManagedSport already
-    // writes straight into the provider the moment a league is clicked.
-    function closeManageSportsPanelSilently() {
-      document.getElementById('manage-sports-panel').classList.add('hidden');
-      updateSettingsButtonStates();
-    }
-
     // Generic HTML-escaping utility - used when rendering any external,
     // untrusted text (e.g. Xtream-provider-supplied category names) into
     // the page, to prevent XSS.
@@ -1942,7 +1925,6 @@
         closeSourcesPanelSilently();
         closeEditXtreamPanelSilently();
         closeEditM3uPanelSilently();
-        closeManageSportsPanelSilently();
         closeDeleteAccountPanelSilently();
         closeFormatterPanelSilently();
         closeChannelEpgPanelSilently();
@@ -2025,7 +2007,6 @@
         closeSourcesPanelSilently();
         closeEditXtreamPanelSilently();
         closeEditM3uPanelSilently();
-        closeManageSportsPanelSilently();
         closeChangeTimezonePanelSilently();
         closeDeleteAccountPanelSilently();
         closeChannelEpgPanelSilently();
@@ -2088,7 +2069,6 @@
         closeSourcesPanelSilently();
         closeEditXtreamPanelSilently();
         closeEditM3uPanelSilently();
-        closeManageSportsPanelSilently();
         closeChangeTimezonePanelSilently();
         closeDeleteAccountPanelSilently();
         closeFormatterPanelSilently();
@@ -2594,7 +2574,6 @@
         closeSourcesPanelSilently();
         closeEditXtreamPanelSilently();
         closeEditM3uPanelSilently();
-        closeManageSportsPanelSilently();
         closeChangeTimezonePanelSilently();
         closeFormatterPanelSilently();
         closeChannelEpgPanelSilently();
@@ -2675,25 +2654,79 @@
       document.getElementById('dashboard-timezone-selected').textContent = `Selected: ${dashboardTimezoneSelection.replace(/_/g, ' ')} (${getTimezoneOffsetLabel(dashboardTimezoneSelection)})`;
     }
 
-    // Writes straight into the active provider the moment a league is
-    // clicked - no separate Done step, matching Category Search's
-    // checkboxes and Channel EPG's overrides. Re-rendering Category Search
-    // right away (via renderActiveProviderPanel) is what the
-    // UNSAVED_CHANGES_WARNING guard below protects: that render rebuilds
-    // the category checkboxes from provider.sportCategories, discarding
-    // any not-yet-saved checkbox picks - same hazard confirmEditXtream/
-    // confirmEditM3u guard against, just triggered per-click here instead
-    // of once at a Done click.
-    function toggleManagedSport(sport) {
+    // --- Add/remove leagues, folded straight into Category Search itself
+    // (no separate settings panel any more) - a league's own accordion
+    // header carries an "x" to remove it, and a trailing "Add League"
+    // control (hidden once every available league is already in) lets you
+    // pick from whatever's left. Both write straight into the active
+    // provider's selectedSports the moment they're clicked, matching every
+    // other setting on this page. Re-rendering Category Search right away
+    // (via renderActiveProviderPanel) is what the UNSAVED_CHANGES_WARNING
+    // guard protects: that render rebuilds the category checkboxes from
+    // provider.sportCategories, discarding any not-yet-saved checkbox
+    // picks - same hazard confirmEditXtream/confirmEditM3u guard against.
+
+    function removeLeagueFromCategorySearch(sport) {
       if (dashboardHasUnsavedChanges && !confirm(UNSAVED_CHANGES_WARNING)) {
         return;
       }
       const provider = activeUser.providers[activeProviderIndex];
       provider.selectedSports = [...getVisibleSports(provider)];
-      toggleSportInArray(provider.selectedSports, sport);
-      renderLeagueGrid('manage-sports-grid', provider.selectedSports, 'toggleManagedSport');
+      const idx = provider.selectedSports.indexOf(sport);
+      if (idx !== -1) provider.selectedSports.splice(idx, 1);
       renderActiveProviderPanel();
       markDashboardDirty();
+    }
+
+    function addLeagueToCategorySearch(sport) {
+      if (dashboardHasUnsavedChanges && !confirm(UNSAVED_CHANGES_WARNING)) {
+        return;
+      }
+      const provider = activeUser.providers[activeProviderIndex];
+      provider.selectedSports = [...getVisibleSports(provider)];
+      if (!provider.selectedSports.includes(sport)) provider.selectedSports.push(sport);
+      document.getElementById('add-league-panel').classList.add('hidden');
+      renderActiveProviderPanel();
+      markDashboardDirty();
+    }
+
+    function toggleAddLeaguePanel() {
+      const panel = document.getElementById('add-league-panel');
+      if (panel.classList.contains('hidden')) {
+        renderAddLeagueGrid();
+        panel.classList.remove('hidden');
+      } else {
+        panel.classList.add('hidden');
+      }
+    }
+
+    function renderAddLeagueGrid() {
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      if (!provider) return;
+      const remaining = SPORTS.filter(s => !getVisibleSports(provider).includes(s));
+      document.getElementById('add-league-grid').innerHTML = remaining.map(sport => {
+        const label = SPORT_LABELS[sport] || sport;
+        const icon = SPORT_ICONS[sport] || 'fa-trophy';
+        return `
+          <button type="button" onclick="addLeagueToCategorySearch('${sport}')" class="flex flex-col items-center justify-center gap-2 border rounded-lg py-4 px-2 text-xs font-semibold transition bg-[#3b4d58] border-[#e6e6e6]/15 text-[#e6e6e6]/75 hover:border-[#3b8fc4]/50 hover:text-[#e6e6e6]">
+            <i class="fa-solid ${icon} text-xl"></i>
+            <span>${label}</span>
+          </button>
+        `;
+      }).join('');
+    }
+
+    // Called from renderActiveProviderPanel on every render, since which
+    // leagues remain "addable" changes any time selectedSports does - hides
+    // the trigger entirely once nothing's left to add, and closes the
+    // picker if it was open when the last available league just got added.
+    function updateAddLeagueButtonVisibility() {
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      const btn = document.getElementById('add-league-btn');
+      if (!provider || !btn) return;
+      const remaining = SPORTS.filter(s => !getVisibleSports(provider).includes(s));
+      btn.classList.toggle('hidden', remaining.length === 0);
+      if (remaining.length === 0) document.getElementById('add-league-panel').classList.add('hidden');
     }
 
     let dashboardHasUnsavedChanges = false;
@@ -2825,7 +2858,6 @@
       if (index === activeProviderIndex) return;
       closeEditXtreamPanelSilently();
       closeEditM3uPanelSilently();
-      closeManageSportsPanelSilently();
       closeChangeTimezonePanelSilently();
       closeDeleteAccountPanelSilently();
       closeFormatterPanelSilently();
@@ -2894,6 +2926,7 @@
       // what triggered it (login, a tab switch, a settings change).
       allAccordionsExpanded = false;
       updateExpandAllButton();
+      updateAddLeagueButtonVisibility();
     }
 
     // Clears the unsaved-changes indicator - only ever called right after
@@ -2919,7 +2952,6 @@
     function addProviderTab() {
       closeEditXtreamPanelSilently();
       closeEditM3uPanelSilently();
-      closeManageSportsPanelSilently();
       closeChangeTimezonePanelSilently();
       closeDeleteAccountPanelSilently();
       closeFormatterPanelSilently();
