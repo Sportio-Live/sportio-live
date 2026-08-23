@@ -154,6 +154,21 @@
               Create Preset
             </button>
           </div>
+
+          <div id="preset-missing-sources" class="hidden mt-4 bg-[#3a2f1f]/50 border border-[#c9992e]/40 rounded-lg p-3">
+            <p id="preset-missing-sources-text" class="text-xs text-[#e6c88a] mb-3"></p>
+            <div class="flex flex-wrap gap-2">
+              <button type="button" onclick="createPreset('enable')" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-1.5 px-3 rounded-lg text-xs transition">
+                Enable and create
+              </button>
+              <button type="button" onclick="createPreset('ignore')" class="bg-[#56707d] hover:bg-[#66818f] font-bold py-1.5 px-3 rounded-lg text-xs transition">
+                Create anyway
+              </button>
+              <button type="button" onclick="dismissMissingSourcesPrompt()" class="text-[#e6e6e6]/55 hover:text-[#e6e6e6] font-bold py-1.5 px-3 rounded-lg text-xs transition">
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
 
         <div id="presets-empty" class="text-xs text-[#e6e6e6]/55 italic">No presets yet.</div>
@@ -840,6 +855,7 @@
       pendingPresetConfig = null;
       document.getElementById('preset-file-error').classList.add('hidden');
       document.getElementById('preset-file-status').textContent = '';
+      dismissMissingSourcesPrompt();
       updateCreatePresetButtonState();
 
       const reader = new FileReader();
@@ -918,22 +934,30 @@
       updateCreatePresetButtonState();
     }
 
-    async function createPreset() {
+    async function createPreset(onMissingSources) {
       const name = document.getElementById('preset-name-input').value.trim();
       if (!pendingPresetConfig || !name || !pendingPresetIcon) return;
 
       try {
+        const body = { ...adminCreds, name, icon: pendingPresetIcon, config: pendingPresetConfig };
+        if (onMissingSources) body.onMissingSources = onMissingSources;
         const res = await fetch('/api/admin/presets/create', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...adminCreds, name, icon: pendingPresetIcon, config: pendingPresetConfig })
+          body: JSON.stringify(body)
         });
         const data = await res.json();
         if (data.success) {
           presets = [...presets, data.preset];
           renderPresetsList();
+          if (data.epgShareSettings) {
+            epgShareEnabledSet = new Set(data.epgShareSettings.enabledSources);
+            renderEpgShareCatalog();
+          }
           resetPresetForm();
           showAdminStatus('Preset created.');
+        } else if (data.needsConfirmation) {
+          showMissingSourcesPrompt(data.missingSources);
         } else {
           showAdminStatus(data.error || 'Failed to create preset.', true);
         }
@@ -942,11 +966,26 @@
       }
     }
 
+    // Named via the EPG Editor section's own epgShareSourceLabel() rather
+    // than the raw epg_ripper_*.xml.gz filename - same reasoning as that
+    // section, reused rather than reimplemented.
+    function showMissingSourcesPrompt(missingSources) {
+      const labels = missingSources.map(epgShareSourceLabel).join(', ');
+      document.getElementById('preset-missing-sources-text').textContent =
+        `This preset needs ${missingSources.length} EPG source${missingSources.length === 1 ? '' : 's'} you don't currently have enabled: ${labels}. Enable them now, create the preset without them (those overrides won't do anything until you enable the source later), or cancel.`;
+      document.getElementById('preset-missing-sources').classList.remove('hidden');
+    }
+
+    function dismissMissingSourcesPrompt() {
+      document.getElementById('preset-missing-sources').classList.add('hidden');
+    }
+
     function resetPresetForm() {
       document.getElementById('preset-file-input').value = '';
       document.getElementById('preset-file-status').textContent = '';
       document.getElementById('preset-file-error').classList.add('hidden');
       document.getElementById('preset-name-input').value = '';
+      dismissMissingSourcesPrompt();
       pendingPresetConfig = null;
       pendingPresetIcon = null;
       document.getElementById('preset-icon-trigger-icon').className = 'fa-solid fa-circle-question text-[#e6e6e6]/40';

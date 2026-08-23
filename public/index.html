@@ -2283,13 +2283,44 @@
         });
       }
 
+      // Purely informational, additive metadata - lets whoever imports this
+      // (in practice, an admin building a preset from it) know which
+      // EPGShare01 source file(s) these overrides actually need enabled to
+      // resolve to anything, without forcing a specific source into
+      // epgOverrides itself (findOverrideProgramme deliberately searches
+      // every enabled source for a bare channel id - the same id can
+      // legitimately live in more than one, so nothing here should start
+      // pinning one). Never blocks the export if it fails.
+      let epgSourcesOut = [];
+      if (Object.keys(epgOverridesOut).length > 0) {
+        try {
+          const res = await fetch('/api/epgshare/channels', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password })
+          });
+          const data = await res.json();
+          if (data.success) {
+            const targetIds = new Set(Object.values(epgOverridesOut));
+            const matchedFiles = new Set();
+            data.sources.forEach(({ file, channelIds }) => {
+              if (channelIds.some(id => targetIds.has(id))) matchedFiles.add(file);
+            });
+            epgSourcesOut = [...matchedFiles].sort();
+          }
+        } catch (err) {
+          // epgSources is informational only - the export itself still succeeds.
+        }
+      }
+
       const exportData = {
         sportioExportVersion: 1,
         exportedAt: new Date().toISOString(),
         connectionType: provider.connectionType,
         selectedSports: provider.selectedSports || [],
         sportCategories: sportCategoriesByName,
-        epgOverrides: epgOverridesOut
+        epgOverrides: epgOverridesOut,
+        epgSources: epgSourcesOut
       };
 
       const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });

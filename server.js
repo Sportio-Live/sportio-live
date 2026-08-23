@@ -419,14 +419,17 @@ function isValidStoredPreset(p) {
     && typeof p.sportCategories === 'object' && p.sportCategories !== null
     && Object.values(p.sportCategories).every(names => Array.isArray(names) && names.every(n => typeof n === 'string'))
     && typeof p.epgOverrides === 'object' && p.epgOverrides !== null
-    && Object.values(p.epgOverrides).every(v => typeof v === 'string');
+    && Object.values(p.epgOverrides).every(v => typeof v === 'string')
+    && (p.epgSources === undefined || (Array.isArray(p.epgSources) && p.epgSources.every(f => typeof f === 'string')));
 }
 
 function loadPresets() {
   if (!fs.existsSync(PRESETS_FILE)) return [];
   try {
     const raw = JSON.parse(fs.readFileSync(PRESETS_FILE, 'utf8'));
-    return Array.isArray(raw) ? raw.filter(isValidStoredPreset) : [];
+    return Array.isArray(raw)
+      ? raw.filter(isValidStoredPreset).map(p => ({ ...p, epgSources: p.epgSources || [] }))
+      : [];
   } catch (err) {
     console.error('[Storage] Error loading presets.json, using an empty list:', err.message);
     return [];
@@ -2709,7 +2712,7 @@ app.post('/api/admin/presets', async (req, res) => {
 // can't smuggle extra data (credentials were never in the export shape to
 // begin with) into what gets committed to the repo.
 app.post('/api/admin/presets/create', async (req, res) => {
-  const { username, password, name, icon, config } = req.body;
+  const { username, password, name, icon, config, onMissingSources } = req.body;
   const ip = req.ip;
 
   if (isRateLimited(ip)) {
@@ -2736,6 +2739,30 @@ app.post('/api/admin/presets/create', async (req, res) => {
     return res.status(400).json({ error: "That doesn't look like a settings export file." });
   }
 
+  const validEpgSources = Array.isArray(config.epgSources)
+    ? config.epgSources.filter(f => epgshare.isKnownSourceFile(f))
+    : [];
+
+  // The export names which EPGShare01 source(s) its overrides actually
+  // need - if this admin hasn't enabled one, those overrides would
+  // silently never resolve to anything (findOverrideProgramme only
+  // searches enabled+cached sources). Surfaced as a distinct response
+  // shape (not a hard error) so the client can offer a real choice
+  // instead of either silently shipping dead overrides or blocking
+  // creation outright.
+  const missingSources = validEpgSources.filter(f => !epgShareSettings.enabledSources.includes(f));
+  if (missingSources.length > 0 && !onMissingSources) {
+    return res.json({ success: false, needsConfirmation: true, missingSources });
+  }
+
+  if (onMissingSources === 'enable' && missingSources.length > 0) {
+    epgShareSettings = { enabledSources: [...new Set([...epgShareSettings.enabledSources, ...missingSources])] };
+    saveEpgShareSettings(epgShareSettings);
+    epgshare.refreshEnabledSources(missingSources).catch(err => {
+      console.error('[EPGShare01] Initial fetch for newly-enabled sources failed:', err.message);
+    });
+  }
+
   const preset = {
     id: uuidv4(),
     name: trimmedName,
@@ -2749,13 +2776,14 @@ app.post('/api/admin/presets/create', async (req, res) => {
     epgOverrides: Object.fromEntries(
       Object.entries(config.epgOverrides).filter(([, v]) => typeof v === 'string')
     ),
+    epgSources: validEpgSources,
     createdAt: new Date().toISOString()
   };
 
   presets = [...presets, preset];
   savePresets(presets);
 
-  return res.json({ success: true, preset });
+  return res.json({ success: true, preset, epgShareSettings });
 });
 
 app.post('/api/admin/presets/delete', async (req, res) => {
