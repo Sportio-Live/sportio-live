@@ -9,7 +9,7 @@
 
 Sportio Live is a self-hosted Nuvio/Stremio addon that turns your IPTV into a live sports catalog - today's games, personalized to your timezone, with custom artwork and stream matching. (Xtream and M3U supported, multiple providers per account)
 
-*Sportio Live doesn't provide any streams itself* - it bridges ESPN's schedule data with the live channels of your own IPTV.
+*Sportio Live doesn't provide any streams itself*
 
 
 [Supported Leagues](#supported-leagues)
@@ -20,7 +20,7 @@ Sportio Live is a self-hosted Nuvio/Stremio addon that turns your IPTV into a li
 
 ## Setup
 
-A guided wizard gets a new account running in a few clicks - pick your leagues, set your timezone, enter your Xtream or M3U credentials (or start from a preset), then choose which IPTV categories/folders should be searched per league. Done.
+A guided wizard gets a new account running in a few clicks - manually choose which IPTV categories should be searched when browsing games or select from a IPTV provider based preset.
 
 ## Multi-provider support
 
@@ -28,7 +28,7 @@ One account can connect more than one Xtream or M3U provider - each gets its own
 
 ## Presets
 
-The wizard offers a preset step between connecting a provider and finishing setup - picking one fills in leagues, categories, and EPG overrides in one click instead of configuring from scratch. Presets come from two places: stock presets ship with the app and update via `git pull`, while admins can import any user's exported settings from the admin panel, name it, and publish it as a local preset for their own instance. Either way, a preset can't reach users until an admin has actually looked at it - one added or changed by an update sits pending until reviewed.
+The wizard offers a preset step between connecting a provider and finishing setup - picking one fills in leagues, categories, and EPG overrides in one click instead of configuring from scratch. Presets come from two places: stock presets ship with the app and update via `git pull`, while admins can import any user exported configuration file from the admin panel and publish it as a local preset for their own instance. Presets added or changed by an update sit pending until reviewed.
 
 ## Stream matching
 
@@ -43,11 +43,11 @@ A channel that clears any tier gets shown, ordered by how confident the match ac
 
 ## Formatter
 
-Stream name, title, and description are built from customizable templates instead of a fixed format - click a placeholder (team names, channel, resolution, etc.) to drop it into the template, with live examples updating as you type. Line breaks are supported in both fields.
+Custom formatting for Name and Description fields. 
 
 ## EPG
 
-Sportio Live can layer in guide data from [epgshare01.online](https://epgshare01.online/epgshare01/) alongside whatever your provider already sends, letting a channel's EPG source be overridden per channel or per provider when a provider's own guide is missing or wrong. Which EPGShare01 feeds get fetched and cached is controlled per-instance from the admin panel - see [Admin panel](#admin-panel) below.
+Sportio Live can layer in guide data from [epgshare01.online](https://epgshare01.online/epgshare01/) alongside whatever your provider already sends, letting a channel's EPG source be overridden per channel or per provider. Which EPGShare01 feeds get fetched and cached is controlled per-instance from the admin panel - see [Admin panel](#admin-panel) below.
 
 ## Matchup art
 
@@ -90,8 +90,8 @@ Every account has its own configured timezone with the actual date and time bake
 3. Create a `.env` file:
    ```
    ENCRYPTION_KEY=<paste the key you generated>
-   ADMIN_USERNAME=<pick a username for the admin page - optional>
-   ADMIN_PASSWORD=<pick a password for the admin page - optional>
+   ADMIN_USERNAME=<pick a username for the admin page>
+   ADMIN_PASSWORD=<pick a password for the admin page>
    ```
 4. Build and start: `docker compose up -d --build`
 5. Open `http://<your-server>:2323` and run the setup wizard.
@@ -126,7 +126,7 @@ Setting `ADMIN_USERNAME`/`ADMIN_PASSWORD` unlocks `/admin.html`, a separate logi
 
 - **Refresh schedule** - set days/times to automatically refresh cached M3U and EPG data, or trigger a refresh on demand.
 - **EPG Editor** - pick which EPGShare01 feeds this instance keeps fetched and cached, so users can select them as a per-channel EPG override.
-- **Presets** - import a user's exported settings as a named preset, and review/publish anything a code update added or changed before it reaches users.
+- **Presets** - import a user configuration file as an instance preset. Review/publish anything an update adds or changes before it reaches users.
 - **Accounts** - browse registered accounts, filterable by created or last-accessed date.
 
 ## Project structure
