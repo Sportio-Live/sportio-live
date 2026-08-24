@@ -99,6 +99,31 @@ Every account has its own configured timezone with the actual date and time bake
 
 > Losing the encryption key means losing every saved Xtream credential permanently - back it up somewhere safe.
 
+### Running a pre-built image (no clone, no build step)
+
+Every update to `main` is published as a ready-to-run image - useful for platforms (Unraid, Synology, Portainer, TrueNAS, Kubernetes, etc.) that expect an image reference instead of building from source. Steps 1 and 4 above become:
+
+```yaml
+services:
+  sportio-live:
+    image: ghcr.io/sportio-live/sportio-live:latest
+    container_name: sportio-live
+    restart: unless-stopped
+    ports:
+      - "2323:2323"
+    environment:
+      - PORT=2323
+      - HOST=0.0.0.0
+      - ENCRYPTION_KEY=<paste the key you generated>
+      - ADMIN_USERNAME=<pick a username for the admin page>
+      - ADMIN_PASSWORD=<pick a password for the admin page>
+    volumes:
+      - ./data:/usr/src/app/data
+      - ./presets:/usr/src/app/presets
+```
+
+`docker compose up -d` pulls the image directly - no repo clone or `--build` needed. To update, `docker compose pull && docker compose up -d`.
+
 ### Updating
 
 ```
