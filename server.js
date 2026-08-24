@@ -3159,6 +3159,49 @@ app.post('/api/admin/presets/create', async (req, res) => {
   return res.json({ success: true, preset, epgShareSettings });
 });
 
+// Renames one of this instance's own local presets. Stock presets can only
+// be renamed by editing presets/presets.json and shipping an update, same
+// as removing one (see /api/admin/presets/delete) - there is no in-place
+// edit path for content shipped via the repo.
+app.post('/api/admin/presets/rename', async (req, res) => {
+  const { username, password, id, name } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  const trimmedName = typeof name === 'string' ? name.trim() : '';
+  if (!trimmedName || trimmedName.length > PRESET_NAME_MAX_LENGTH) {
+    return res.status(400).json({ error: `Name must be 1-${PRESET_NAME_MAX_LENGTH} characters.` });
+  }
+
+  if (stockPresets.some(p => p.id === id)) {
+    return res.status(400).json({ error: 'This is a built-in preset - it can only be renamed by shipping a code update, not from an instance admin panel.' });
+  }
+
+  const preset = localPresets.find(p => p.id === id);
+  if (!preset) {
+    return res.status(404).json({ error: 'Preset not found.' });
+  }
+
+  preset.name = trimmedName;
+  saveLocalPresets(localPresets);
+  // The admin performing the rename has already seen the result, same
+  // reasoning as create - no need to also bounce it into the pending
+  // review queue just because the name change flipped its content hash.
+  markPresetReviewed(preset);
+
+  return res.json({ success: true, preset });
+});
+
 app.post('/api/admin/presets/review', async (req, res) => {
   const { username, password, id, action } = req.body;
   const ip = req.ip;

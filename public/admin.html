@@ -1027,6 +1027,14 @@
         const stockBadge = p.isStock
           ? '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#56707d]/30 text-[#e6e6e6]/70">Built-in</span>'
           : '';
+        // Renaming, like deleting, only ever touches local-presets.json
+        // (see /api/admin/presets/rename) - no edit path exists for stock
+        // presets short of shipping an update, so neither button shows here.
+        const renameBtn = p.isStock
+          ? ''
+          : `<button type="button" onclick="renamePreset('${p.id}')" class="shrink-0 bg-[#56707d] hover:bg-[#66818f] text-white text-xs font-bold py-1.5 px-3 rounded-lg transition">
+            <i class="fa-solid fa-pen"></i>
+          </button>`;
         const deleteBtn = p.isStock
           ? ''
           : `<button type="button" onclick="deletePreset('${p.id}')" class="shrink-0 bg-[#c0392b] hover:bg-[#d8483a] text-white text-xs font-bold py-1.5 px-3 rounded-lg transition">
@@ -1046,6 +1054,7 @@
             </div>
             <div class="text-[10px] text-[#e6e6e6]/45">${p.selectedSports.length} league${p.selectedSports.length === 1 ? '' : 's'}, ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'}, ${overrideCount} override${overrideCount === 1 ? '' : 's'} - ${formatDate(p.createdAt)}</div>
           </div>
+          ${renameBtn}
           ${deleteBtn}
         </div>
       `;
@@ -1078,6 +1087,13 @@
         const enableBtn = p.missingSources.length > 0
           ? `<button type="button" onclick="reviewPreset('${p.id}', 'publish-and-enable')" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-1.5 px-3 rounded-lg text-xs transition">Enable sources and publish</button>`
           : '';
+        // A stock preset can land here too (a shipped update added or
+        // edited one - see hashPresetContent/isPresetReviewed in server.js),
+        // but /api/admin/presets/delete always rejects removing a stock
+        // preset, so don't show a button that can only ever fail for one.
+        const deleteBtn = p.isStock
+          ? ''
+          : `<button type="button" onclick="deletePreset('${p.id}')" class="text-[#e6e6e6]/55 hover:text-[#e6e6e6] font-bold py-1.5 px-3 rounded-lg text-xs transition">Delete</button>`;
         return `
         <div class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3">
           <div class="flex items-center gap-3 mb-2">
@@ -1096,7 +1112,7 @@
           <div class="flex flex-wrap gap-2">
             ${enableBtn}
             <button type="button" onclick="reviewPreset('${p.id}', 'publish')" class="bg-[#56707d] hover:bg-[#66818f] font-bold py-1.5 px-3 rounded-lg text-xs transition">${p.missingSources.length > 0 ? 'Publish anyway' : 'Publish'}</button>
-            <button type="button" onclick="deletePreset('${p.id}')" class="text-[#e6e6e6]/55 hover:text-[#e6e6e6] font-bold py-1.5 px-3 rounded-lg text-xs transition">Delete</button>
+            ${deleteBtn}
           </div>
         </div>
       `;
@@ -1119,6 +1135,33 @@
         }
       } catch (err) {
         showAdminStatus('Network error while publishing the preset.', true);
+      }
+    }
+
+    async function renamePreset(id) {
+      const preset = presets.find(p => p.id === id);
+      const newName = prompt('Rename preset', preset ? preset.name : '');
+      if (newName === null) return;
+      const trimmed = newName.trim();
+      if (!trimmed || trimmed === (preset && preset.name)) return;
+
+      try {
+        const res = await fetch('/api/admin/presets/rename', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...adminCreds, id, name: trimmed })
+        });
+        const data = await res.json();
+        if (data.success) {
+          presets = presets.map(p => p.id === id ? { ...p, name: data.preset.name } : p);
+          renderPresetsList();
+          renderPendingPresetsList();
+          showAdminStatus('Preset renamed.');
+        } else {
+          showAdminStatus(data.error || 'Failed to rename preset.', true);
+        }
+      } catch (err) {
+        showAdminStatus('Network error while renaming the preset.', true);
       }
     }
 
