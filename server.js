@@ -686,13 +686,11 @@ const SCHEDULE_BACKGROUND_FILES = {
   MLS: 'soccer.svg',
   LALIGA: 'soccer.svg',
   WORLDCUP: 'soccer.svg',
-  // Neither Aussie rules nor rugby has its own dedicated background asset -
-  // both are played with a similar prolate-spheroid ball, much closer to
-  // American football's than to the round soccer ball, so football.svg is
-  // the closer visual match of the existing art.
-  AFL: 'football.svg',
-  URC: 'football.svg',
-  PREM: 'football.svg',
+  AFL: 'afl.svg',
+  // Every rugby league shares rugby.svg - add any future rugby league here
+  // pointing at the same file rather than giving it its own asset.
+  URC: 'rugby.svg',
+  PREM: 'rugby.svg',
   // No cricket-specific background asset exists either - a cricket ball is
   // round like a baseball (unlike the prolate rugby/AFL ball above), so
   // baseball.svg is the closer visual match of the existing art.
