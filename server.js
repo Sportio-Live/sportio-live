@@ -691,10 +691,7 @@ const SCHEDULE_BACKGROUND_FILES = {
   // pointing at the same file rather than giving it its own asset.
   URC: 'rugby.svg',
   PREM: 'rugby.svg',
-  // No cricket-specific background asset exists either - a cricket ball is
-  // round like a baseball (unlike the prolate rugby/AFL ball above), so
-  // baseball.svg is the closer visual match of the existing art.
-  IPL: 'baseball.svg'
+  IPL: 'cricket.svg'
 };
 
 const scheduleBackgroundCache = {};
