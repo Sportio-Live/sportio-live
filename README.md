@@ -80,6 +80,21 @@ Every account has its own configured timezone with the actual date and time bake
 
 > Losing the encryption key means losing every saved Xtream credential permanently - back it up somewhere safe.
 
+### Updating
+
+```
+git pull
+docker compose up -d --build
+```
+
+If `git pull` refuses with a conflict on `presets/presets.json`, it's because presets were created through the admin panel before this update - move the file aside so git can pull cleanly, then start the container; it recovers those presets into `data/` automatically on first boot:
+```
+mv presets/presets.json data/presets-legacy-backup.json
+git pull
+docker compose up -d --build
+```
+This is only ever needed once.
+
 ### HTTPS
 
 Sportio Live doesn't handle TLS itself. Running it behind a reverse proxy (Nginx Proxy Manager, Caddy, Traefik) with a real certificate is strongly recommended, since IPTV credentials pass through the wizard and dashboard. If your proxy shares a Docker network with other containers, make sure Sportio Live joins that same network in `docker-compose.yml`.

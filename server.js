@@ -467,8 +467,39 @@ function saveLocalPresets(list) {
   }
 }
 
+// One-time recovery path for instances that predate the stock/local split
+// above. Before that split, admin-created presets were appended directly
+// into PRESETS_FILE - a git-tracked file - so updating past this point
+// requires that local drift be moved out of git's way first (see the
+// README's upgrade note), which backs it up here instead of discarding it.
+// On first boot after that, anything in the backup that isn't already
+// accounted for as stock or local content is exactly that drift, and gets
+// folded into local-presets.json where it belongs from now on. The backup
+// is then deleted, so this only ever does something once per instance -
+// nothing ever writes here again, so there's nothing left to migrate on
+// any later update.
+const LEGACY_PRESETS_BACKUP_FILE = path.join(DATA_DIR, 'presets-legacy-backup.json');
+
+function migrateLegacyLocalPresets() {
+  if (!fs.existsSync(LEGACY_PRESETS_BACKUP_FILE)) return;
+  const backedUp = loadPresets(LEGACY_PRESETS_BACKUP_FILE, 'presets-legacy-backup.json');
+  const knownIds = new Set([...stockPresets, ...localPresets].map(p => p.id));
+  const recovered = backedUp.filter(p => !knownIds.has(p.id));
+  if (recovered.length > 0) {
+    localPresets = [...localPresets, ...recovered];
+    saveLocalPresets(localPresets);
+    console.log(`[Storage] Recovered ${recovered.length} preset(s) created before the stock/local split into local-presets.json.`);
+  }
+  try {
+    fs.unlinkSync(LEGACY_PRESETS_BACKUP_FILE);
+  } catch (err) {
+    console.error('[Storage] Failed to remove presets-legacy-backup.json after migration:', err.message);
+  }
+}
+
 let stockPresets = loadStockPresets();
 let localPresets = loadLocalPresets();
+migrateLegacyLocalPresets();
 
 // The combined view every read site actually serves - callers never need to
 // care which file a given preset came from.
