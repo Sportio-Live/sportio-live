@@ -7,9 +7,9 @@
 
 *Disclaimer: This was created entirely using AI*
 
-Sportio Live is a self-hosted Nuvio/Stremio addon that turns your IPTV into a live sports catalog - today's games, personalized to your timezone, with custom artwork and stream matching. (Xtream and M3U supported)
+Sportio Live is a self-hosted Nuvio/Stremio addon that turns your IPTV into a live sports catalog - today's games, personalized to your timezone, with custom artwork and stream matching. (Xtream and M3U supported, multiple providers per account)
 
-*Sportio Live doesn't provide any streams itself* - it bridges ESPN's schedule data with the live channels of your own IPTV.
+*Sportio Live doesn't provide any streams itself*
 
 
 [Supported Leagues](#supported-leagues)
@@ -20,7 +20,15 @@ Sportio Live is a self-hosted Nuvio/Stremio addon that turns your IPTV into a li
 
 ## Setup
 
-A guided wizard gets a new account running in a few clicks - pick your leagues, set your timezone, enter your Xtream or M3U credentials, then choose which IPTV categories/folders should be searched per league. Done.
+A guided wizard gets a new account running in a few clicks - manually choose which IPTV categories should be searched when browsing games or select from a IPTV provider based preset.
+
+## Multi-provider support
+
+One account can connect more than one Xtream or M3U provider - each gets its own tab in the dashboard with its own credentials, categories, and EPG source picks. When a game airs, channels from every connected provider are searched together, and a match's provider is labeled whenever an account has more than one.
+
+## Presets
+
+The wizard offers a preset step between connecting a provider and finishing setup - picking one fills in leagues, categories, and EPG overrides in one click instead of configuring from scratch. Presets come from two places: stock presets ship with the app and update via `git pull`, while admins can import any user exported configuration file from the admin panel and publish it as a local preset for their own instance. Presets added or changed by an update sit pending until reviewed.
 
 ## Stream matching
 
@@ -32,6 +40,14 @@ A channel that clears any tier gets shown, ordered by how confident the match ac
 |2| Both team names appear in the channel name **and** both also appear in the description
 |3| Both team names appear somewhere across name + description combined, not necessarily in the same field
 |4| Just one team's actual nickname (e.g. "Knicks," not "New York") appears in the channel name — a city/state-only match doesn't count
+
+## Formatter
+
+Custom formatting for Name and Description fields. 
+
+## EPG
+
+Sportio Live can layer in guide data from [epgshare01.online](https://epgshare01.online/epgshare01/) alongside whatever your provider already sends, letting a channel's EPG source be overridden per channel or per provider. Which EPGShare01 feeds get fetched and cached is controlled per-instance from the admin panel - see [Admin panel](#admin-panel) below.
 
 ## Matchup art
 
@@ -57,7 +73,10 @@ Every account has its own configured timezone with the actual date and time bake
 | Football | NFL, NCAA Football |
 | Hockey | NHL |
 | Soccer | Premier League, MLS, La Liga, FIFA World Cup |
+| Cricket | IPL |
 | Combat | UFC |
+| Aussie Rules | AFL |
+| Rugby | United Rugby Championship, Premiership Rugby |
 
 ---
 
@@ -71,8 +90,8 @@ Every account has its own configured timezone with the actual date and time bake
 3. Create a `.env` file:
    ```
    ENCRYPTION_KEY=<paste the key you generated>
-   ADMIN_USERNAME=<pick a username for the admin page - optional>
-   ADMIN_PASSWORD=<pick a password for the admin page - optional>
+   ADMIN_USERNAME=<pick a username for the admin page>
+   ADMIN_PASSWORD=<pick a password for the admin page>
    ```
 4. Build and start: `docker compose up -d --build`
 5. Open `http://<your-server>:2323` and run the setup wizard.
@@ -80,21 +99,73 @@ Every account has its own configured timezone with the actual date and time bake
 
 > Losing the encryption key means losing every saved Xtream credential permanently - back it up somewhere safe.
 
+### Running a pre-built image (no clone, no build step)
+
+Every update to `main` is published as a ready-to-run image - useful for platforms (Unraid, Synology, Portainer, TrueNAS, Kubernetes, etc.) that expect an image reference instead of building from source. Steps 1 and 4 above become:
+
+```yaml
+services:
+  sportio-live:
+    image: ghcr.io/sportio-live/sportio-live:latest
+    container_name: sportio-live
+    restart: unless-stopped
+    ports:
+      - "2323:2323"
+    environment:
+      - PORT=2323
+      - HOST=0.0.0.0
+      - ENCRYPTION_KEY=<paste the key you generated>
+      - ADMIN_USERNAME=<pick a username for the admin page>
+      - ADMIN_PASSWORD=<pick a password for the admin page>
+    volumes:
+      - ./data:/usr/src/app/data
+      - ./presets:/usr/src/app/presets
+```
+
+`docker compose up -d` pulls the image directly - no repo clone or `--build` needed. To update, `docker compose pull && docker compose up -d`.
+
+### Updating
+
+```
+git pull
+docker compose up -d --build
+```
+
+If `git pull` refuses with a conflict on `presets/presets.json`, it's because presets were created through the admin panel before this update - move the file aside so git can pull cleanly, then start the container; it recovers those presets into `data/` automatically on first boot:
+```
+mv presets/presets.json data/presets-legacy-backup.json
+git pull
+docker compose up -d --build
+```
+This is only ever needed once.
+
 ### HTTPS
 
 Sportio Live doesn't handle TLS itself. Running it behind a reverse proxy (Nginx Proxy Manager, Caddy, Traefik) with a real certificate is strongly recommended, since IPTV credentials pass through the wizard and dashboard. If your proxy shares a Docker network with other containers, make sure Sportio Live joins that same network in `docker-compose.yml`.
 
 ---
 
+## Admin panel
+
+Setting `ADMIN_USERNAME`/`ADMIN_PASSWORD` unlocks `/admin.html`, a separate login-gated panel for running the instance day to day:
+
+- **Refresh schedule** - set days/times to automatically refresh cached M3U and EPG data, or trigger a refresh on demand.
+- **EPG Editor** - pick which EPGShare01 feeds this instance keeps fetched and cached, so users can select them as a per-channel EPG override.
+- **Presets** - import a user configuration file as an instance preset. Review/publish anything an update adds or changes before it reaches users.
+- **Accounts** - browse registered accounts, filterable by created or last-accessed date.
+
 ## Project structure
 
 ```
 server.js                     Express app - manifest, catalog, stream matching, art generation
 public/index.html             Setup wizard + configuration dashboard
-assets/posters/               Poster overlay art
-assets/background/            Landscape background overlay art
-assets/background/schedule/   "Upcoming Schedule" placeholder art, one photo per sport
-data/users.json               Registered accounts (auto-created, gitignored)
+public/admin.html             Admin panel - EPG, presets, accounts
+assets/posters/                 Poster overlay art
+assets/background/              Landscape background overlay art
+assets/background/schedule/     "Upcoming Schedule" placeholder art, one photo per sport
+presets/presets.json            Stock presets shipped with the app (git-tracked)
+data/local-presets.json         Presets created via this instance's admin panel (auto-created, gitignored)
+data/users.json                 Registered accounts (auto-created, gitignored)
 ```
 
 ---
@@ -127,4 +198,10 @@ Sportio Live requires an existing, legitimate IPTV subscription. It does not pro
 ![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/setup/6.png?raw=true)
 ![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/setup/7.png?raw=true)
 ![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/setup/8.png?raw=true)
+
+### Admin Panel:
+![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/admin/1.png?raw=true)
+![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/admin/2.png?raw=true)
+![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/admin/3.png?raw=true)
+![enter image description here](https://github.com/Sportio-Live/sportio-live/blob/main/screenshots/admin/4.png?raw=true)
 

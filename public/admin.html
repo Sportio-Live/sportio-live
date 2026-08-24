@@ -36,9 +36,18 @@
     <div class="max-w-5xl mx-auto w-full">
       <h1 class="text-lg font-bold mb-6">Sportio Live - Admin</h1>
 
-      <div class="glass rounded-xl p-4 mb-4">
-        <h2 class="text-sm font-bold mb-3">M3U Refresh Schedule</h2>
-        <p class="text-xs text-[#e6e6e6]/55 mb-4">Which days, and at what time(s) on those days, the shared M3U playlist/EPG cache refreshes in the background. Takes effect on the next scheduled run - no restart needed.</p>
+      <div class="glass rounded-xl mb-4 overflow-hidden">
+        <div class="flex items-center justify-between gap-3 p-4 cursor-pointer select-none" onclick="toggleSection('m3u')">
+          <div class="flex items-center gap-2">
+            <i id="section-chevron-m3u" class="fa-solid fa-chevron-down text-xs text-[#e6e6e6]/55 transition-transform"></i>
+            <h2 class="text-sm font-bold">Refresh schedule</h2>
+          </div>
+          <button onclick="event.stopPropagation(); recacheM3u()" id="m3u-recache-btn" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2 px-3 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed">
+            <i class="fa-solid fa-rotate"></i> Clear &amp; Recache EPG Now
+          </button>
+        </div>
+        <div id="section-body-m3u" class="px-4 pb-4">
+        <p class="text-xs text-[#e6e6e6]/55 mb-4">Create a schedule to update M3Us and EPG.</p>
 
         <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Days</label>
         <div id="m3u-days-row" class="flex flex-wrap gap-2 mb-4"></div>
@@ -66,55 +75,190 @@
           </button>
           <div id="m3u-settings-saved" class="hidden text-xs text-[#a8e0ac] font-semibold"></div>
         </div>
+        </div>
       </div>
 
-      <div class="glass rounded-xl p-4 mb-4 flex flex-wrap items-end gap-3">
-        <div>
-          <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">Filter by</label>
-          <select id="filter-field" class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
-            <option value="createdAt">Created Date</option>
-            <option value="lastAccessedAt">Last Accessed</option>
-          </select>
+      <div class="glass rounded-xl mb-4 overflow-hidden">
+        <div class="flex items-center justify-between gap-3 p-4 cursor-pointer select-none" onclick="toggleSection('epgshare')">
+          <div class="flex items-center gap-2">
+            <i id="section-chevron-epgshare" class="fa-solid fa-chevron-down text-xs text-[#e6e6e6]/55 transition-transform"></i>
+            <h2 class="text-sm font-bold">EPG Editor</h2>
+          </div>
         </div>
-        <div>
-          <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">From</label>
-          <input type="date" id="filter-from" class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+        <div id="section-body-epgshare" class="px-4 pb-4">
+        <p class="text-xs text-[#e6e6e6]/55 mb-4">Choose which of <a href="https://epgshare01.online/epgshare01/" target="_blank" rel="noopener" class="text-[#5aa8d1] hover:underline">epgshare01.online</a>'s XMLTV feeds this server keeps fetched and cached. This does <span class="font-semibold text-[#e6e6e6]/80">not</span> override anyone's EPG by itself - each enabled source just becomes available for a user to pick, per channel, in place of their provider's own guide. Every source you enable here adds an extra download + parse to the M3U refresh schedule above, so pick only what you actually need for your users' channel lineups (a per-country/category file, not the ~200MB combined one, unless you really need it).</p>
+
+        <div class="flex flex-wrap items-center gap-3 mb-3">
+          <div class="relative flex-1 min-w-[200px] max-w-sm">
+            <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-xs text-[#e6e6e6]/55"></i>
+            <input type="text" id="epgshare-search" oninput="renderEpgShareCatalog()" placeholder="Search sources..." class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg pl-8 pr-3 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none">
+          </div>
+          <button onclick="loadEpgShareCatalog(true)" id="epgshare-refresh-list-btn" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2 px-3 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed">
+            <i class="fa-solid fa-rotate"></i> Refresh List
+          </button>
+          <div id="epgshare-selected-count" class="text-xs text-[#e6e6e6]/55 ml-auto"></div>
         </div>
-        <div>
-          <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">To</label>
-          <input type="date" id="filter-to" class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+
+        <div id="epgshare-catalog-status" class="text-xs text-[#e6e6e6]/55 italic mb-2"></div>
+
+        <div class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg overflow-hidden mb-4">
+          <div class="grid grid-cols-[20px_1fr_84px_104px_84px] gap-3 px-3 py-2 border-b border-[#e6e6e6]/15 text-[10px] font-semibold uppercase text-[#e6e6e6]/55">
+            <div></div>
+            <div>Source</div>
+            <div class="text-right">Compressed</div>
+            <div class="text-right">Decompressed (est.)</div>
+            <div class="text-center">Channels TXT</div>
+          </div>
+          <div id="epgshare-catalog-list" class="max-h-80 overflow-y-auto divide-y divide-[#e6e6e6]/10"></div>
         </div>
-        <button onclick="applyDateFilter()" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2 px-4 rounded-lg text-xs transition">
-          Apply
-        </button>
-        <button onclick="clearDateFilter()" class="bg-[#56707d] hover:bg-[#66818f] font-bold py-2 px-4 rounded-lg text-xs transition">
-          Clear
-        </button>
-        <div class="ml-auto text-xs text-[#e6e6e6]/55" id="user-count"></div>
+
+        <div class="flex items-center gap-3">
+          <button onclick="saveEpgShareSettings()" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2 px-4 rounded-lg text-xs transition">
+            Save
+          </button>
+          <div id="epgshare-settings-saved" class="hidden text-xs text-[#a8e0ac] font-semibold"></div>
+        </div>
+        </div>
       </div>
 
-      <div class="glass rounded-xl overflow-hidden">
-        <table class="w-full text-sm">
-          <thead>
-            <tr class="border-b border-[#e6e6e6]/15 text-left">
-              <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55">UUID</th>
-              <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55">Type</th>
-              <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55 cursor-pointer hover:text-[#e6e6e6] select-none" onclick="sortBy('createdAt')">
-                Created <i id="sort-icon-createdAt" class="fa-solid fa-sort ml-1"></i>
-              </th>
-              <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55 cursor-pointer hover:text-[#e6e6e6] select-none" onclick="sortBy('lastAccessedAt')">
-                Last Accessed <i id="sort-icon-lastAccessedAt" class="fa-solid fa-sort ml-1"></i>
-              </th>
-              <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55 text-right">Action</th>
-            </tr>
-          </thead>
-          <tbody id="admin-user-table-body"></tbody>
-        </table>
+      <div class="glass rounded-xl mb-4 overflow-hidden">
+        <div class="flex items-center justify-between gap-3 p-4 cursor-pointer select-none" onclick="toggleSection('presets')">
+          <div class="flex items-center gap-2">
+            <i id="section-chevron-presets" class="fa-solid fa-chevron-down text-xs text-[#e6e6e6]/55 transition-transform"></i>
+            <h2 class="text-sm font-bold">Presets</h2>
+          </div>
+        </div>
+        <div id="section-body-presets" class="px-4 pb-4">
+        <p class="text-xs text-[#e6e6e6]/55 mb-4">Import a user's exported settings file (from their dashboard's Sources &gt; Export/Import panel), give it a name and an icon, and save it as a preset. An export never contains credentials, so nothing sensitive ends up here.</p>
+
+        <!-- Presets added or edited by a code update (rather than through
+             the form below) land here first and are withheld from users
+             until reviewed - see isPresetReviewed in server.js. Hidden
+             entirely when there's nothing pending. -->
+        <div id="pending-presets-section" class="hidden bg-[#3a2f1f]/50 border border-[#c9992e]/40 rounded-lg p-4 mb-4">
+          <h3 id="pending-presets-heading" class="text-xs font-bold text-[#e6c88a] mb-1 flex items-center gap-2">
+            <i class="fa-solid fa-triangle-exclamation"></i><span></span>
+          </h3>
+          <p class="text-xs text-[#e6e6e6]/55 mb-3">These were added or changed by an update and aren't visible to users yet - review each one below.</p>
+          <div id="pending-presets-list" class="space-y-2"></div>
+        </div>
+
+        <div class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-4 mb-4 max-w-md">
+          <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Settings file</label>
+          <input type="file" id="preset-file-input" accept="application/json" class="hidden" onchange="handlePresetFileSelected(event)">
+          <button type="button" onclick="document.getElementById('preset-file-input').click()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2 px-3 rounded-lg transition flex items-center gap-2">
+            <i class="fa-solid fa-upload"></i> Choose Settings File
+          </button>
+          <div id="preset-file-status" class="text-xs text-[#e6e6e6]/55 mt-2"></div>
+          <div id="preset-file-error" class="hidden text-xs text-[#e56a6a] font-semibold mt-2"></div>
+
+          <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5 mt-4">Name</label>
+          <input type="text" id="preset-name-input" oninput="updateCreatePresetButtonState()" placeholder="e.g. NBA - Provider X" class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+
+          <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5 mt-4">Icon</label>
+          <button type="button" onclick="openIconPicker()" id="preset-icon-trigger" class="flex items-center gap-2 bg-[#3b4d58] border border-[#e6e6e6]/15 hover:border-[#3b8fc4]/50 rounded-lg px-3 py-2 text-xs transition">
+            <i id="preset-icon-trigger-icon" class="fa-solid fa-circle-question text-[#e6e6e6]/40"></i>
+            <span id="preset-icon-trigger-label" class="text-[#e6e6e6]/55">Choose icon...</span>
+          </button>
+
+          <div class="mt-4">
+            <button type="button" id="create-preset-btn" onclick="createPreset()" disabled class="bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2 px-4 rounded-lg text-xs cursor-not-allowed transition">
+              Create Preset
+            </button>
+          </div>
+
+          <div id="preset-missing-sources" class="hidden mt-4 bg-[#3a2f1f]/50 border border-[#c9992e]/40 rounded-lg p-3">
+            <p id="preset-missing-sources-text" class="text-xs text-[#e6c88a] mb-3"></p>
+            <div class="flex flex-wrap gap-2">
+              <button type="button" onclick="createPreset('enable')" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-1.5 px-3 rounded-lg text-xs transition">
+                Enable and create
+              </button>
+              <button type="button" onclick="createPreset('ignore')" class="bg-[#56707d] hover:bg-[#66818f] font-bold py-1.5 px-3 rounded-lg text-xs transition">
+                Create anyway
+              </button>
+              <button type="button" onclick="dismissMissingSourcesPrompt()" class="text-[#e6e6e6]/55 hover:text-[#e6e6e6] font-bold py-1.5 px-3 rounded-lg text-xs transition">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div id="presets-empty" class="text-xs text-[#e6e6e6]/55 italic">No presets yet.</div>
+        <div id="presets-list" class="space-y-2"></div>
+        </div>
+      </div>
+
+      <div class="glass rounded-xl mb-4 overflow-hidden">
+        <div class="flex items-center justify-between gap-3 p-4 cursor-pointer select-none" onclick="toggleSection('accounts')">
+          <div class="flex items-center gap-2">
+            <i id="section-chevron-accounts" class="fa-solid fa-chevron-down text-xs text-[#e6e6e6]/55 transition-transform"></i>
+            <h2 class="text-sm font-bold">Accounts</h2>
+          </div>
+        </div>
+        <div id="section-body-accounts" class="px-4 pb-4">
+        <div class="flex flex-wrap items-end gap-3 mb-4">
+          <div>
+            <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">Filter by</label>
+            <select id="filter-field" class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+              <option value="createdAt">Created Date</option>
+              <option value="lastAccessedAt">Last Accessed</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">From</label>
+            <input type="date" id="filter-from" class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">To</label>
+            <input type="date" id="filter-to" class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+          </div>
+          <button onclick="applyDateFilter()" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2 px-4 rounded-lg text-xs transition">
+            Apply
+          </button>
+          <button onclick="clearDateFilter()" class="bg-[#56707d] hover:bg-[#66818f] font-bold py-2 px-4 rounded-lg text-xs transition">
+            Clear
+          </button>
+          <div class="ml-auto text-xs text-[#e6e6e6]/55" id="user-count"></div>
+        </div>
+
+        <div class="rounded-lg border border-[#e6e6e6]/15 overflow-hidden">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-[#e6e6e6]/15 text-left">
+                <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55">UUID</th>
+                <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55">Type</th>
+                <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55 cursor-pointer hover:text-[#e6e6e6] select-none" onclick="sortBy('createdAt')">
+                  Created <i id="sort-icon-createdAt" class="fa-solid fa-sort ml-1"></i>
+                </th>
+                <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55 cursor-pointer hover:text-[#e6e6e6] select-none" onclick="sortBy('lastAccessedAt')">
+                  Last Accessed <i id="sort-icon-lastAccessedAt" class="fa-solid fa-sort ml-1"></i>
+                </th>
+                <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody id="admin-user-table-body"></tbody>
+          </table>
+        </div>
+        </div>
       </div>
     </div>
   </div>
 
   <div id="admin-status-message" class="hidden fixed top-4 right-4 z-50 max-w-sm rounded-lg p-4 text-sm font-semibold shadow-2xl"></div>
+
+  <div id="icon-picker-overlay" class="hidden fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onclick="if (event.target === this) closeIconPicker()">
+    <div class="glass rounded-xl p-4 w-full max-w-lg max-h-[80vh] flex flex-col">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-bold">Choose an icon</h3>
+        <button type="button" onclick="closeIconPicker()" class="text-[#e6e6e6]/55 hover:text-[#e6e6e6] transition"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="relative mb-3 shrink-0">
+        <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-xs text-[#e6e6e6]/55"></i>
+        <input type="text" id="icon-picker-search" oninput="renderIconPickerGrid()" placeholder="Search icons..." class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg pl-8 pr-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+      </div>
+      <div id="icon-picker-grid" class="grid grid-cols-6 sm:grid-cols-8 gap-2 overflow-y-auto"></div>
+    </div>
+  </div>
 
   <script>
     // Credentials are kept in memory only, re-sent on every admin request -
@@ -124,6 +268,16 @@
     let allUsers = [];
     let visibleUsers = [];
     let currentSort = { field: null, direction: 'asc' };
+
+    // --- Collapsible sections - all expanded by default; state lives only
+    // in the DOM (a hidden class on the body, a rotated chevron), nothing
+    // persisted, so a fresh login always starts fully expanded.
+    function toggleSection(name) {
+      const body = document.getElementById(`section-body-${name}`);
+      const chevron = document.getElementById(`section-chevron-${name}`);
+      const collapsed = body.classList.toggle('hidden');
+      chevron.classList.toggle('-rotate-90', collapsed);
+    }
 
     async function adminLogin() {
       const username = document.getElementById('admin-username').value.trim();
@@ -144,6 +298,9 @@
           document.getElementById('admin-panel-section').classList.remove('hidden');
           loadUsers();
           loadM3uSettings();
+          loadEpgShareCatalog(false);
+          loadEpgShareSettings();
+          loadPresets();
         } else {
           errorEl.textContent = data.error || 'Login failed.';
           errorEl.classList.remove('hidden');
@@ -292,6 +449,46 @@
       }
     }
 
+    async function recacheM3u() {
+      const btn = document.getElementById('m3u-recache-btn');
+      const originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Recaching...';
+
+      try {
+        const res = await fetch('/api/admin/m3u-cache/recache', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(adminCreds)
+        });
+        const data = await res.json();
+        if (data.success) {
+          const count = data.cachedSources;
+          let message = `EPG cache cleared and refreshed (${count} M3U source${count === 1 ? '' : 's'}).`;
+          if (data.epgShareRefreshed || data.epgShareFailed) {
+            message += ` ${data.epgShareRefreshed} EPGShare01 source${data.epgShareRefreshed === 1 ? '' : 's'} refreshed.`;
+            if (data.epgShareFailed) {
+              message += ` ${data.epgShareFailed} failed.`;
+              // Named per-source, not just a count - "2 failed" alone
+              // isn't diagnosable from the admin page itself.
+              const failures = (data.epgShareResults || []).filter(r => !r.success);
+              failures.forEach(f => {
+                message += `\n• ${epgShareSourceLabel(f.file)}: ${f.error}`;
+              });
+            }
+          }
+          showAdminStatus(message, !!data.epgShareFailed);
+        } else {
+          showAdminStatus(data.error || 'Failed to refresh the EPG cache.', true);
+        }
+      } catch (err) {
+        showAdminStatus('Network error while refreshing the EPG cache.', true);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+      }
+    }
+
     async function saveM3uSettings() {
       const savedEl = document.getElementById('m3u-settings-saved');
       savedEl.classList.add('hidden');
@@ -322,6 +519,136 @@
       }
     }
 
+    // --- EPGShare01 source catalog + selection ---
+    let epgShareCatalog = []; // [{file, url, compressedBytes, decompressedBytes}]
+    let epgShareEnabledSet = new Set(); // selected filenames
+
+    function formatBytes(n) {
+      if (n === null || n === undefined) return 'unknown';
+      if (n < 1024) return `${n} B`;
+      if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+      if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+      return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+    }
+
+    // A short, human-friendly label derived from the raw filename (e.g.
+    // "epg_ripper_US_SPORTS1.xml.gz" -> "US SPORTS1") - the full filename
+    // is still shown below it (in a smaller/dimmer style) since that's
+    // what's actually saved/matched against.
+    function epgShareSourceLabel(file) {
+      return file.replace(/^epg_ripper_/, '').replace(/\.xml\.gz$/, '').replace(/_/g, ' ');
+    }
+
+    async function loadEpgShareCatalog(forceRefresh) {
+      const statusEl = document.getElementById('epgshare-catalog-status');
+      const btn = document.getElementById('epgshare-refresh-list-btn');
+      btn.disabled = true;
+      statusEl.textContent = forceRefresh ? 'Refreshing source list from epgshare01.online...' : 'Loading source list...';
+
+      try {
+        const res = await fetch('/api/admin/epgshare-catalog', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...adminCreds, refresh: !!forceRefresh })
+        });
+        const data = await res.json();
+        if (data.success) {
+          epgShareCatalog = data.sources;
+          statusEl.textContent = `${epgShareCatalog.length} sources available, as of ${formatDate(new Date(data.fetchedAt).toISOString())}.`;
+          renderEpgShareCatalog();
+        } else {
+          statusEl.textContent = '';
+          showAdminStatus(data.error || 'Failed to load the EPGShare01 source list.', true);
+        }
+      } catch (err) {
+        statusEl.textContent = '';
+        showAdminStatus('Network error while loading the EPGShare01 source list.', true);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function loadEpgShareSettings() {
+      try {
+        const res = await fetch('/api/admin/epgshare-settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(adminCreds)
+        });
+        const data = await res.json();
+        if (data.success) {
+          epgShareEnabledSet = new Set(data.settings.enabledSources);
+          renderEpgShareCatalog();
+        }
+      } catch (err) {
+        console.error('Failed to load EPGShare01 settings:', err.message);
+      }
+    }
+
+    function toggleEpgShareSource(file) {
+      if (epgShareEnabledSet.has(file)) epgShareEnabledSet.delete(file); else epgShareEnabledSet.add(file);
+      renderEpgShareCatalog();
+    }
+
+    function renderEpgShareCatalog() {
+      const list = document.getElementById('epgshare-catalog-list');
+      const term = document.getElementById('epgshare-search').value.trim().toLowerCase();
+      const filtered = term
+        ? epgShareCatalog.filter(s => s.file.toLowerCase().includes(term))
+        : epgShareCatalog;
+
+      if (epgShareCatalog.length === 0) {
+        list.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No sources loaded yet.</p>';
+      } else if (filtered.length === 0) {
+        list.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No sources match your search.</p>';
+      } else {
+        list.innerHTML = filtered.map(s => {
+          const checked = epgShareEnabledSet.has(s.file);
+          return `
+          <label class="grid grid-cols-[20px_1fr_84px_104px_84px] gap-3 px-3 py-2 items-center cursor-pointer hover:bg-[#3b4d58]/40 select-none">
+            <input type="checkbox" class="w-4 h-4 accent-[#3b8fc4]" ${checked ? 'checked' : ''} onchange="toggleEpgShareSource('${s.file}')">
+            <div>
+              <div class="text-xs font-semibold">${epgShareSourceLabel(s.file)}</div>
+              <div class="text-[10px] text-[#e6e6e6]/45 font-mono">${s.file}</div>
+            </div>
+            <div class="text-xs text-[#e6e6e6]/75 text-right whitespace-nowrap">${formatBytes(s.compressedBytes)}</div>
+            <div class="text-xs text-[#e6e6e6]/75 text-right whitespace-nowrap">${formatBytes(s.decompressedBytes)}</div>
+            <div class="text-center">
+              <a href="${s.txtUrl}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="View channel list (.txt)" class="inline-flex text-[#5aa8d1] hover:text-[#7fc0e8] transition">
+                <i class="fa-solid fa-arrow-up-right-from-square"></i>
+              </a>
+            </div>
+          </label>
+        `;
+        }).join('');
+      }
+
+      document.getElementById('epgshare-selected-count').textContent = `${epgShareEnabledSet.size} selected`;
+    }
+
+    async function saveEpgShareSettings() {
+      const savedEl = document.getElementById('epgshare-settings-saved');
+      savedEl.classList.add('hidden');
+
+      try {
+        const res = await fetch('/api/admin/epgshare-settings/update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...adminCreds, enabledSources: [...epgShareEnabledSet] })
+        });
+        const data = await res.json();
+        if (data.success) {
+          savedEl.textContent = 'Saved.';
+          savedEl.classList.remove('hidden');
+          setTimeout(() => savedEl.classList.add('hidden'), 3000);
+        } else {
+          showAdminStatus(data.error || 'Failed to save EPG source selection.', true);
+        }
+      } catch (err) {
+        showAdminStatus('Network error while saving EPG source selection.', true);
+      }
+    }
+
     async function loadUsers() {
       try {
         const res = await fetch('/api/admin/users', {
@@ -349,13 +676,23 @@
         + ' ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
     }
 
+    // One badge per provider on the account - most accounts still have
+    // exactly one, so this looks identical to before for them, but an
+    // account with several providers (mixed Xtream/M3U or several of the
+    // same kind) shows one badge per provider rather than collapsing down
+    // to a single, now-ambiguous type.
+    function buildConnectionBadges(connectionTypes) {
+      return (connectionTypes && connectionTypes.length > 0 ? connectionTypes : ['xtream']).map(type => {
+        return type === 'm3u'
+          ? '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#3b8fc4]/20 text-[#5aa8d1]">M3U</span>'
+          : '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#4a9d52]/20 text-[#a8e0ac]">Xtream</span>';
+      }).join(' ');
+    }
+
     function renderTable() {
       const tbody = document.getElementById('admin-user-table-body');
       tbody.innerHTML = visibleUsers.map(user => {
-        const isM3u = user.connectionType === 'm3u';
-        const badge = isM3u
-          ? '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#3b8fc4]/20 text-[#5aa8d1]">M3U</span>'
-          : '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#4a9d52]/20 text-[#a8e0ac]">Xtream</span>';
+        const badge = buildConnectionBadges(user.connectionTypes);
         return `
         <tr class="border-b border-[#e6e6e6]/10 hover:bg-[#3b4d58]/40">
           <td class="px-4 py-3 font-mono text-xs text-[#e6e6e6]/75">${user.uuid}</td>
@@ -463,11 +800,407 @@
       }
     }
 
+    // --- Presets: import a user's exported settings file, name + icon
+    // it, save it server-side. Mirrors the EPGShare01 catalog section
+    // above (load on login, render into a list, a save/create action) and
+    // the shape-validation index.html's handleImportFileSelected already
+    // does for the same export file format.
+
+    // Must match server.js's ALLOWED_PRESET_ICONS exactly - this is only
+    // the picker's offering, the server is the actual authority.
+    const PRESET_ICON_OPTIONS = [
+      'trophy', 'medal', 'award', 'ranking-star', 'futbol', 'basketball', 'baseball', 'football',
+      'volleyball', 'hockey-puck', 'golf-ball-tee', 'bowling-ball', 'table-tennis-paddle-ball',
+      'dumbbell', 'hand-fist', 'person-running', 'person-biking', 'person-swimming', 'person-skiing',
+      'person-snowboarding', 'stopwatch', 'flag-checkered',
+      'tv', 'film', 'video', 'music', 'headphones', 'microphone', 'camera', 'clapperboard',
+      'gamepad', 'dice', 'chess', 'chess-king', 'puzzle-piece', 'ticket', 'masks-theater',
+      'record-vinyl', 'compact-disc',
+      'star', 'heart', 'fire', 'bolt', 'crown', 'gem', 'shield', 'shield-halved', 'gift', 'key',
+      'lock', 'lock-open', 'bell', 'bookmark', 'tag', 'tags', 'box', 'briefcase', 'suitcase',
+      'thumbs-up', 'hand', 'peace', 'infinity', 'atom', 'certificate', 'flag', 'circle', 'square',
+      'compass',
+      'globe', 'sun', 'moon', 'cloud', 'snowflake', 'umbrella', 'mountain', 'tree', 'leaf',
+      'water', 'wind', 'cloud-sun', 'cloud-rain', 'temperature-high',
+      'car', 'truck', 'motorcycle', 'bicycle', 'plane', 'ship', 'train', 'rocket', 'bus',
+      'van-shuttle', 'anchor',
+      'map', 'map-pin', 'location-dot', 'clock', 'calendar', 'calendar-days', 'building', 'city',
+      'home', 'landmark', 'university', 'hospital', 'store', 'industry', 'warehouse',
+      'satellite', 'satellite-dish', 'wifi', 'signal', 'microchip', 'server', 'desktop', 'mobile',
+      'tablet-screen-button',
+      'users', 'user', 'user-group', 'child', 'hat-cowboy', 'mask',
+      'pizza-slice', 'burger', 'mug-hot', 'beer-mug-empty', 'wine-glass', 'apple-whole', 'carrot',
+      'feather', 'paw', 'dragon', 'dog', 'cat', 'fish', 'horse', 'spider', 'frog', 'kiwi-bird',
+      'crow', 'dove'
+    ];
+
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    let presets = [];
+    let pendingPresetConfig = null;
+    let pendingPresetIcon = null;
+
+    async function loadPresets() {
+      try {
+        const res = await fetch('/api/admin/presets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(adminCreds)
+        });
+        const data = await res.json();
+        if (data.success) {
+          presets = data.presets;
+          renderPresetsList();
+          renderPendingPresetsList();
+        }
+      } catch (err) {
+        console.error('Failed to load presets:', err.message);
+      }
+    }
+
+    function handlePresetFileSelected(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      pendingPresetConfig = null;
+      document.getElementById('preset-file-error').classList.add('hidden');
+      document.getElementById('preset-file-status').textContent = '';
+      dismissMissingSourcesPrompt();
+      updateCreatePresetButtonState();
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        let data;
+        try {
+          data = JSON.parse(reader.result);
+        } catch (err) {
+          showPresetFileError("That file isn't valid JSON.");
+          return;
+        }
+        if (!data || typeof data !== 'object' || data.sportioExportVersion !== 1
+          || typeof data.sportCategories !== 'object' || typeof data.epgOverrides !== 'object') {
+          showPresetFileError("That doesn't look like a settings export file.");
+          return;
+        }
+        pendingPresetConfig = data;
+        const categoryCount = Object.values(data.sportCategories).reduce((sum, arr) => sum + (Array.isArray(arr) ? arr.length : 0), 0);
+        const overrideCount = Object.keys(data.epgOverrides).length;
+        const leagueCount = Array.isArray(data.selectedSports) ? data.selectedSports.length : 0;
+        document.getElementById('preset-file-status').textContent =
+          `Loaded: ${data.connectionType === 'm3u' ? 'M3U' : 'Xtream'} - ${leagueCount} league${leagueCount === 1 ? '' : 's'}, ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'}, ${overrideCount} EPG override${overrideCount === 1 ? '' : 's'}.`;
+        updateCreatePresetButtonState();
+      };
+      reader.onerror = () => showPresetFileError('Could not read that file.');
+      reader.readAsText(file);
+    }
+
+    function showPresetFileError(msg) {
+      const el = document.getElementById('preset-file-error');
+      el.textContent = msg;
+      el.classList.remove('hidden');
+    }
+
+    function updateCreatePresetButtonState() {
+      const name = document.getElementById('preset-name-input').value.trim();
+      const btn = document.getElementById('create-preset-btn');
+      const ready = !!(pendingPresetConfig && name && pendingPresetIcon);
+      btn.disabled = !ready;
+      btn.className = ready
+        ? 'bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2 px-4 rounded-lg text-xs transition'
+        : 'bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2 px-4 rounded-lg text-xs cursor-not-allowed transition';
+    }
+
+    function openIconPicker() {
+      document.getElementById('icon-picker-search').value = '';
+      renderIconPickerGrid();
+      document.getElementById('icon-picker-overlay').classList.remove('hidden');
+    }
+
+    function closeIconPicker() {
+      document.getElementById('icon-picker-overlay').classList.add('hidden');
+    }
+
+    function renderIconPickerGrid() {
+      const term = document.getElementById('icon-picker-search').value.trim().toLowerCase();
+      const filtered = term
+        ? PRESET_ICON_OPTIONS.filter(name => name.replace(/-/g, ' ').includes(term))
+        : PRESET_ICON_OPTIONS;
+      const grid = document.getElementById('icon-picker-grid');
+      grid.innerHTML = filtered.length === 0
+        ? '<p class="text-xs text-[#e6e6e6]/55 italic col-span-full p-3">No icons match your search.</p>'
+        : filtered.map(name => `
+          <button type="button" onclick="selectPresetIcon('${name}')" title="${name}" class="aspect-square flex items-center justify-center bg-[#2f3e47] hover:bg-[#3b8fc4]/30 border border-[#e6e6e6]/15 hover:border-[#3b8fc4]/50 rounded-lg text-lg transition">
+            <i class="fa-solid fa-${name}"></i>
+          </button>
+        `).join('');
+    }
+
+    function selectPresetIcon(name) {
+      pendingPresetIcon = name;
+      document.getElementById('preset-icon-trigger-icon').className = `fa-solid fa-${name}`;
+      document.getElementById('preset-icon-trigger-label').textContent = name.replace(/-/g, ' ');
+      document.getElementById('preset-icon-trigger-label').className = 'text-[#e6e6e6]';
+      closeIconPicker();
+      updateCreatePresetButtonState();
+    }
+
+    async function createPreset(onMissingSources) {
+      const name = document.getElementById('preset-name-input').value.trim();
+      if (!pendingPresetConfig || !name || !pendingPresetIcon) return;
+
+      try {
+        const body = { ...adminCreds, name, icon: pendingPresetIcon, config: pendingPresetConfig };
+        if (onMissingSources) body.onMissingSources = onMissingSources;
+        const res = await fetch('/api/admin/presets/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (data.success) {
+          presets = [...presets, data.preset];
+          renderPresetsList();
+          if (data.epgShareSettings) {
+            epgShareEnabledSet = new Set(data.epgShareSettings.enabledSources);
+            renderEpgShareCatalog();
+          }
+          resetPresetForm();
+          showAdminStatus('Preset created.');
+        } else if (data.needsConfirmation) {
+          showMissingSourcesPrompt(data.missingSources);
+        } else {
+          showAdminStatus(data.error || 'Failed to create preset.', true);
+        }
+      } catch (err) {
+        showAdminStatus('Network error while creating the preset.', true);
+      }
+    }
+
+    // Named via the EPG Editor section's own epgShareSourceLabel() rather
+    // than the raw epg_ripper_*.xml.gz filename - same reasoning as that
+    // section, reused rather than reimplemented.
+    function showMissingSourcesPrompt(missingSources) {
+      const labels = missingSources.map(epgShareSourceLabel).join(', ');
+      document.getElementById('preset-missing-sources-text').textContent =
+        `This preset needs ${missingSources.length} EPG source${missingSources.length === 1 ? '' : 's'} you don't currently have enabled: ${labels}. Enable them now, create the preset without them (those overrides won't do anything until you enable the source later), or cancel.`;
+      document.getElementById('preset-missing-sources').classList.remove('hidden');
+    }
+
+    function dismissMissingSourcesPrompt() {
+      document.getElementById('preset-missing-sources').classList.add('hidden');
+    }
+
+    function resetPresetForm() {
+      document.getElementById('preset-file-input').value = '';
+      document.getElementById('preset-file-status').textContent = '';
+      document.getElementById('preset-file-error').classList.add('hidden');
+      document.getElementById('preset-name-input').value = '';
+      dismissMissingSourcesPrompt();
+      pendingPresetConfig = null;
+      pendingPresetIcon = null;
+      document.getElementById('preset-icon-trigger-icon').className = 'fa-solid fa-circle-question text-[#e6e6e6]/40';
+      const label = document.getElementById('preset-icon-trigger-label');
+      label.textContent = 'Choose icon...';
+      label.className = 'text-[#e6e6e6]/55';
+      updateCreatePresetButtonState();
+    }
+
+    function renderPresetsList() {
+      const list = document.getElementById('presets-list');
+      const empty = document.getElementById('presets-empty');
+      empty.classList.toggle('hidden', presets.length > 0);
+      list.innerHTML = presets.map(p => {
+        const categoryCount = Object.values(p.sportCategories).reduce((sum, arr) => sum + arr.length, 0);
+        const overrideCount = Object.keys(p.epgOverrides).length;
+        const badge = p.connectionType === 'm3u'
+          ? '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#3b8fc4]/20 text-[#5aa8d1]">M3U</span>'
+          : '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#4a9d52]/20 text-[#a8e0ac]">Xtream</span>';
+        const pendingBadge = p.reviewed
+          ? ''
+          : '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#c9992e]/20 text-[#e6c88a]">Pending Review</span>';
+        // Stock presets ship with the repo and can only be removed by
+        // editing presets/presets.json and shipping an update (see
+        // /api/admin/presets/delete) - no delete button here for those.
+        const stockBadge = p.isStock
+          ? '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#56707d]/30 text-[#e6e6e6]/70">Built-in</span>'
+          : '';
+        // Renaming, like deleting, only ever touches local-presets.json
+        // (see /api/admin/presets/rename) - no edit path exists for stock
+        // presets short of shipping an update, so neither button shows here.
+        const renameBtn = p.isStock
+          ? ''
+          : `<button type="button" onclick="renamePreset('${p.id}')" class="shrink-0 bg-[#56707d] hover:bg-[#66818f] text-white text-xs font-bold py-1.5 px-3 rounded-lg transition">
+            <i class="fa-solid fa-pen"></i>
+          </button>`;
+        const deleteBtn = p.isStock
+          ? ''
+          : `<button type="button" onclick="deletePreset('${p.id}')" class="shrink-0 bg-[#c0392b] hover:bg-[#d8483a] text-white text-xs font-bold py-1.5 px-3 rounded-lg transition">
+            <i class="fa-solid fa-trash"></i>
+          </button>`;
+        return `
+        <div class="flex items-center gap-3 bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2">
+          <div class="w-8 h-8 shrink-0 flex items-center justify-center bg-[#3b4d58] rounded-lg text-[#5aa8d1]">
+            <i class="fa-solid fa-${p.icon}"></i>
+          </div>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2">
+              <span class="text-xs font-semibold truncate">${escapeHtml(p.name)}</span>
+              ${badge}
+              ${stockBadge}
+              ${pendingBadge}
+            </div>
+            <div class="text-[10px] text-[#e6e6e6]/45">${p.selectedSports.length} league${p.selectedSports.length === 1 ? '' : 's'}, ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'}, ${overrideCount} override${overrideCount === 1 ? '' : 's'} - ${formatDate(p.createdAt)}</div>
+          </div>
+          ${renameBtn}
+          ${deleteBtn}
+        </div>
+      `;
+      }).join('');
+    }
+
+    // Presets whose stored content hash doesn't match what this admin last
+    // reviewed - either brand new (added by a code update rather than
+    // through the form above) or edited since the last review (see
+    // isPresetReviewed/hashPresetContent in server.js). Withheld from users
+    // entirely (see /api/presets, /api/presets/public) until acted on here.
+    function renderPendingPresetsList() {
+      const pending = presets.filter(p => !p.reviewed);
+      const section = document.getElementById('pending-presets-section');
+      section.classList.toggle('hidden', pending.length === 0);
+      if (pending.length === 0) return;
+
+      document.getElementById('pending-presets-heading').querySelector('span').textContent =
+        `${pending.length} preset${pending.length === 1 ? '' : 's'} awaiting review`;
+
+      document.getElementById('pending-presets-list').innerHTML = pending.map(p => {
+        const categoryCount = Object.values(p.sportCategories).reduce((sum, arr) => sum + arr.length, 0);
+        const overrideCount = Object.keys(p.epgOverrides).length;
+        const badge = p.connectionType === 'm3u'
+          ? '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#3b8fc4]/20 text-[#5aa8d1]">M3U</span>'
+          : '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#4a9d52]/20 text-[#a8e0ac]">Xtream</span>';
+        const missingNote = p.missingSources.length > 0
+          ? `<p class="text-xs text-[#e6c88a] mb-2">Needs ${p.missingSources.length} EPG source${p.missingSources.length === 1 ? '' : 's'} you don't have enabled: ${p.missingSources.map(epgShareSourceLabel).join(', ')}.</p>`
+          : '';
+        const enableBtn = p.missingSources.length > 0
+          ? `<button type="button" onclick="reviewPreset('${p.id}', 'publish-and-enable')" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-1.5 px-3 rounded-lg text-xs transition">Enable sources and publish</button>`
+          : '';
+        // A stock preset can land here too (a shipped update added or
+        // edited one - see hashPresetContent/isPresetReviewed in server.js),
+        // but /api/admin/presets/delete always rejects removing a stock
+        // preset, so don't show a button that can only ever fail for one.
+        const deleteBtn = p.isStock
+          ? ''
+          : `<button type="button" onclick="deletePreset('${p.id}')" class="text-[#e6e6e6]/55 hover:text-[#e6e6e6] font-bold py-1.5 px-3 rounded-lg text-xs transition">Delete</button>`;
+        return `
+        <div class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3">
+          <div class="flex items-center gap-3 mb-2">
+            <div class="w-8 h-8 shrink-0 flex items-center justify-center bg-[#3b4d58] rounded-lg text-[#5aa8d1]">
+              <i class="fa-solid fa-${p.icon}"></i>
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2">
+                <span class="text-xs font-semibold truncate">${escapeHtml(p.name)}</span>
+                ${badge}
+              </div>
+              <div class="text-[10px] text-[#e6e6e6]/45">${p.selectedSports.length} league${p.selectedSports.length === 1 ? '' : 's'}, ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'}, ${overrideCount} override${overrideCount === 1 ? '' : 's'}</div>
+            </div>
+          </div>
+          ${missingNote}
+          <div class="flex flex-wrap gap-2">
+            ${enableBtn}
+            <button type="button" onclick="reviewPreset('${p.id}', 'publish')" class="bg-[#56707d] hover:bg-[#66818f] font-bold py-1.5 px-3 rounded-lg text-xs transition">${p.missingSources.length > 0 ? 'Publish anyway' : 'Publish'}</button>
+            ${deleteBtn}
+          </div>
+        </div>
+      `;
+      }).join('');
+    }
+
+    async function reviewPreset(id, action) {
+      try {
+        const res = await fetch('/api/admin/presets/review', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...adminCreds, id, action })
+        });
+        const data = await res.json();
+        if (data.success) {
+          await loadPresets();
+          showAdminStatus(action === 'publish-and-enable' ? 'Sources enabled and preset published.' : 'Preset published.');
+        } else {
+          showAdminStatus(data.error || 'Failed to publish preset.', true);
+        }
+      } catch (err) {
+        showAdminStatus('Network error while publishing the preset.', true);
+      }
+    }
+
+    async function renamePreset(id) {
+      const preset = presets.find(p => p.id === id);
+      const newName = prompt('Rename preset', preset ? preset.name : '');
+      if (newName === null) return;
+      const trimmed = newName.trim();
+      if (!trimmed || trimmed === (preset && preset.name)) return;
+
+      try {
+        const res = await fetch('/api/admin/presets/rename', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...adminCreds, id, name: trimmed })
+        });
+        const data = await res.json();
+        if (data.success) {
+          presets = presets.map(p => p.id === id ? { ...p, name: data.preset.name } : p);
+          renderPresetsList();
+          renderPendingPresetsList();
+          showAdminStatus('Preset renamed.');
+        } else {
+          showAdminStatus(data.error || 'Failed to rename preset.', true);
+        }
+      } catch (err) {
+        showAdminStatus('Network error while renaming the preset.', true);
+      }
+    }
+
+    async function deletePreset(id) {
+      const preset = presets.find(p => p.id === id);
+      if (!confirm(`Delete preset "${preset ? preset.name : id}"? This cannot be undone.`)) {
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/admin/presets/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...adminCreds, id })
+        });
+        const data = await res.json();
+        if (data.success) {
+          presets = presets.filter(p => p.id !== id);
+          renderPresetsList();
+          renderPendingPresetsList();
+          showAdminStatus('Preset deleted.');
+        } else {
+          showAdminStatus(data.error || 'Failed to delete preset.', true);
+        }
+      } catch (err) {
+        showAdminStatus('Network error while deleting the preset.', true);
+      }
+    }
+
     function showAdminStatus(message, isError = false) {
       const el = document.getElementById('admin-status-message');
       el.textContent = message;
-      el.className = `fixed top-4 right-4 z-50 max-w-sm rounded-lg p-4 text-sm font-semibold shadow-2xl ${isError ? 'bg-[#3a1f1f]/50 text-[#f0b8b8] border border-[#c0392b]' : 'bg-[#1f3a21]/50 text-[#a8e0ac] border border-[#4a9d52]'}`;
-      setTimeout(() => el.classList.add('hidden'), 4000);
+      // whitespace-pre-line so a multi-line message (e.g. one "• source:
+      // error" line per failed EPGShare01 source) actually breaks lines
+      // instead of collapsing to one run-on line.
+      el.className = `fixed top-4 right-4 z-50 max-w-sm rounded-lg p-4 text-sm font-semibold shadow-2xl whitespace-pre-line ${isError ? 'bg-[#3a1f1f]/50 text-[#f0b8b8] border border-[#c0392b]' : 'bg-[#1f3a21]/50 text-[#a8e0ac] border border-[#4a9d52]'}`;
+      // Errors stay up longer - a multi-source failure list takes more
+      // than 4 seconds to actually read.
+      setTimeout(() => el.classList.add('hidden'), isError ? 10000 : 4000);
     }
   </script>
 </body>

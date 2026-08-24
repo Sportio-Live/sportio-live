@@ -14,7 +14,7 @@
 <body class="min-h-screen flex flex-col">
 
   <!-- Header (hidden on the landing screen, shown everywhere else) -->
-  <div id="site-header" class="max-w-4xl mx-auto px-4 pt-8 w-full hidden">
+  <div id="site-header" class="max-w-7xl mx-auto px-4 pt-8 w-full hidden">
     <header class="text-center mb-8">
       <img src="/sportio_logo.png" alt="Sportio Live" class="mx-auto h-20 w-auto">
       <p class="text-[#e6e6e6]/55 text-sm mt-2">Live sports addon for Stremio/Nuvio. Powered by your IPTV.</p>
@@ -23,7 +23,7 @@
 
   <!-- Centered landing/auth area -->
   <div id="center-wrapper" class="flex-1 flex items-center justify-center px-4 w-full">
-    <div class="max-w-4xl w-full">
+    <div class="max-w-7xl w-full">
 
       <!-- First-run setup: admin password not configured yet at all -->
       <div id="admin-setup-section" class="hidden glass rounded-xl p-6 shadow-2xl mb-8 max-w-[480px] mx-auto w-full">
@@ -103,20 +103,11 @@
         </form>
       </div>
 
-      <!-- Setup Wizard Step 1: Choose your leagues -->
-      <div id="wizard-leagues" class="glass rounded-xl p-6 shadow-2xl mb-8 max-w-[590px] mx-auto w-full hidden">
+      <!-- Setup Wizard Step 1: Select your timezone -->
+      <div id="wizard-timezone" class="glass rounded-xl p-6 shadow-2xl mb-8 max-w-[590px] mx-auto w-full hidden">
         <button onclick="showView('landing')" class="text-xs text-[#e6e6e6]/55 hover:text-[#e6e6e6] mb-5 flex items-center gap-1.5 transition">
           <i class="fa-solid fa-arrow-left"></i> Back
         </button>
-        <h3 class="text-lg font-bold text-[#e6e6e6] mb-4">Choose your leagues</h3>
-        <div id="wizard-league-grid" class="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6"></div>
-        <button id="wizard-leagues-next" onclick="wizardGoToTimezone()" disabled class="w-full bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-sm transition cursor-not-allowed">
-          Next
-        </button>
-      </div>
-
-      <!-- Setup Wizard Step 2: Select your timezone -->
-      <div id="wizard-timezone" class="glass rounded-xl p-6 shadow-2xl mb-8 max-w-[590px] mx-auto w-full hidden">
         <h3 class="text-lg font-bold text-[#e6e6e6] mb-4">Select your timezone</h3>
         <div id="wizard-timezone-selected" class="text-xs text-[#5aa8d1] font-semibold mb-2"></div>
         <div class="relative mb-2">
@@ -177,14 +168,36 @@
         </button>
       </div>
 
+      <!-- Setup Wizard Step 4: Apply a preset, or configure manually -->
+      <div id="wizard-presets" class="glass rounded-xl p-6 shadow-2xl mb-8 max-w-[590px] mx-auto w-full hidden">
+        <h3 class="text-lg font-bold text-[#e6e6e6] mb-1">Use a preset?</h3>
+        <p class="text-xs text-[#e6e6e6]/55 mb-4">Apply a preconfigured set of leagues, categories, and EPG sources for your provider - or skip and choose them yourself.</p>
+        <div id="wizard-preset-grid" class="grid grid-cols-3 sm:grid-cols-4 gap-2 max-h-64 overflow-y-auto bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3 mb-3"></div>
+        <button id="wizard-apply-preset-btn" onclick="applyWizardPreset()" disabled class="w-full bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-sm cursor-not-allowed transition">
+          Apply
+        </button>
+        <button onclick="wizardSkipPresets()" class="w-full flex items-center justify-center gap-1.5 text-xs text-[#e6e6e6]/55 hover:text-[#e6e6e6] mt-4 transition">
+          Skip presets. Configure manually. <i class="fa-solid fa-arrow-right text-[10px]"></i>
+        </button>
+      </div>
+
+      <!-- Setup Wizard Step 4a: Choose your leagues (manual path only) -->
+      <div id="wizard-leagues" class="glass rounded-xl p-6 shadow-2xl mb-8 max-w-[590px] mx-auto w-full hidden">
+        <h3 class="text-lg font-bold text-[#e6e6e6] mb-4">Choose your leagues</h3>
+        <div id="wizard-league-grid" class="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6"></div>
+        <button id="wizard-leagues-next" onclick="wizardGoToCategories()" disabled class="w-full bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-sm transition cursor-not-allowed">
+          Next
+        </button>
+      </div>
+
     </div>
   </div>
 
 
   <!-- Dashboard + status (normal top-aligned flow, not vertically centered) -->
-  <div class="max-w-4xl mx-auto px-4 pb-8 w-full">
+  <div class="max-w-7xl mx-auto px-4 pb-8 w-full">
 
-    <!-- Setup Wizard Step 4: Select category folders (filtered to chosen leagues) -->
+    <!-- Setup Wizard Step 4b: Select category folders (filtered to chosen leagues, manual path only) -->
     <div id="wizard-categories" class="glass rounded-xl p-6 shadow-2xl mb-8 hidden">
       <h3 class="text-lg font-bold text-[#e6e6e6] mb-1">Category Search</h3>
       <p class="text-xs text-[#e6e6e6]/55 mb-4">Which categories should be searched when finding streams? Use Global to assign to all leagues.</p>
@@ -211,51 +224,149 @@
 
     <!-- Active User Dashboard (Hidden by default) -->
     <div id="dashboard-section" class="glass rounded-xl p-6 shadow-2xl mb-8 hidden">
-      <div class="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-[#e6e6e6]/15 pb-4 mb-6 gap-4">
-        <div>
-          <span class="text-xs text-[#e6e6e6]/55 uppercase tracking-wider">UUID:</span>
-          <div id="active-uuid-display" class="font-mono text-sm text-[#5aa8d1] font-bold"></div>
-        </div>
+      <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-2">Providers</h3>
+      <div class="pb-4 mb-6 border-b border-[#e6e6e6]/15 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <!-- Provider tabs - one per IPTV connection on this account. Each tab
+             has its own credentials and its own Category Search below, since
+             category folder ids only ever mean something within the one
+             provider that issued them. Only one provider's editor/accordion
+             is ever live in the DOM at a time (switching tabs commits
+             whatever was checked back into that provider before swapping),
+             so every panel below this strip stays a single shared instance -
+             no need to duplicate ids per provider. -->
+        <div id="provider-tabs" class="flex items-center gap-2 overflow-x-auto pb-1"></div>
         <div class="flex items-center gap-2">
-          <button onclick="refreshCategories()" class="bg-[#c9992e] hover:bg-[#dba93e] text-[#1a1a1a] text-xs font-bold py-2 px-4 rounded-lg transition flex items-center">
-            <i class="fa-solid fa-rotate mr-2"></i>Refresh Categories
-          </button>
-          <button id="copy-link-btn" onclick="handleCopyLinkButton()" class="bg-[#4a6fa5] hover:bg-[#5a82bc] text-xs font-bold py-2 px-4 rounded-lg transition flex items-center">
-            <i class="fa-solid fa-copy mr-2"></i>Copy Install Link
-          </button>
+          <span class="text-xs text-[#e6e6e6]/55 uppercase tracking-wider">UUID:</span>
+          <span id="active-uuid-display" class="font-mono text-sm text-[#5aa8d1] font-bold"></span>
         </div>
       </div>
 
-      <div class="flex items-center justify-between mb-3">
-        <h3 class="font-bold text-sm text-[#e6e6e6]/75">Category Search</h3>
-        <button id="expand-all-btn" onclick="toggleAllAccordions()" class="text-xs font-bold text-[#5aa8d1] hover:text-[#6bb5dd] flex items-center gap-1.5 transition">
-          <i class="fa-solid fa-expand"></i>
-          Expand All
+      <!-- Add Provider (collapsed until the "+ Add Provider" tab is clicked) -->
+      <div id="add-provider-panel" class="hidden bg-[#3b4d58]/60 border border-[#e6e6e6]/15 rounded-lg p-4 mb-6">
+        <div id="add-provider-choose" class="space-y-3">
+          <h4 class="font-bold text-sm text-[#e6e6e6]/75 mb-1">How do you want to connect?</h4>
+          <button type="button" onclick="addProviderGoToXtream()" class="w-full text-left bg-[#2f3e47] hover:bg-[#3b4d58] border border-[#e6e6e6]/15 hover:border-[#3b8fc4]/50 rounded-lg px-4 py-3 transition">
+            <div class="font-bold text-sm text-[#e6e6e6]">Xtream</div>
+            <div class="text-xs text-[#e6e6e6]/55 mt-0.5">Server URL, username, and password</div>
+          </button>
+          <button type="button" onclick="addProviderGoToM3u()" class="w-full text-left bg-[#2f3e47] hover:bg-[#3b4d58] border border-[#e6e6e6]/15 hover:border-[#3b8fc4]/50 rounded-lg px-4 py-3 transition">
+            <div class="font-bold text-sm text-[#e6e6e6]">M3U</div>
+            <div class="text-xs text-[#e6e6e6]/55 mt-0.5">A playlist URL and an EPG URL</div>
+          </button>
+          <button type="button" onclick="cancelAddProvider()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">Cancel</button>
+        </div>
+
+        <div id="add-provider-xtream" class="hidden space-y-3">
+          <input type="text" id="add-provider-xtream-url" autocomplete="off" oninput="updateAddProviderXtreamButton()" placeholder="Server URL (http://...)" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+          <input type="text" id="add-provider-xtream-username" autocomplete="off" oninput="updateAddProviderXtreamButton()" placeholder="Username" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+          <input type="password" id="add-provider-xtream-password" autocomplete="new-password" oninput="updateAddProviderXtreamButton()" placeholder="Password" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+          <div id="add-provider-xtream-error" class="hidden text-xs text-[#e56a6a] font-semibold"></div>
+          <div class="grid grid-cols-2 gap-3">
+            <button type="button" onclick="cancelAddProvider()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">Cancel</button>
+            <button type="button" id="add-provider-xtream-btn" onclick="testAddProviderXtream()" disabled class="w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-xs cursor-not-allowed">
+              <i class="fa-solid fa-plug"></i> Test &amp; Add
+            </button>
+          </div>
+        </div>
+
+        <div id="add-provider-m3u" class="hidden space-y-3">
+          <input type="text" id="add-provider-m3u-playlist-url" autocomplete="off" oninput="updateAddProviderM3uButton()" placeholder="Playlist URL (http://...)" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+          <input type="text" id="add-provider-m3u-epg-url" autocomplete="off" oninput="updateAddProviderM3uButton()" placeholder="EPG URL (http://...)" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+          <div id="add-provider-m3u-error" class="hidden text-xs text-[#e56a6a] font-semibold"></div>
+          <div id="add-provider-m3u-importing" class="hidden text-xs text-[#5aa8d1] font-semibold flex items-center gap-2">
+            <i class="fa-solid fa-spinner fa-spin"></i>
+            Importing. Please wait.
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <button type="button" onclick="cancelAddProvider()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">Cancel</button>
+            <button type="button" id="add-provider-m3u-btn" onclick="importAddProviderM3u()" disabled class="w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-xs cursor-not-allowed">
+              <i class="fa-solid fa-file-import"></i> Import &amp; Add
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Shared action row - styled as a tab strip (see updateSettingsButtonStates
+           for the active/inactive underline logic). Delete account is part of the
+           same strip but kept red and pushed to the far edge via ml-auto, so it
+           reads as a tab like the rest while staying visually set apart. -->
+      <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-2">Settings</h3>
+      <div class="flex flex-wrap items-end gap-1 sm:gap-6 border-b border-[#e6e6e6]/15 mb-6">
+        <button id="sources-trigger-btn" onclick="toggleSourcesPanel()" class="bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
+          <i class="fa-solid fa-server"></i>
+          Leagues & Sources
         </button>
-      </div>
-
-      <div id="sports-config-container" class="space-y-6">
-        <!-- Dynamically injected sports inputs -->
-      </div>
-
-      <!-- Shared action row -->
-      <h3 class="font-bold text-sm text-[#e6e6e6]/75 mb-2 mt-6">Settings</h3>
-      <div class="grid grid-cols-3 gap-3 mb-4">
-        <button id="edit-xtream-trigger-btn" onclick="toggleEditXtreamPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
+        <button id="channel-epg-btn" onclick="toggleChannelEpgPanel()" class="bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
+          <i class="fa-solid fa-satellite-dish"></i>
+          EPG Overrides
+        </button>
+        <button id="export-import-btn" onclick="toggleExportImportPanel()" class="bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
+          <i class="fa-solid fa-file-export"></i>
+          Presets & Configs
+        </button>
+        <button id="formatter-btn" onclick="toggleFormatterPanel()" class="bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
+          <i class="fa-solid fa-font"></i>
+          Formatter
+        </button>
+        <button id="change-timezone-btn" onclick="toggleChangeTimezonePanel()" class="bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
+          <i class="fa-solid fa-clock"></i>
+          Change Timezone
+        </button>
+        <button id="edit-xtream-trigger-btn" onclick="toggleEditXtreamPanel()" class="bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
           <i class="fa-solid fa-pen-to-square"></i>
           Edit Xtream
         </button>
-        <button id="edit-m3u-trigger-btn" onclick="toggleEditM3uPanel()" class="hidden bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition items-center justify-center gap-2">
+        <button id="edit-m3u-trigger-btn" onclick="toggleEditM3uPanel()" class="hidden bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
           <i class="fa-solid fa-pen-to-square"></i>
           Edit M3U
         </button>
-        <button id="manage-sports-btn" onclick="toggleManageSportsPanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
-          <i class="fa-solid fa-sliders"></i>
-          Add/Remove Leagues
+        <button id="delete-account-trigger-btn" onclick="toggleDeleteAccountPanel()" class="ml-auto bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e56a6a] hover:text-[#f0908f]">
+          <i class="fa-solid fa-trash"></i>
+          Delete account
         </button>
-        <button id="change-timezone-btn" onclick="toggleChangeTimezonePanel()" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2">
-          <i class="fa-solid fa-clock"></i>
-          Change Timezone
+      </div>
+
+      <!-- Sources: Category Search, plus Refresh Categories for whichever
+           provider tab is currently active (collapsed via the "Sources"
+           trigger above like every other settings panel, but shown by
+           default on login/signup since it's what most users come back to
+           change). -->
+      <div id="sources-panel" class="bg-[#3b4d58]/60 border border-[#e6e6e6]/15 rounded-lg p-4 mb-6">
+        <div class="flex items-start justify-between gap-4 mb-4">
+          <div class="min-w-0">
+            <div class="flex items-center gap-3">
+              <h3 class="font-bold text-sm text-[#e6e6e6]/75">Sources</h3>
+              <span id="sources-provider-badge" class="hidden flex items-center gap-1.5 bg-[#3b8fc4]/15 border border-[#3b8fc4]/40 text-[#5aa8d1] rounded-full px-2 py-0.5 text-[10px] font-bold">
+                <i class="fa-solid fa-plug text-[9px]"></i><span></span>
+              </span>
+            </div>
+            <p class="text-xs text-[#e6e6e6]/55 mt-1">Too many <i>Global</i> sources can result in false positives.</p>
+          </div>
+          <button onclick="refreshCategories()" class="shrink-0 bg-[#c9992e] hover:bg-[#dba93e] text-[#1a1a1a] text-xs font-bold py-2 px-4 rounded-lg transition flex items-center">
+            <i class="fa-solid fa-rotate mr-2"></i>Refresh Categories
+          </button>
+        </div>
+
+        <div class="flex justify-end mb-2">
+          <button id="expand-all-btn" onclick="toggleAllAccordions()" class="text-xs font-bold text-[#5aa8d1] hover:text-[#6bb5dd] flex items-center gap-1.5 transition">
+            <i class="fa-solid fa-expand"></i>
+            Expand All
+          </button>
+        </div>
+
+        <div id="sports-config-container" class="space-y-6">
+          <!-- Dynamically injected sports inputs -->
+        </div>
+
+        <!-- Add League (collapsed until "+ Add League" is clicked; the
+             trigger itself is hidden once every available league is
+             already selected - see updateAddLeagueButtonVisibility) -->
+        <div id="add-league-panel" class="hidden bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-4 mt-4">
+          <div id="add-league-grid" class="grid grid-cols-2 sm:grid-cols-3 gap-3"></div>
+        </div>
+        <button id="add-league-btn" onclick="toggleAddLeaguePanel()" class="hidden w-full mt-4 border border-dashed border-[#e6e6e6]/30 text-[#e6e6e6]/55 hover:text-[#e6e6e6] hover:border-[#e6e6e6]/50 font-bold py-2.5 rounded-lg text-xs transition flex items-center justify-center gap-2">
+          <i class="fa-solid fa-plus"></i>
+          Add League
         </button>
       </div>
 
@@ -265,15 +376,11 @@
         <input type="text" id="edit-xtream-username" oninput="updateEditXtreamButton()" placeholder="Username" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
         <input type="password" id="edit-xtream-password" oninput="updateEditXtreamButton()" placeholder="Password" class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
         <div id="edit-xtream-error" class="hidden text-xs text-[#e56a6a] font-semibold"></div>
-        <div class="grid grid-cols-2 gap-3">
-          <button onclick="cancelEditXtream()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">
-            Cancel
-          </button>
-          <button id="edit-xtream-btn" onclick="testEditXtream()" disabled class="w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-xs cursor-not-allowed">
-            <i class="fa-solid fa-plug"></i>
-            Test
-          </button>
-        </div>
+        <button id="edit-xtream-btn" onclick="testEditXtream()" disabled class="w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-xs cursor-not-allowed">
+          <i class="fa-solid fa-plug"></i>
+          Test
+        </button>
+        <div id="edit-xtream-confirm" class="hidden text-xs text-[#a8e0ac] font-semibold"></div>
       </div>
 
       <!-- M3U URLs (collapsed until Edit M3U is clicked) -->
@@ -285,15 +392,11 @@
           <i class="fa-solid fa-spinner fa-spin"></i>
           Importing. Please wait.
         </div>
-        <div class="grid grid-cols-2 gap-3">
-          <button onclick="cancelEditM3u()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">
-            Cancel
-          </button>
-          <button id="edit-m3u-btn" onclick="importEditM3u()" disabled class="w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-xs cursor-not-allowed">
-            <i class="fa-solid fa-file-import"></i>
-            Import
-          </button>
-        </div>
+        <button id="edit-m3u-btn" onclick="importEditM3u()" disabled class="w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-xs cursor-not-allowed">
+          <i class="fa-solid fa-file-import"></i>
+          Import
+        </button>
+        <div id="edit-m3u-confirm" class="hidden text-xs text-[#a8e0ac] font-semibold"></div>
       </div>
 
       <!-- Change Timezone (collapsed until Change Timezone is clicked) -->
@@ -303,40 +406,149 @@
           <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-xs text-[#e6e6e6]/55"></i>
           <input type="text" id="dashboard-timezone-search" oninput="renderDashboardTimezoneList()" placeholder="Search by city or region..." class="w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg pl-8 pr-3 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none text-[#e6e6e6]/90">
         </div>
-        <div id="dashboard-timezone-list" class="max-h-64 overflow-y-auto bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-2 space-y-1 mb-3"></div>
-        <div class="grid grid-cols-2 gap-3">
-          <button onclick="cancelChangeTimezone()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">
-            Cancel
+        <div id="dashboard-timezone-list" class="max-h-64 overflow-y-auto bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-2 space-y-1"></div>
+      </div>
+
+      <!-- Formatter (collapsed until Formatter is clicked) -->
+      <div id="formatter-panel" class="hidden bg-[#3b4d58]/60 border border-[#e6e6e6]/15 rounded-lg p-4 mb-6">
+        <p class="text-xs text-[#e6e6e6]/55 mb-3">Click a placeholder to copy it, then paste it into a field below. Hover for definition.</p>
+        <div id="formatter-placeholder-legend" class="flex flex-wrap gap-1.5 mb-4"></div>
+
+        <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">Name Template</label>
+        <textarea id="formatter-name-input" rows="2" class="formatter-field w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none mb-3 resize-y" oninput="updateFormatterFromInputs()"></textarea>
+
+        <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">Description Template</label>
+        <textarea id="formatter-title-input" rows="2" class="formatter-field w-full bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none mb-3 resize-y" oninput="updateFormatterFromInputs()"></textarea>
+
+        <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">Preview</label>
+        <div class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3 mb-4">
+          <div id="formatter-preview-name" class="text-sm font-bold text-[#e6e6e6] break-all whitespace-pre-wrap"></div>
+          <div id="formatter-preview-title" class="text-xs text-[#e6e6e6]/70 break-all mt-0.5 whitespace-pre-wrap"></div>
+        </div>
+
+        <button onclick="resetFormatterDefaults()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-xs transition">
+          Reset to Default
+        </button>
+      </div>
+
+      <!-- Channel EPG (collapsed until Channel EPG is clicked) - lets the
+           user override a specific channel's program guide with one from
+           an EPGShare01 source their admin has enabled. Purely additive:
+           a channel with no override just keeps using its provider's own
+           EPG, exactly as before this existed.
+           Two-panel layout: left is a per-category accordion of this
+           provider's own channels (categories scoped to whatever's
+           actually selected in Category Search above), right is the
+           editor for whichever channel is currently selected on the
+           left - empty/placeholder until one is clicked. -->
+      <div id="channel-epg-panel" class="hidden bg-[#3b4d58]/60 border border-[#e6e6e6]/15 rounded-lg p-4 mb-6">
+        <div class="flex items-start justify-between gap-4 mb-3">
+          <div class="min-w-0">
+            <span id="channel-epg-provider-badge" class="hidden flex items-center gap-1.5 mb-1.5 bg-[#3b8fc4]/15 border border-[#3b8fc4]/40 text-[#5aa8d1] rounded-full px-2 py-0.5 text-[10px] font-bold">
+              <i class="fa-solid fa-plug text-[9px]"></i><span></span>
+            </span>
+            <p class="text-xs text-[#e6e6e6]/55 min-w-0">Pick a channel on the left, then choose an EPG source for it on the right. Only categories you've selected in Category Search are shown.</p>
+          </div>
+          <button onclick="refreshCategoriesForChannelEpg()" class="shrink-0 bg-[#c9992e] hover:bg-[#dba93e] text-[#1a1a1a] text-xs font-bold py-2 px-4 rounded-lg transition flex items-center">
+            <i class="fa-solid fa-rotate mr-2"></i>Refresh Categories
           </button>
-          <button onclick="saveChangeTimezone()" class="w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2.5 rounded-lg text-xs transition">
-            Confirm
-          </button>
+        </div>
+
+        <div id="channel-epg-status" class="text-xs text-[#e6e6e6]/55 italic mb-2"></div>
+
+        <div class="flex flex-col md:flex-row gap-3 mb-4">
+          <!-- Left: category accordion -->
+          <div class="md:w-1/2 flex flex-col bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg overflow-hidden">
+            <div class="relative p-2 border-b border-[#e6e6e6]/15 shrink-0">
+              <i class="fa-solid fa-magnifying-glass absolute left-5 top-[1.15rem] text-xs text-[#e6e6e6]/55"></i>
+              <input type="text" id="channel-epg-search" oninput="renderChannelEpgCategories()" placeholder="Search your channels..." class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg pl-8 pr-3 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none">
+            </div>
+            <label class="flex items-center gap-2 px-2 py-2 border-b border-[#e6e6e6]/15 shrink-0 cursor-pointer select-none">
+              <div class="relative shrink-0">
+                <input type="checkbox" id="channel-epg-only-overrides" onchange="toggleChannelEpgOnlyOverrides()" class="sr-only peer">
+                <div class="w-9 h-5 bg-[#56707d] rounded-full peer-checked:bg-[#3b8fc4] transition"></div>
+                <div class="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full transition peer-checked:translate-x-4"></div>
+              </div>
+              <span class="text-xs font-semibold text-[#e6e6e6]/75">Show only overrides</span>
+            </label>
+            <div id="channel-epg-categories" class="overflow-y-auto max-h-[660px]"></div>
+          </div>
+
+          <!-- Right: editor for whichever channel is selected on the left. No
+               fixed height here - the parent flex row's default align-items:
+               stretch makes it match the left column's full height (search +
+               toggle + the ~20-row category list) automatically, top anchored
+               together since both start at the same flex-row position. -->
+          <div class="md:w-1/2 bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg overflow-y-auto">
+            <div id="channel-epg-editor" class="p-3">
+              <p class="text-xs text-[#e6e6e6]/55 italic">Select a channel on the left to edit its EPG source.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Presets/Configs (collapsed until the tab is clicked). Left column
+           browses/applies admin-curated presets; right column keeps the
+           user-to-user Export/Import pair. All three ultimately funnel
+           through importProviderSettings() - see its own comment for how
+           "same catalog" gets resolved without ever trusting a claimed
+           match, since there's no reliable signal from two independent
+           logins (or an admin's own upload) that they're the same
+           provider. -->
+      <div id="export-import-panel" class="hidden bg-[#3b4d58]/60 border border-[#e6e6e6]/15 rounded-lg p-4 mb-6">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div>
+            <div class="flex items-center gap-3 mb-1">
+              <h3 class="font-bold text-sm text-[#e6e6e6]/75">Provider presets</h3>
+              <span id="preset-provider-badge" class="hidden flex items-center gap-1.5 bg-[#3b8fc4]/15 border border-[#3b8fc4]/40 text-[#5aa8d1] rounded-full px-2 py-0.5 text-[10px] font-bold">
+                <i class="fa-solid fa-plug text-[9px]"></i><span></span>
+              </span>
+            </div>
+            <p class="text-xs text-[#e6e6e6]/55 mb-3">Preconfigured Leagues/sources and EPG overrides for various providers.</p>
+            <div id="preset-grid" class="grid grid-cols-3 sm:grid-cols-4 gap-2 max-h-64 overflow-y-auto bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3 mb-3"></div>
+            <button type="button" id="apply-preset-btn" onclick="applySelectedPreset()" disabled class="bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2 px-4 rounded-lg text-xs cursor-not-allowed transition">
+              Apply
+            </button>
+            <div id="preset-apply-result" class="hidden text-xs bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3 mt-3 space-y-1"></div>
+          </div>
+
+          <div>
+            <div class="mb-5">
+              <div class="flex items-center gap-3 mb-1">
+                <h3 class="font-bold text-sm text-[#e6e6e6]/75">Export</h3>
+                <span id="export-provider-badge" class="hidden flex items-center gap-1.5 bg-[#3b8fc4]/15 border border-[#3b8fc4]/40 text-[#5aa8d1] rounded-full px-2 py-0.5 text-[10px] font-bold">
+                  <i class="fa-solid fa-plug text-[9px]"></i><span></span>
+                </span>
+              </div>
+              <p class="text-xs text-[#e6e6e6]/55 mb-3">Export your currently selected Leagues/sources and EPG overrides to a configuration file.</p>
+              <button id="export-config-btn" onclick="exportProviderSettings()" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2">
+                <i class="fa-solid fa-upload"></i>
+                Export Config
+              </button>
+            </div>
+
+            <div class="pt-4 border-t border-[#e6e6e6]/15">
+              <div class="flex items-center gap-3 mb-1">
+                <h3 class="font-bold text-sm text-[#e6e6e6]/75">Import</h3>
+                <span id="import-provider-badge" class="hidden flex items-center gap-1.5 bg-[#3b8fc4]/15 border border-[#3b8fc4]/40 text-[#5aa8d1] rounded-full px-2 py-0.5 text-[10px] font-bold">
+                  <i class="fa-solid fa-plug text-[9px]"></i><span></span>
+                </span>
+              </div>
+              <p class="text-xs text-[#e6e6e6]/55 mb-3">Import a configuration file. This will overwrite your current Leagues/sources and EPG overrides.</p>
+              <input type="file" id="export-import-file-input" accept="application/json" class="hidden" onchange="handleImportFileSelected(event)">
+              <button id="import-config-btn" onclick="document.getElementById('export-import-file-input').click()" class="bg-[#56707d] hover:bg-[#66818f] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2">
+                <i class="fa-solid fa-download"></i>
+                Import Config
+              </button>
+              <div id="export-import-error" class="hidden text-xs text-[#e56a6a] font-semibold mt-3"></div>
+              <div id="export-import-result" class="hidden text-xs bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3 mt-3 space-y-1"></div>
+            </div>
+          </div>
         </div>
       </div>
 
       <!-- Sport Configuration Sections -->
-      <div id="manage-sports-panel" class="hidden bg-[#3b4d58]/60 border border-[#e6e6e6]/15 rounded-lg p-4 mb-6">
-        <h4 class="font-bold text-sm text-[#e6e6e6]/75 mb-3">Choose your leagues</h4>
-        <div id="manage-sports-grid" class="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4"></div>
-        <div class="grid grid-cols-2 gap-3">
-          <button onclick="cancelManageSports()" class="w-full bg-[#56707d] hover:bg-[#66818f] font-bold py-2.5 rounded-lg text-sm transition">
-            Cancel
-          </button>
-          <button onclick="saveManagedSports()" class="w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2.5 rounded-lg text-sm transition">
-            Done
-          </button>
-        </div>
-      </div>
-
-      <!-- Deliberately pushed well away from the routine settings above and
-           styled brighter/more alarming, to make an accidental click here
-           genuinely difficult -->
-      <button onclick="toggleDeleteAccountPanel()" class="w-full bg-[#c0392b] hover:bg-[#d8483a] border border-[#e56a6a]/50 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2 text-white mt-12 mb-4">
-        <i class="fa-solid fa-trash"></i>
-        Delete
-      </button>
-
-      <!-- Delete Account (collapsed until Delete is clicked) -->
+      <!-- Delete Account (collapsed until "Delete account" is clicked) -->
       <div id="delete-account-panel" class="hidden bg-[#3b4d58]/60 border border-[#c0392b]/40 rounded-lg p-4 mb-6">
         <div class="flex items-start gap-2 mb-3">
           <i class="fa-solid fa-triangle-exclamation text-[#e56a6a] mt-0.5"></i>
@@ -354,6 +566,13 @@
         </div>
       </div>
 
+      <!-- Always visible, not collapsible - this is the one action nearly
+           every visit ends with. -->
+      <button id="copy-link-btn" onclick="handleCopyLinkButton()" class="js-copy-link-btn mx-auto min-w-[220px] bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2.5 px-4 rounded-lg text-xs transition flex items-center justify-center gap-2 mt-12 mb-4">
+        <i class="fa-solid fa-copy"></i>
+        Copy Install Link
+      </button>
+
     </div>
 
     <!-- Status Messages -->
@@ -362,7 +581,7 @@
   </div>
 
   <script>
-    const SPORTS = ['NBA', 'NFL', 'MLB', 'WNBA', 'NHL', 'NCAAFB', 'NCAAMB', 'NCAAWB', 'EPL', 'LALIGA', 'MLS', 'WORLDCUP', 'UFC'];
+    const SPORTS = ['NBA', 'NFL', 'MLB', 'WNBA', 'NHL', 'NCAAFB', 'NCAAMB', 'NCAAWB', 'EPL', 'LALIGA', 'MLS', 'WORLDCUP', 'UFC', 'AFL', 'URC', 'PREM', 'IPL'];
     const SPORT_LABELS = {
       GLOBAL: 'Global',
       NCAAMB: 'College Basketball (Mens)',
@@ -372,7 +591,10 @@
       MLS: 'MLS',
       LALIGA: 'La Liga',
       WORLDCUP: 'FIFA World Cup',
-      UFC: 'UFC'
+      UFC: 'UFC',
+      URC: 'United Rugby Championship',
+      PREM: 'Premiership Rugby',
+      IPL: 'Indian Premier League'
     };
     const SPORT_ICONS = {
       GLOBAL: 'fa-globe',
@@ -388,16 +610,84 @@
       MLS: 'fa-futbol',
       LALIGA: 'fa-futbol',
       WORLDCUP: 'fa-futbol',
-      UFC: 'fa-hand-fist'
+      UFC: 'fa-hand-fist',
+      AFL: 'fa-football',
+      URC: 'fa-football',
+      PREM: 'fa-football',
+      // Font Awesome's free tier (the only tier loaded here, via cdnjs)
+      // has no cricket-specific icon - fa-baseball is the closest existing
+      // round-ball icon, same reasoning as reusing baseball.svg for IPL's
+      // background art on the server side.
+      IPL: 'fa-baseball'
     };
     let activeUser = null;
+    // Which of activeUser.providers is the currently-visible tab. Only this
+    // one provider's editor/accordion is ever rendered into the shared
+    // panel below the tab strip at any given time.
+    let activeProviderIndex = 0;
     let fetchedCategories = [];
+
+    // Channel EPG state. channelEpgChannels is the active provider's own
+    // channel list (id/name/categoryIds), re-fetched each time the panel
+    // opens. epgShareSourcesCatalog is the admin-enabled EPGShare01
+    // catalog, grouped by source file ([{file, channelIds}]) so the
+    // editor can offer "search just this source" as well as "search
+    // everything" - loaded once per page session (not per provider/
+    // panel-open) since it's the same global list regardless of which
+    // provider or channel is being edited. channelEpgManualSourceFilter
+    // is which source (a filename, or '' for all of them merged) the
+    // manual picker is currently scoped to - deliberately persists across
+    // selecting different channels, since a user narrowing down to one
+    // source is likely to want that same source for the next channel too.
+    // channelEpgExpandedCategories/channelEpgSelectedChannelId track the
+    // left accordion's open sections and which channel (if any) the
+    // right-hand editor is currently showing.
+    let channelEpgChannels = [];
+    let epgShareSourcesCatalog = null;
+    let channelEpgManualSourceFilter = '';
+    // Which single source (a filename) the "Suggested matches" search is
+    // scoped to, and the last search's results for whichever channel is
+    // currently selected. Unlike channelEpgManualSourceFilter there's no
+    // merged "all sources" option here - matching is deliberately run
+    // against one source at a time. The source choice persists across
+    // switching channels (same reasoning as the manual filter above); the
+    // results don't - they're cleared back to null (meaning "not searched
+    // yet") on every new channel selection, since a stale match list for a
+    // different channel's name would be actively misleading.
+    let channelEpgSuggestSourceFilter = '';
+    let channelEpgSuggestResults = null;
+    let channelEpgExpandedCategories = new Set();
+    let channelEpgSelectedChannelId = null;
+    let channelEpgOnlyOverrides = false;
+
+    // Multi-select (shift/ctrl-click) state for the bulk "use channel name
+    // as description" action. channelEpgSelectedChannelId (above) is still
+    // the single-select source of truth the existing per-channel editor
+    // reads - kept in sync below rather than replaced, so that editor needs
+    // no changes at all. channelEpgVisibleOrder is rebuilt on every
+    // renderChannelEpgCategories() call and is what a shift-click range is
+    // computed against - only currently-expanded/visible rows are
+    // range-selectable, same as most file managers.
+    let channelEpgSelectedChannelIds = new Set();
+    let channelEpgSelectionAnchor = null;
+    let channelEpgVisibleOrder = [];
+
+    // Reserved sentinel for provider.epgOverrides values - every other
+    // value in that map is a real EPGShare01 channel id (e.g.
+    // "365BLK.us2"), which never looks like this. Mirrored exactly in
+    // server.js's applyChannelEpgOverrides, which is what actually
+    // resolves it into a live description at request time (reading the
+    // channel's current name fresh on every request, not a stored
+    // snapshot - "updating when the channel's name updates" falls out of
+    // that for free).
+    const EPG_OVERRIDE_SELF_NAME = '__CHANNEL_NAME__';
 
     // Setup wizard state (new-account creation only)
     let wizardSelectedSports = [];
     let wizardTimezone = 'America/New_York';
     let wizardXtream = null;
     let wizardCategories = {};
+    let wizardEpgOverrides = {};
     let wizardSportOrder = [];
 
     // Views that should sit vertically centered in the space below the header.
@@ -414,11 +704,12 @@
       'encryption-setup': { id: 'encryption-setup-section', centered: true },
       landing: { id: 'landing-section', centered: true },
       login: { id: 'auth-section', centered: true },
-      'wizard-leagues': { id: 'wizard-leagues', centered: true },
       'wizard-timezone': { id: 'wizard-timezone', centered: true },
       'wizard-connection-type': { id: 'wizard-connection-type', centered: true },
       'wizard-xtream': { id: 'wizard-xtream', centered: true },
       'wizard-m3u': { id: 'wizard-m3u', centered: true },
+      'wizard-presets': { id: 'wizard-presets', centered: true },
+      'wizard-leagues': { id: 'wizard-leagues', centered: true },
       'wizard-categories': { id: 'wizard-categories', centered: false },
       'wizard-password': { id: 'wizard-password', centered: false },
       dashboard: { id: 'dashboard-section', centered: false }
@@ -461,14 +752,30 @@
       setTimeout(() => el.classList.add('hidden'), 5000);
     }
 
-    // --- Setup Wizard: Step 1, Choose your leagues ---
+    // In-panel equivalent of showStatus, for confirmations that should be
+    // read next to the control that triggered them rather than in the
+    // corner - same auto-hide idea, just a shorter window and no color
+    // variants since these are success-only callers.
+    function showInlineConfirmation(elId, msg) {
+      const el = document.getElementById(elId);
+      el.textContent = msg;
+      el.classList.remove('hidden');
+      clearTimeout(el._hideTimer);
+      el._hideTimer = setTimeout(() => el.classList.add('hidden'), 2000);
+    }
+
+    // --- Setup Wizard: Step 1, Select your timezone ---
 
     function startSetupWizard() {
       wizardSelectedSports = [];
       wizardTimezone = 'America/New_York';
       wizardXtream = null;
+      wizardM3u = null;
       wizardCategories = {};
+      wizardEpgOverrides = {};
       wizardSportOrder = [];
+      wizardAvailablePresets = [];
+      selectedWizardPresetId = null;
 
       // Clearing the JS tracking variable above isn't enough on its own -
       // the actual input elements keep whatever was typed during an
@@ -486,9 +793,10 @@
       xtreamBtn.disabled = true;
       xtreamBtn.className = 'w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-sm cursor-not-allowed';
 
-      renderWizardLeagueGrid();
-      updateWizardLeaguesNextButton();
-      showView('wizard-leagues');
+      document.getElementById('wizard-timezone-search').value = '';
+      renderWizardTimezoneList();
+      updateWizardTimezoneSelectedLabel();
+      showView('wizard-timezone');
     }
 
     // Shared by both the wizard's league picker and the dashboard's Manage
@@ -536,8 +844,6 @@
         btn.className = 'w-full bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-sm cursor-not-allowed';
       }
     }
-
-    // --- Setup Wizard: Step 2, Select your timezone ---
 
     // --- Shared timezone picker utilities (used by both the wizard and the
     // dashboard's Change Timezone editor) ---
@@ -620,13 +926,6 @@
       }).join('');
     }
 
-    function wizardGoToTimezone() {
-      document.getElementById('wizard-timezone-search').value = '';
-      renderWizardTimezoneList();
-      updateWizardTimezoneSelectedLabel();
-      showView('wizard-timezone');
-    }
-
     function renderWizardTimezoneList() {
       renderTimezoneList('wizard-timezone-list', wizardTimezone, 'selectWizardTimezone', document.getElementById('wizard-timezone-search').value);
     }
@@ -703,7 +1002,7 @@
           // a group-title string serves as both the id and the display
           // name here, since M3U has no separate numeric-id concept.
           fetchedCategories = data.categories.map(c => ({ category_id: c.name, category_name: c.name }));
-          wizardGoToCategories();
+          wizardGoToPresets();
         } else {
           // Indicate which URL was the problem where the backend could
           // tell, rather than a generic failure message.
@@ -764,7 +1063,7 @@
           fetchedCategories = data.categories;
           btn.dataset.mode = 'next';
           btn.innerHTML = 'Next';
-          btn.onclick = wizardGoToCategories;
+          btn.onclick = wizardGoToPresets;
           btn.className = 'w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 font-bold py-2.5 rounded-lg text-sm';
           successEl.textContent = 'Connection success. Click next.';
           successEl.classList.remove('hidden');
@@ -778,7 +1077,174 @@
       }
     }
 
-    // --- Setup Wizard: Step 4, category folder selection (filtered) ---
+    // --- Setup Wizard: Step 4, apply a preset (or skip to configure manually) ---
+
+    // Same admin-curated presets as the dashboard's Presets/Configs panel
+    // (see loadPresetsForPanel/applySelectedPreset below), but fetched via
+    // the unauthenticated /api/presets/public since there's no account yet
+    // at this point in the wizard - and filtered to the connection type
+    // just chosen, since a preset built for the other type can never
+    // resolve here (see importProviderSettings's own connectionType check).
+    let wizardAvailablePresets = [];
+    let selectedWizardPresetId = null;
+
+    async function wizardGoToPresets() {
+      selectedWizardPresetId = null;
+      document.getElementById('wizard-preset-grid').innerHTML = '<p class="col-span-full text-xs text-[#e6e6e6]/55 italic py-2">Loading presets...</p>';
+      showView('wizard-presets');
+
+      const connectionType = wizardM3u ? 'm3u' : 'xtream';
+      try {
+        const res = await fetch('/api/presets/public', { method: 'POST' });
+        const data = await res.json();
+        const all = data.success ? data.presets : [];
+        wizardAvailablePresets = all.filter(p => p.connectionType === connectionType);
+      } catch (err) {
+        wizardAvailablePresets = [];
+      }
+      renderWizardPresetGrid();
+    }
+
+    function renderWizardPresetGrid() {
+      const grid = document.getElementById('wizard-preset-grid');
+      if (wizardAvailablePresets.length === 0) {
+        grid.innerHTML = '<p class="col-span-full text-xs text-[#e6e6e6]/55 italic py-2">No presets available yet for this connection type - skip below to configure manually.</p>';
+      } else {
+        grid.innerHTML = wizardAvailablePresets.map(p => {
+          const selected = p.id === selectedWizardPresetId;
+          const classes = selected
+            ? 'bg-[#3b8fc4] border-[#3b8fc4] text-white'
+            : 'bg-[#3b4d58] border-[#e6e6e6]/15 text-[#e6e6e6]/75 hover:border-[#3b8fc4]/50';
+          return `
+            <button type="button" onclick="selectWizardPresetTile('${p.id}')" class="flex flex-col items-center gap-1 p-2 rounded-lg border transition text-center ${classes}">
+              <i class="fa-solid fa-${p.icon} text-lg"></i>
+              <span class="text-[10px] leading-tight break-words">${escapeHtml(p.name)}</span>
+            </button>
+          `;
+        }).join('');
+      }
+      updateApplyWizardPresetButtonState();
+    }
+
+    function selectWizardPresetTile(id) {
+      selectedWizardPresetId = id;
+      renderWizardPresetGrid();
+    }
+
+    function updateApplyWizardPresetButtonState() {
+      const btn = document.getElementById('wizard-apply-preset-btn');
+      // Reset back from "Applying..." in case this is a fresh visit to the
+      // preset step after an earlier apply on a previous run of the wizard
+      // within the same page session.
+      btn.innerHTML = 'Apply';
+      if (wizardAvailablePresets.length === 0) {
+        btn.classList.add('hidden');
+        return;
+      }
+      btn.classList.remove('hidden');
+      const ready = !!selectedWizardPresetId;
+      btn.disabled = !ready;
+      btn.className = ready
+        ? 'w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2.5 rounded-lg text-sm transition'
+        : 'w-full bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-sm cursor-not-allowed transition';
+    }
+
+    function wizardSkipPresets() {
+      renderWizardLeagueGrid();
+      updateWizardLeaguesNextButton();
+      showView('wizard-leagues');
+    }
+
+    // Resolves the selected preset's category/channel NAMES against
+    // fetchedCategories, which the connection step just populated from a
+    // live catalog - same name-resolution approach as the dashboard's
+    // importProviderSettings, just working off the wizard's in-progress
+    // connection instead of an already-saved provider. Applies whatever
+    // matches and reports what didn't, rather than blocking on a partial
+    // match - a preset built against a different package/subscription on
+    // the same provider will legitimately miss some categories.
+    async function applyWizardPreset() {
+      const preset = wizardAvailablePresets.find(p => p.id === selectedWizardPresetId);
+      if (!preset) return;
+
+      const btn = document.getElementById('wizard-apply-preset-btn');
+      btn.disabled = true;
+      btn.className = 'w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-sm cursor-not-allowed transition';
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Applying...';
+
+      const categoryIdByName = {};
+      fetchedCategories.forEach(c => { categoryIdByName[c.category_name] = String(c.category_id); });
+
+      wizardCategories = {};
+      wizardSelectedSports = [];
+      const allowedSports = new Set([...SPORTS, 'GLOBAL']);
+
+      let categoriesApplied = 0;
+      let categoriesSkipped = 0;
+
+      Object.entries(preset.sportCategories || {}).forEach(([sport, names]) => {
+        if (!allowedSports.has(sport) || !Array.isArray(names)) return;
+        const resolved = new Set();
+        names.forEach(name => {
+          const id = categoryIdByName[name];
+          if (id) { resolved.add(id); categoriesApplied++; }
+          else categoriesSkipped++;
+        });
+        if (resolved.size > 0) {
+          wizardCategories[sport] = [...resolved];
+          if (sport !== 'GLOBAL' && !wizardSelectedSports.includes(sport)) {
+            wizardSelectedSports.push(sport);
+          }
+        }
+      });
+
+      (preset.selectedSports || []).forEach(sport => {
+        if (allowedSports.has(sport) && sport !== 'GLOBAL' && !wizardSelectedSports.includes(sport)) {
+          wizardSelectedSports.push(sport);
+        }
+      });
+
+      wizardEpgOverrides = {};
+      let overridesApplied = 0;
+      let overridesSkipped = 0;
+      const importedOverrides = preset.epgOverrides || {};
+
+      if (wizardM3u) {
+        // tvg-id is already local-compatible - apply directly.
+        Object.entries(importedOverrides).forEach(([tvgId, epgShareId]) => {
+          wizardEpgOverrides[tvgId] = epgShareId;
+          overridesApplied++;
+        });
+      } else if (Object.keys(importedOverrides).length > 0) {
+        const usedCategoryIds = [...new Set(Object.values(wizardCategories).flat().map(String))];
+        const channels = await fetchXtreamChannelsForCategories(wizardXtream, usedCategoryIds);
+        const idsByName = {};
+        channels.forEach(ch => { (idsByName[ch.name] = idsByName[ch.name] || []).push(ch.id); });
+        Object.entries(importedOverrides).forEach(([channelName, epgShareId]) => {
+          const matches = idsByName[channelName] || [];
+          if (matches.length === 1) {
+            wizardEpgOverrides[matches[0]] = epgShareId;
+            overridesApplied++;
+          } else {
+            // Not found, or the name matched more than one channel - either
+            // way a guess would risk a wrong EPG assignment, so it's left
+            // for the user to set by hand later.
+            overridesSkipped++;
+          }
+        });
+      }
+
+      const leagueCount = wizardSelectedSports.length;
+      let msg = `Applied preset "${preset.name}": ${categoriesApplied} categor${categoriesApplied === 1 ? 'y' : 'ies'} across ${leagueCount} league${leagueCount === 1 ? '' : 's'}, ${overridesApplied} EPG override${overridesApplied === 1 ? '' : 's'}.`;
+      if (categoriesSkipped > 0 || overridesSkipped > 0) {
+        msg += ` (${categoriesSkipped + overridesSkipped} skipped - not found on your provider.)`;
+      }
+      showStatus(msg);
+
+      showView('wizard-password');
+    }
+
+    // --- Setup Wizard: Step 4b, category folder selection (manual path, filtered) ---
 
     function wizardGoToCategories() {
       renderWizardCategoriesConfig();
@@ -853,6 +1319,9 @@
             // chosen in the wizard, rather than showing all 11 sports.
             selectedSports: wizardSelectedSports,
             sportCategories: wizardCategories,
+            // Only ever non-empty if the preset step resolved one - the
+            // manual leagues/categories path never touches EPG overrides.
+            epgOverrides: wizardEpgOverrides,
             sportOrder: wizardSportOrder
           })
         });
@@ -861,15 +1330,30 @@
           activeUser = {
             uuid: data.uuid,
             password,
-            connectionType,
-            xtream: connectionType === 'xtream' ? wizardXtream : undefined,
-            m3u: connectionType === 'm3u' ? wizardM3u : undefined,
-            selectedSports: wizardSelectedSports,
-            sportCategories: wizardCategories,
-            timeZone: wizardTimezone
+            // The wizard only ever creates one provider - additional
+            // providers are added later from the dashboard's "+ Add
+            // Provider" tab (see addProviderTab), never here.
+            providers: [{
+              id: 'provider-1',
+              label: 'Provider 1',
+              connectionType,
+              xtream: connectionType === 'xtream' ? wizardXtream : undefined,
+              m3u: connectionType === 'm3u' ? wizardM3u : undefined,
+              selectedSports: wizardSelectedSports,
+              sportCategories: wizardCategories,
+              epgOverrides: wizardEpgOverrides
+            }],
+            timeZone: wizardTimezone,
+            sportOrder: wizardSportOrder
           };
+          activeProviderIndex = 0;
           document.getElementById('active-uuid-display').textContent = data.uuid;
-          renderSportsConfig();
+          // fetchedCategories already holds this provider's categories from
+          // the wizard's own category-search step, so no extra fetch is
+          // needed before this first render.
+          renderActiveProviderPanel();
+          markDashboardClean();
+          resetDashboardPanels();
           showView('dashboard');
         } else {
           errorEl.textContent = data.error || 'Failed to create account.';
@@ -894,20 +1378,16 @@
         });
         const data = await res.json();
         if (data.success) {
-          activeUser = { uuid, password, ...data };
+          activeUser = { uuid, password, providers: data.providers || [], timeZone: data.timeZone, sportOrder: data.sportOrder || [], nameFormat: data.nameFormat, titleFormat: data.titleFormat };
+          activeProviderIndex = 0;
           document.getElementById('active-uuid-display').textContent = uuid;
+          resetDashboardPanels();
           showView('dashboard');
 
-          const x = activeUser.xtream;
-          const m = activeUser.m3u;
-          const hasXtream = x && x.url && x.username && x.password;
-          const hasM3u = m && m.playlistUrl && m.epgUrl;
-          if (hasXtream || hasM3u) {
-            await refreshCategories();
-          } else {
-            renderSportsConfig();
-            showStatus('Successfully authenticated!');
-          }
+          await refreshCategoriesForActiveProvider();
+          renderActiveProviderPanel();
+          markDashboardClean();
+          showStatus('Successfully authenticated!');
         } else {
           showStatus(data.error || 'Login failed.', true);
         }
@@ -916,77 +1396,80 @@
       }
     }
 
-    async function fetchCategories() {
-      if (!activeUser || !activeUser.xtream || !activeUser.xtream.url) {
-        return showStatus('No Xtream credentials saved yet. Click Edit Xtream to add them.', true);
-      }
-      const { url, username, password } = activeUser.xtream;
+    // Loads the live category list for whichever provider is currently the
+    // active tab - the ONLY provider whose categories need to be in memory
+    // at any given moment, since only one provider's editor/accordion is
+    // ever rendered at a time (see the provider-tabs comment in the HTML).
+    // Branches by that provider's own connectionType, mirroring exactly
+    // what the wizard's own Xtream/M3U steps already do.
+    async function refreshCategoriesForActiveProvider() {
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      if (!provider) return;
 
-      showStatus('Fetching categories from Xtream server...');
-
-      try {
-        const res = await fetch('/api/xtream/categories', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url, username, password })
-        });
-        const data = await res.json();
-        if (data.success) {
-          fetchedCategories = data.categories;
-          showStatus(`Fetched ${fetchedCategories.length} categories!`);
-          renderSportsConfig();
-        } else {
-          showStatus(data.error || 'Failed to fetch categories.', true);
+      if (provider.connectionType === 'm3u') {
+        if (!provider.m3u || !provider.m3u.playlistUrl) {
+          fetchedCategories = [];
+          return;
         }
-      } catch (err) {
-        showStatus('Network error while connecting to Xtream API.', true);
-      }
-    }
-
-    // Companion to fetchCategories() above, for M3U accounts - reads from
-    // the scheduler's already-fresh cache (via /api/m3u/categories)
-    // rather than re-importing the account's URLs from scratch, since
-    // that's a real, multi-second operation with no reason to repeat it
-    // just to view already-selected categories.
-    async function fetchM3uCategories() {
-      if (!activeUser || !activeUser.m3u || !activeUser.m3u.playlistUrl) {
-        return showStatus('No M3U URLs saved yet. Click Edit M3U to add them.', true);
-      }
-
-      showStatus('Loading categories...');
-
-      try {
-        const res = await fetch('/api/m3u/categories', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password })
-        });
-        const data = await res.json();
-        if (data.success) {
-          fetchedCategories = data.categories.map(c => ({ category_id: c.name, category_name: c.name }));
-          if (data.notReady) {
-            showStatus('M3U data is still loading in the background - try again shortly.', true);
+        try {
+          const res = await fetch('/api/m3u/categories', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password, providerId: provider.id })
+          });
+          const data = await res.json();
+          if (data.success) {
+            fetchedCategories = data.categories.map(c => ({ category_id: c.name, category_name: c.name }));
+            if (data.notReady) {
+              showStatus('M3U data is still loading in the background - try again shortly.', true);
+            }
           } else {
-            showStatus(`Loaded ${fetchedCategories.length} categories!`);
+            showStatus(data.error || 'Failed to load categories.', true);
           }
-          renderSportsConfig();
-        } else {
-          showStatus(data.error || 'Failed to load categories.', true);
+        } catch (err) {
+          showStatus('Network error while loading M3U categories.', true);
         }
-      } catch (err) {
-        showStatus('Network error while loading M3U categories.', true);
+      } else {
+        if (!provider.xtream || !provider.xtream.url) {
+          fetchedCategories = [];
+          return;
+        }
+        try {
+          const { url, username, password } = provider.xtream;
+          const res = await fetch('/api/xtream/categories', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url, username, password })
+          });
+          const data = await res.json();
+          if (data.success) {
+            fetchedCategories = data.categories;
+          } else {
+            showStatus(data.error || 'Failed to fetch categories.', true);
+          }
+        } catch (err) {
+          showStatus('Network error while connecting to Xtream API.', true);
+        }
       }
     }
 
-    // Single entry point for both the login flow and the dashboard's
-    // "Refresh Categories" button - branches by connectionType once, here,
-    // rather than duplicating that same branch at every call site.
+    // The dashboard's "Refresh Categories" button - re-fetches whichever
+    // provider tab is currently active and re-renders it.
     async function refreshCategories() {
-      if (activeUser && activeUser.connectionType === 'm3u') {
-        await fetchM3uCategories();
-      } else {
-        await fetchCategories();
-      }
+      if (!activeUser) return;
+      await refreshCategoriesForActiveProvider();
+      renderActiveProviderPanel();
+      showStatus(`Loaded ${fetchedCategories.length} categories!`);
+    }
+
+    // Same refresh, but also re-renders Channel EPG's own category
+    // accordion (renderActiveProviderPanel only touches Category Search's
+    // sports-config-container) - otherwise the categories fetchedCategories
+    // just picked up wouldn't show there until some other panel re-render
+    // happened to trigger it.
+    async function refreshCategoriesForChannelEpg() {
+      await refreshCategories();
+      renderChannelEpgCategories();
     }
 
     // --- Edit Xtream panel: credentials are hidden by default and only
@@ -1006,48 +1489,120 @@
     // regardless of which specific action opened or closed a panel.
     function updateSettingsButtonStates() {
       const pairs = [
+        ['sources-trigger-btn', 'sources-panel'],
         ['edit-xtream-trigger-btn', 'edit-xtream-panel'],
         ['edit-m3u-trigger-btn', 'edit-m3u-panel'],
-        ['manage-sports-btn', 'manage-sports-panel'],
-        ['change-timezone-btn', 'change-timezone-panel']
+        ['change-timezone-btn', 'change-timezone-panel'],
+        ['formatter-btn', 'formatter-panel'],
+        ['channel-epg-btn', 'channel-epg-panel'],
+        ['export-import-btn', 'export-import-panel']
       ];
       pairs.forEach(([btnId, panelId]) => {
         const btn = document.getElementById(btnId);
         const panel = document.getElementById(panelId);
         if (!btn || !panel) return;
-        // Preserve whichever hidden/flex state renderSportsConfig() set
-        // based on connectionType - this function only cares about the
-        // open/closed color styling, and must never accidentally re-show
-        // a trigger button (Edit Xtream or Edit M3U) that isn't relevant
-        // to this account. Rewriting className wholesale, as this used to
+        // Preserve whichever hidden/flex state renderActiveProviderPanel()
+        // set based on the active provider's connectionType - this function
+        // only cares about the open/closed color styling, and must never
+        // accidentally re-show a trigger button (Edit Xtream or Edit M3U)
+        // that isn't relevant to the active provider. Rewriting className
+        // wholesale, as this used to
         // do, would silently undo that hidden state on every single
         // settings-panel toggle.
         const wasHidden = btn.classList.contains('hidden');
         const isOpen = !panel.classList.contains('hidden');
         btn.className = isOpen
-          ? 'bg-[#3b8fc4] border border-[#5aa8d1] text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2'
-          : 'bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2.5 rounded-lg transition flex items-center justify-center gap-2';
+          ? 'bg-transparent border-0 border-b-2 border-[#3b8fc4] rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]'
+          : 'bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]';
         if (wasHidden) btn.classList.add('hidden');
       });
+
+      // Delete account isn't in the pairs list above so its red color is
+      // never overwritten by the generic blue active/inactive styling -
+      // same underline treatment, its own color.
+      const deleteBtn = document.getElementById('delete-account-trigger-btn');
+      const deletePanel = document.getElementById('delete-account-panel');
+      if (deleteBtn && deletePanel) {
+        const isOpen = !deletePanel.classList.contains('hidden');
+        deleteBtn.className = isOpen
+          ? 'ml-auto bg-transparent border-0 border-b-2 border-[#e56a6a] rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e56a6a]'
+          : 'ml-auto bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e56a6a]/70 hover:text-[#e56a6a]';
+      }
+    }
+
+    // Called right before the dashboard is shown after a fresh login or
+    // signup, so returning to it (possibly as a different account, after
+    // account deletion sends someone back to the landing screen) always
+    // starts from the same place: every settings panel closed and Sources
+    // - the one users come back to most - open by default.
+    function resetDashboardPanels() {
+      closeEditXtreamPanelSilently();
+      closeEditM3uPanelSilently();
+      closeChangeTimezonePanelSilently();
+      closeDeleteAccountPanelSilently();
+      closeFormatterPanelSilently();
+      closeChannelEpgPanelSilently();
+      closeExportImportPanelSilently();
+      document.getElementById('sources-panel').classList.remove('hidden');
+      updateSettingsButtonStates();
+    }
+
+    // --- Sources panel: Providers + Category Search. Shown by default on
+    // login/signup (see resetDashboardPanels), and reachable afterward like
+    // any other settings panel via its own trigger button.
+
+    function toggleSourcesPanel() {
+      const panel = document.getElementById('sources-panel');
+      if (panel.classList.contains('hidden')) {
+        closeEditXtreamPanelSilently();
+        closeEditM3uPanelSilently();
+        closeChangeTimezonePanelSilently();
+        closeDeleteAccountPanelSilently();
+        closeFormatterPanelSilently();
+        closeChannelEpgPanelSilently();
+        closeExportImportPanelSilently();
+        panel.classList.remove('hidden');
+      } else {
+        closeSourcesPanelSilently();
+      }
+      updateSettingsButtonStates();
+    }
+
+    // Commits whatever's currently checked in Category Search into
+    // provider.sportCategories before the checkboxes disappear from the
+    // DOM - the only reason another settings panel would ever need to
+    // warn about "unsaved category changes" is this step being skipped,
+    // so every path that hides Sources runs through here rather than
+    // leaving that to chance.
+    function closeSourcesPanelSilently() {
+      commitActiveProviderCategoryState();
+      document.getElementById('sources-panel').classList.add('hidden');
+      cancelAddProvider();
+      updateSettingsButtonStates();
     }
 
     function toggleEditXtreamPanel() {
       const panel = document.getElementById('edit-xtream-panel');
       if (panel.classList.contains('hidden')) {
+        closeSourcesPanelSilently();
         closeEditM3uPanelSilently();
-        closeManageSportsPanelSilently();
         closeChangeTimezonePanelSilently();
         closeDeleteAccountPanelSilently();
-        const x = (activeUser && activeUser.xtream) || {};
+        closeFormatterPanelSilently();
+        closeChannelEpgPanelSilently();
+        closeExportImportPanelSilently();
+        const activeProvider = activeUser && activeUser.providers[activeProviderIndex];
+        const x = (activeProvider && activeProvider.xtream) || {};
         editXtreamOriginalValues = { url: x.url || '', username: x.username || '', password: x.password || '' };
         document.getElementById('edit-xtream-url').value = editXtreamOriginalValues.url;
         document.getElementById('edit-xtream-username').value = editXtreamOriginalValues.username;
         document.getElementById('edit-xtream-password').value = editXtreamOriginalValues.password;
         document.getElementById('edit-xtream-error').classList.add('hidden');
+        document.getElementById('edit-xtream-confirm').classList.add('hidden');
         resetEditXtreamState();
         panel.classList.remove('hidden');
       } else {
-        cancelEditXtream();
+        closeEditXtreamPanelSilently();
       }
       updateSettingsButtonStates();
     }
@@ -1107,10 +1662,14 @@
       }
     }
 
-    // Tests the entered credentials. On success, the Test button morphs
-    // in-place into Confirm (Cancel stays put beside it the whole time) -
-    // nothing is saved until Confirm is actually clicked. On failure, the
-    // fields revert to whatever was saved before this edit.
+    // Tests the entered credentials and, on success, applies them right
+    // away via confirmEditXtream() - no separate Confirm click needed, a
+    // passing test already is the safety check. The button still morphs to
+    // Confirm first and stays there as a manual fallback for the one case
+    // confirmEditXtream() can itself decline: the UNSAVED_CHANGES_WARNING
+    // guard, if there's a pending, unrelated edit elsewhere that a
+    // provider-switch re-render would otherwise silently discard. On
+    // failure, the fields revert to whatever was saved before this edit.
     async function testEditXtream() {
       const url = document.getElementById('edit-xtream-url').value.trim();
       const username = document.getElementById('edit-xtream-username').value.trim();
@@ -1134,7 +1693,7 @@
           btn.onclick = confirmEditXtream;
           btn.innerHTML = 'Confirm';
           btn.className = 'w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 font-bold py-2.5 rounded-lg text-xs';
-          showStatus('Connection successful!');
+          confirmEditXtream();
         } else {
           revertEditXtreamFields();
           errorEl.textContent = "Couldn't connect. Please check credentials.";
@@ -1147,38 +1706,38 @@
       }
     }
 
-    function cancelEditXtream() {
-      revertEditXtreamFields();
-      document.getElementById('edit-xtream-panel').classList.add('hidden');
-      resetEditXtreamState();
-    }
-
     // --- Dashboard: Edit M3U ---
     // Mirrors Edit Xtream's Test/Confirm two-step exactly, for the same
     // reason: this is an EXISTING account with saved state that could be
     // overwritten, unlike the wizard's brand-new-account context (where
     // Continue proceeds in one step, since there's nothing yet to
     // protect). Import morphs in-place into Confirm on success - nothing
-    // is staged into activeUser.m3u until Confirm is actually clicked.
+    // is staged into the active provider's m3u field until Confirm is
+    // actually clicked.
     let editM3uOriginalValues = null;
     let editM3uImportedValues = null;
 
     function toggleEditM3uPanel() {
       const panel = document.getElementById('edit-m3u-panel');
       if (panel.classList.contains('hidden')) {
+        closeSourcesPanelSilently();
         closeEditXtreamPanelSilently();
-        closeManageSportsPanelSilently();
         closeChangeTimezonePanelSilently();
         closeDeleteAccountPanelSilently();
-        const m = (activeUser && activeUser.m3u) || {};
+        closeFormatterPanelSilently();
+        closeChannelEpgPanelSilently();
+        closeExportImportPanelSilently();
+        const activeProvider = activeUser && activeUser.providers[activeProviderIndex];
+        const m = (activeProvider && activeProvider.m3u) || {};
         editM3uOriginalValues = { playlistUrl: m.playlistUrl || '', epgUrl: m.epgUrl || '' };
         document.getElementById('edit-m3u-playlist-url').value = editM3uOriginalValues.playlistUrl;
         document.getElementById('edit-m3u-epg-url').value = editM3uOriginalValues.epgUrl;
         document.getElementById('edit-m3u-error').classList.add('hidden');
+        document.getElementById('edit-m3u-confirm').classList.add('hidden');
         resetEditM3uState();
         panel.classList.remove('hidden');
       } else {
-        cancelEditM3u();
+        closeEditM3uPanelSilently();
       }
       updateSettingsButtonStates();
     }
@@ -1232,6 +1791,10 @@
       }
     }
 
+    // Imports the playlist/EPG URLs and, on success, applies them right
+    // away via confirmEditM3u() - no separate Confirm click needed (see
+    // testEditXtream's comment for the reasoning, including why the
+    // button still morphs to Confirm as a manual fallback).
     async function importEditM3u() {
       const playlistUrl = document.getElementById('edit-m3u-playlist-url').value.trim();
       const epgUrl = document.getElementById('edit-m3u-epg-url').value.trim();
@@ -1258,7 +1821,7 @@
           btn.onclick = confirmEditM3u;
           btn.innerHTML = 'Confirm';
           btn.className = 'w-full bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 font-bold py-2.5 rounded-lg text-xs';
-          showStatus('Import successful!');
+          confirmEditM3u();
         } else {
           revertEditM3uFields();
           errorEl.textContent = data.error || "Couldn't import. Please check both URLs.";
@@ -1272,12 +1835,6 @@
       }
     }
 
-    function cancelEditM3u() {
-      revertEditM3uFields();
-      document.getElementById('edit-m3u-panel').classList.add('hidden');
-      resetEditM3uState();
-    }
-
     // Stages the imported URLs for this session only - nothing is sent to
     // the server here. The actual save happens only when "Save and Copy
     // Link" is clicked, same as every other setting on this page,
@@ -1288,12 +1845,12 @@
         return;
       }
 
-      activeUser.m3u = editM3uImportedValues;
-      document.getElementById('edit-m3u-panel').classList.add('hidden');
+      activeUser.providers[activeProviderIndex].m3u = editM3uImportedValues;
       resetEditM3uState();
-      renderSportsConfig();
+      renderActiveProviderPanel();
       markDashboardDirty();
-      showStatus('M3U URLs updated for this session - click Save and Copy Link to save.');
+      showInlineConfirmation('edit-m3u-confirm', 'M3U URLs updated for this session - click Save and Copy Link to save.');
+      updateSettingsButtonStates();
     }
 
     // Stages the tested credentials for this session only - nothing is
@@ -1305,12 +1862,12 @@
         return;
       }
 
-      activeUser.xtream = editXtreamTestedCredentials;
-      document.getElementById('edit-xtream-panel').classList.add('hidden');
+      activeUser.providers[activeProviderIndex].xtream = editXtreamTestedCredentials;
       resetEditXtreamState();
-      renderSportsConfig();
+      renderActiveProviderPanel();
       markDashboardDirty();
-      showStatus('Xtream credentials updated for this session - click Save and Copy Link to save.');
+      showInlineConfirmation('edit-xtream-confirm', 'Xtream credentials updated for this session - click Save and Copy Link to save.');
+      updateSettingsButtonStates();
     }
 
     // Shared by both the real dashboard and the setup wizard's category step,
@@ -1419,18 +1976,31 @@
           : 'Please choose which categories should be searched when sourcing game streams.';
         const dragHandle = isGlobalSection ? '' : '<i class="fa-solid fa-grip-vertical text-[#e6e6e6]/40 text-sm cursor-grab active:cursor-grabbing"></i>';
 
+        // Only the real dashboard (idPrefix === '') can remove a league
+        // in place - the wizard's own leagues step has no
+        // provider/selectedSports yet to remove one from. A real <button>
+        // rather than the wizard's plain accordion <button> wrapper, since
+        // nesting a button inside a button is invalid HTML - the whole
+        // header becomes a <div> with its own onclick instead, and this
+        // stops that click from also firing (same event.stopPropagation
+        // pattern the provider tabs' own remove button already uses).
+        const removeLeagueBtn = (idPrefix === '' && !isGlobalSection)
+          ? `<button type="button" onclick="event.stopPropagation(); removeLeagueFromCategorySearch('${sport}')" class="text-[#e6e6e6]/45 hover:text-[#e56a6a] transition px-1" title="Remove league"><i class="fa-solid fa-xmark"></i></button>`
+          : '';
+
         section.innerHTML = `
-          <button type="button" onclick="toggleAccordionSection('${idPrefix}', '${sport}')" class="w-full flex items-center justify-between px-4 py-3 hover:bg-[#3b4d58]/40 transition text-left">
+          <div role="button" tabindex="0" onclick="toggleAccordionSection('${idPrefix}', '${sport}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAccordionSection('${idPrefix}', '${sport}');}" class="w-full flex items-center justify-between px-4 py-3 hover:bg-[#3b4d58]/40 transition text-left cursor-pointer">
             <div class="flex items-center gap-3">
               ${dragHandle}
               <i class="fa-solid ${icon} text-[#5aa8d1] text-base w-5 text-center"></i>
               <span class="font-bold text-sm text-[#e6e6e6]">${sectionLabel}</span>
             </div>
             <div class="flex items-center gap-3">
-              <span id="${idPrefix}badge-${sport}" class="text-xs font-semibold px-2 py-0.5 rounded-full ${badgeClass}">${effectiveCount} selected</span>
               <i id="${idPrefix}chevron-${sport}" class="fa-solid fa-chevron-down text-[#e6e6e6]/55 text-xs transition-transform"></i>
+              <span id="${idPrefix}badge-${sport}" class="text-xs font-semibold px-2 py-0.5 rounded-full ${badgeClass}">${effectiveCount} selected</span>
+              ${removeLeagueBtn}
             </div>
-          </button>
+          </div>
           <div id="${idPrefix}body-${sport}" class="hidden px-4 pb-4">
             <p class="text-xs text-[#e6e6e6]/55 mb-3">${instructionText}</p>
             <div class="relative mb-2">
@@ -1594,44 +2164,17 @@
       });
     }
 
-    // Which sports show on the dashboard: whatever the account has explicitly
-    // chosen via Manage Sports, or every sport if that hasn't been set yet
-    // (keeps existing accounts behaving exactly as before until they opt in).
-    function getVisibleSports() {
-      if (activeUser && activeUser.selectedSports && activeUser.selectedSports.length > 0) {
-        return activeUser.selectedSports;
+    // Which sports show in the active provider's Category Search: whatever
+    // that provider has explicitly chosen via Manage Sports, or every sport
+    // if that hasn't been set yet (keeps existing accounts, and freshly
+    // added providers, behaving exactly as before until they opt in). Each
+    // provider tracks its own selection independently - a user may well
+    // want to search different sport subsets on different providers.
+    function getVisibleSports(provider) {
+      if (provider && provider.selectedSports && provider.selectedSports.length > 0) {
+        return provider.selectedSports;
       }
       return SPORTS;
-    }
-
-    let manageSportsSelection = [];
-
-    function toggleManageSportsPanel() {
-      const panel = document.getElementById('manage-sports-panel');
-      if (panel.classList.contains('hidden')) {
-        closeEditXtreamPanelSilently();
-        closeEditM3uPanelSilently();
-        closeChangeTimezonePanelSilently();
-        closeDeleteAccountPanelSilently();
-        manageSportsSelection = [...getVisibleSports()];
-        renderLeagueGrid('manage-sports-grid', manageSportsSelection, 'toggleManagedSport');
-        panel.classList.remove('hidden');
-      } else {
-        cancelManageSports();
-      }
-      updateSettingsButtonStates();
-    }
-
-    // Closes Manage Sports without saving anything - used both by its own
-    // Cancel button and when the Xtream editor needs to take over, so only
-    // one editor is ever open at a time.
-    function closeManageSportsPanelSilently() {
-      document.getElementById('manage-sports-panel').classList.add('hidden');
-      updateSettingsButtonStates();
-    }
-
-    function cancelManageSports() {
-      closeManageSportsPanelSilently();
     }
 
     // Generic HTML-escaping utility - used when rendering any external,
@@ -1643,6 +2186,35 @@
       return div.innerHTML;
     }
 
+    // Needed specifically for values interpolated into an
+    // onclick="...('value')" attribute - escapeHtml alone doesn't touch a
+    // literal ' or " (not necessary for plain text content), but either
+    // one there would break the inner single-quoted JS string argument.
+    //
+    // Order matters and is easy to get backwards (confirmed the hard way -
+    // an HTML-entity-only version of this, tried first, broke on a name
+    // containing an apostrophe): the browser HTML-decodes an attribute's
+    // value BEFORE handing it to the JS engine as source code, so encoding
+    // a quote as an HTML entity (e.g. ' -> &#39;) does NOT protect the
+    // inner JS string - it decodes right back to a literal ' just in time
+    // to break out of it. The only thing that actually protects the JS
+    // string delimiter is a JS backslash-escape, applied BEFORE any
+    // HTML-escaping. So: JS-escape first (this is what survives into the
+    // actual onclick source), then HTML-escape the result only for what
+    // the outer double-quoted attribute itself needs (" and &).
+    function escapeJsAttr(str) {
+      const jsEscaped = String(str == null ? '' : str)
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '\\r');
+      return jsEscaped
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
     // --- Dashboard: Change Timezone editor ---
 
     let dashboardTimezoneSelection = null;
@@ -1650,17 +2222,20 @@
     function toggleChangeTimezonePanel() {
       const panel = document.getElementById('change-timezone-panel');
       if (panel.classList.contains('hidden')) {
+        closeSourcesPanelSilently();
         closeEditXtreamPanelSilently();
         closeEditM3uPanelSilently();
-        closeManageSportsPanelSilently();
         closeDeleteAccountPanelSilently();
+        closeFormatterPanelSilently();
+        closeChannelEpgPanelSilently();
+        closeExportImportPanelSilently();
         dashboardTimezoneSelection = (activeUser && activeUser.timeZone) || 'America/New_York';
         document.getElementById('dashboard-timezone-search').value = '';
         renderDashboardTimezoneList();
         updateDashboardTimezoneSelectedLabel();
         panel.classList.remove('hidden');
       } else {
-        cancelChangeTimezone();
+        closeChangeTimezonePanelSilently();
       }
       updateSettingsButtonStates();
     }
@@ -1670,8 +2245,1172 @@
       updateSettingsButtonStates();
     }
 
-    function cancelChangeTimezone() {
-      closeChangeTimezonePanelSilently();
+    // --- Dashboard: Formatter ---
+    // Account-wide, unlike Category Search - a stream's name/title don't
+    // meaningfully belong to one provider over another, so there's exactly
+    // one Name format and one Title format for the whole account,
+    // regardless of how many providers it has. Mirrors server.js's
+    // DEFAULT_NAME_FORMAT/DEFAULT_TITLE_FORMAT/applyFormatter exactly, so
+    // this preview is never lying about what the real stream route will do.
+
+    const DEFAULT_NAME_FORMAT = '{homeNick} vs. {awayNick}\n{status}';
+    const DEFAULT_TITLE_FORMAT = '📁 {category}  | 📺 {channelName}\nℹ️ {epgDescription}';
+
+    // One entry per placeholder server.js's buildFormatterFields actually
+    // populates - description doubles as this panel's legend/tooltip text,
+    // and sample doubles as the value plugged into the live preview below.
+    const FORMATTER_PLACEHOLDERS = [
+      { key: 'channelName', description: 'The channel\'s raw name from your IPTV provider', sample: 'USA Sports HD' },
+      { key: 'category', description: 'The IPTV category/folder it matched under', sample: 'Sports USA' },
+      { key: 'epgDescription', description: 'The channel\'s own EPG program text, if available', sample: 'Lakers vs Celtics - Live' },
+      { key: 'provider', description: 'Which of your providers this came from (blank with only one)', sample: 'Backup M3U' },
+      { key: 'homeTeam', description: 'Full home team name', sample: 'Los Angeles Lakers' },
+      { key: 'awayTeam', description: 'Full away team name', sample: 'Boston Celtics' },
+      { key: 'homeNick', description: 'Home team nickname', sample: 'Lakers' },
+      { key: 'awayNick', description: 'Away team nickname', sample: 'Celtics' },
+      { key: 'status', description: 'Game status ("Scheduled", "Final", etc.)', sample: 'Scheduled' }
+    ];
+
+    // Same substitution rule as server.js's applyFormatter - an
+    // unrecognized {placeholder} is left as literal text instead of
+    // vanishing, so a typo is obvious in the preview rather than just
+    // silently wrong.
+    function applyFormatterTemplate(template, fields) {
+      return template.replace(/\{(\w+)\}/g, (match, key) => {
+        return Object.prototype.hasOwnProperty.call(fields, key) ? (fields[key] || '') : match;
+      });
+    }
+
+    // Each legend chip is a click-to-copy source (copies its bare
+    // {placeholder} text so the user can paste it into a field below) and a
+    // hover target for a custom-styled tooltip (not the native title
+    // attribute - matches the dark theme and shows instantly rather than
+    // after the browser's default hover delay).
+    function renderFormatterLegend() {
+      const legend = document.getElementById('formatter-placeholder-legend');
+      legend.innerHTML = FORMATTER_PLACEHOLDERS.map(p => `
+        <div class="relative group">
+          <code onclick="copyFormatterPlaceholder('${p.key}')" class="block text-[10px] bg-[#2f3e47] border border-[#e6e6e6]/15 rounded px-1.5 py-0.5 text-[#5aa8d1] cursor-pointer hover:border-[#3b8fc4]/60 transition">{${p.key}}</code>
+          <div class="hidden group-hover:block absolute bottom-full left-0 mb-1.5 w-max max-w-[220px] bg-[#1a242a] border border-[#e6e6e6]/20 rounded-lg px-2.5 py-1.5 text-[10px] text-[#e6e6e6]/90 shadow-xl z-10 pointer-events-none">
+            ${escapeHtml(p.description)}
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function copyFormatterPlaceholder(key) {
+      copyTextToClipboard(`{${key}}`, null);
+    }
+
+    function toggleFormatterPanel() {
+      const panel = document.getElementById('formatter-panel');
+      if (panel.classList.contains('hidden')) {
+        closeSourcesPanelSilently();
+        closeEditXtreamPanelSilently();
+        closeEditM3uPanelSilently();
+        closeChangeTimezonePanelSilently();
+        closeDeleteAccountPanelSilently();
+        closeChannelEpgPanelSilently();
+        closeExportImportPanelSilently();
+        renderFormatterLegend();
+        document.getElementById('formatter-name-input').value = (activeUser && activeUser.nameFormat) || DEFAULT_NAME_FORMAT;
+        document.getElementById('formatter-title-input').value = (activeUser && activeUser.titleFormat) || DEFAULT_TITLE_FORMAT;
+        updateFormatterPreview();
+        panel.classList.remove('hidden');
+      } else {
+        closeFormatterPanelSilently();
+      }
+      updateSettingsButtonStates();
+    }
+
+    function closeFormatterPanelSilently() {
+      document.getElementById('formatter-panel').classList.add('hidden');
+      updateSettingsButtonStates();
+    }
+
+    function resetFormatterDefaults() {
+      document.getElementById('formatter-name-input').value = DEFAULT_NAME_FORMAT;
+      document.getElementById('formatter-title-input').value = DEFAULT_TITLE_FORMAT;
+      updateFormatterFromInputs();
+    }
+
+    function updateFormatterPreview() {
+      const sampleFields = {};
+      FORMATTER_PLACEHOLDERS.forEach(p => { sampleFields[p.key] = p.sample; });
+
+      const nameTemplate = document.getElementById('formatter-name-input').value || DEFAULT_NAME_FORMAT;
+      const titleTemplate = document.getElementById('formatter-title-input').value || DEFAULT_TITLE_FORMAT;
+      document.getElementById('formatter-preview-name').textContent = applyFormatterTemplate(nameTemplate, sampleFields);
+      document.getElementById('formatter-preview-title').textContent = applyFormatterTemplate(titleTemplate, sampleFields);
+    }
+
+    // Writes straight into activeUser on every keystroke - no separate
+    // Confirm step, matching Category Search's checkboxes and Channel
+    // EPG's overrides. Blank is treated the same way the server does:
+    // falls back to the default rather than saving an empty template that
+    // would blank out every stream's name/title.
+    function updateFormatterFromInputs() {
+      if (!activeUser) return;
+      activeUser.nameFormat = document.getElementById('formatter-name-input').value.trim() || DEFAULT_NAME_FORMAT;
+      activeUser.titleFormat = document.getElementById('formatter-title-input').value.trim() || DEFAULT_TITLE_FORMAT;
+      updateFormatterPreview();
+      markDashboardDirty();
+    }
+
+    // --- Dashboard: Channel EPG (per-channel EPGShare01 override picker) ---
+    // Unlike Category Search's checkboxes, edits here write directly into
+    // activeUser.providers[activeProviderIndex].epgOverrides the moment
+    // they're made (same immediate-mutation approach as renameProviderTab)
+    // rather than staging into a separate DOM-derived variable first - so
+    // there's no real "cancel" here, just "close" (Done), same as renaming
+    // a provider tab.
+
+    function toggleChannelEpgPanel() {
+      const panel = document.getElementById('channel-epg-panel');
+      if (panel.classList.contains('hidden')) {
+        closeSourcesPanelSilently();
+        closeEditXtreamPanelSilently();
+        closeEditM3uPanelSilently();
+        closeChangeTimezonePanelSilently();
+        closeDeleteAccountPanelSilently();
+        closeFormatterPanelSilently();
+        closeExportImportPanelSilently();
+        document.getElementById('channel-epg-search').value = '';
+        channelEpgExpandedCategories = new Set();
+        channelEpgSelectedChannelId = null;
+        channelEpgSelectedChannelIds = new Set();
+        channelEpgSelectionAnchor = null;
+        channelEpgSuggestResults = null;
+        channelEpgOnlyOverrides = false;
+        document.getElementById('channel-epg-only-overrides').checked = false;
+        renderChannelEpgEditor();
+        panel.classList.remove('hidden');
+        loadChannelEpgChannels();
+        loadEpgShareChannelCatalog();
+      } else {
+        closeChannelEpgPanelSilently();
+      }
+      updateSettingsButtonStates();
+    }
+
+    function closeChannelEpgPanelSilently() {
+      document.getElementById('channel-epg-panel').classList.add('hidden');
+      updateSettingsButtonStates();
+    }
+
+    // --- Export/Import: share Category Search + Channel EPG settings
+    // between two accounts on the same IPTV catalog. See
+    // exportProviderSettings/importProviderSettings below for the actual
+    // logic - this pair is just the same open/close plumbing every other
+    // settings panel on this page uses.
+
+    function toggleExportImportPanel() {
+      const panel = document.getElementById('export-import-panel');
+      if (panel.classList.contains('hidden')) {
+        closeSourcesPanelSilently();
+        closeEditXtreamPanelSilently();
+        closeEditM3uPanelSilently();
+        closeChangeTimezonePanelSilently();
+        closeDeleteAccountPanelSilently();
+        closeFormatterPanelSilently();
+        closeChannelEpgPanelSilently();
+        resetExportImportPanel();
+        loadPresetsForPanel();
+        panel.classList.remove('hidden');
+      } else {
+        closeExportImportPanelSilently();
+      }
+      updateSettingsButtonStates();
+    }
+
+    function closeExportImportPanelSilently() {
+      document.getElementById('export-import-panel').classList.add('hidden');
+      updateSettingsButtonStates();
+    }
+
+    function resetExportImportPanel() {
+      document.getElementById('export-import-file-input').value = '';
+      document.getElementById('export-import-error').classList.add('hidden');
+      document.getElementById('export-import-result').classList.add('hidden');
+      selectedPresetId = null;
+      document.getElementById('preset-apply-result').classList.add('hidden');
+      updateApplyPresetButtonState();
+    }
+
+    // Presets: server-curated, named+iconed bundles an admin built from
+    // someone's own export (see admin.html's Presets section) - applying
+    // one just feeds it straight into importProviderSettings(), the exact
+    // same function file import already uses, since a preset IS that same
+    // payload shape. Select-then-Apply (two deliberate clicks) is the
+    // confirmation; nothing here needs its own dialog.
+    let availablePresets = [];
+    let selectedPresetId = null;
+
+    async function loadPresetsForPanel() {
+      try {
+        const res = await fetch('/api/presets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password })
+        });
+        const data = await res.json();
+        availablePresets = data.success ? data.presets : [];
+      } catch (err) {
+        availablePresets = [];
+      }
+      renderPresetGrid();
+    }
+
+    function renderPresetGrid() {
+      const grid = document.getElementById('preset-grid');
+      if (availablePresets.length === 0) {
+        grid.innerHTML = '<p class="col-span-full text-xs text-[#e6e6e6]/55 italic py-2">No presets available yet.</p>';
+        return;
+      }
+      grid.innerHTML = availablePresets.map(p => {
+        const selected = p.id === selectedPresetId;
+        const classes = selected
+          ? 'bg-[#3b8fc4] border-[#3b8fc4] text-white'
+          : 'bg-[#3b4d58] border-[#e6e6e6]/15 text-[#e6e6e6]/75 hover:border-[#3b8fc4]/50';
+        return `
+          <button type="button" onclick="selectPresetTile('${p.id}')" class="flex flex-col items-center gap-1 p-2 rounded-lg border transition text-center ${classes}">
+            <i class="fa-solid fa-${p.icon} text-lg"></i>
+            <span class="text-[10px] leading-tight break-words">${escapeHtml(p.name)}</span>
+          </button>
+        `;
+      }).join('');
+    }
+
+    function selectPresetTile(id) {
+      selectedPresetId = id;
+      renderPresetGrid();
+      updateApplyPresetButtonState();
+    }
+
+    function updateApplyPresetButtonState() {
+      const btn = document.getElementById('apply-preset-btn');
+      const ready = !!selectedPresetId;
+      btn.disabled = !ready;
+      btn.className = ready
+        ? 'bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2 px-4 rounded-lg text-xs transition'
+        : 'bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2 px-4 rounded-lg text-xs cursor-not-allowed transition';
+    }
+
+    async function applySelectedPreset() {
+      const preset = availablePresets.find(p => p.id === selectedPresetId);
+      if (!preset) return;
+      const btn = document.getElementById('apply-preset-btn');
+      btn.disabled = true;
+      btn.className = 'bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2 px-4 rounded-lg text-xs cursor-not-allowed transition flex items-center justify-center gap-2';
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Applying...';
+      try {
+        await importProviderSettings(preset, 'preset-apply-result');
+      } catch (err) {
+        showStatus('Network error while applying the preset.', true);
+      } finally {
+        btn.innerHTML = 'Apply';
+        updateApplyPresetButtonState();
+      }
+    }
+
+    function showExportImportResult(html, targetId) {
+      const el = document.getElementById(targetId || 'export-import-result');
+      el.innerHTML = html;
+      el.classList.remove('hidden');
+    }
+
+    function showExportImportError(msg) {
+      const el = document.getElementById('export-import-error');
+      el.textContent = msg;
+      el.classList.remove('hidden');
+    }
+
+    // Xtream category/stream ids are generated per-account by the reseller
+    // panel - two different logins have no guaranteed shared id space. So
+    // rather than exporting/importing raw ids (which would silently
+    // misassign categories, or just match nothing, on a different
+    // account), everything below translates through NAMES instead: export
+    // writes category/channel names, import resolves those names back
+    // against the importing account's own live catalog. M3U is the
+    // opposite - category ids are just the raw group-title string, and
+    // channel ids are the playlist's own tvg-id (see m3u.js's
+    // parseM3UPlaylist) - both already portable across anyone using the
+    // same M3U source, so M3U needs no translation step at all.
+    //
+    // This also means there's no attempt anywhere here to "verify" two
+    // accounts are on the same provider - nothing in an Xtream/M3U login
+    // gives a reliable signal for that. Import instead just reports how
+    // much of the file actually matched something real on the importing
+    // account; a large skip count IS the signal that it wasn't the same
+    // catalog.
+    async function fetchXtreamChannelsForCategories(xtream, categoryIds) {
+      if (!xtream || !xtream.url || !categoryIds || categoryIds.length === 0) return [];
+      try {
+        const { url, username, password } = xtream;
+        const res = await fetch('/api/xtream/streams', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, username, password, categoryIds })
+        });
+        const data = await res.json();
+        return data.success ? data.streams.map(s => ({ id: String(s.stream_id), name: s.name })) : [];
+      } catch (err) {
+        return [];
+      }
+    }
+
+    async function exportProviderSettings() {
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      if (!provider) return;
+
+      const btn = document.getElementById('export-config-btn');
+      btn.disabled = true;
+      btn.className = 'bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 px-4 rounded-lg text-xs cursor-not-allowed transition flex items-center gap-2';
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Exporting...';
+
+      try {
+        await refreshCategoriesForActiveProvider();
+        const categoryNameById = {};
+        fetchedCategories.forEach(c => { categoryNameById[String(c.category_id)] = c.category_name; });
+
+        const sportCategoriesByName = {};
+        let categoriesSkipped = 0;
+        Object.entries(provider.sportCategories || {}).forEach(([sport, ids]) => {
+          const names = [];
+          (ids || []).forEach(id => {
+            const name = categoryNameById[String(id)];
+            if (name) names.push(name);
+            else categoriesSkipped++;
+          });
+          if (names.length > 0) sportCategoriesByName[sport] = names;
+        });
+
+        const epgOverridesOut = {};
+        let overridesSkipped = 0;
+        const overrideEntries = Object.entries(provider.epgOverrides || {});
+        if (provider.connectionType === 'm3u') {
+          // tvg-id is already portable - no lookup needed.
+          overrideEntries.forEach(([tvgId, epgShareId]) => { epgOverridesOut[tvgId] = epgShareId; });
+        } else if (overrideEntries.length > 0) {
+          const usedCategoryIds = [...new Set(Object.values(provider.sportCategories || {}).flat().map(String))];
+          const channels = await fetchXtreamChannelsForCategories(provider.xtream, usedCategoryIds);
+          const nameById = {};
+          channels.forEach(ch => { nameById[ch.id] = ch.name; });
+          overrideEntries.forEach(([channelId, epgShareId]) => {
+            const name = nameById[String(channelId)];
+            if (name) epgOverridesOut[name] = epgShareId;
+            else overridesSkipped++;
+          });
+        }
+
+        // Purely informational, additive metadata - lets whoever imports this
+        // (in practice, an admin building a preset from it) know which
+        // EPGShare01 source file(s) these overrides actually need enabled to
+        // resolve to anything, without forcing a specific source into
+        // epgOverrides itself (findOverrideProgramme deliberately searches
+        // every enabled source for a bare channel id - the same id can
+        // legitimately live in more than one, so nothing here should start
+        // pinning one). Never blocks the export if it fails.
+        let epgSourcesOut = [];
+        if (Object.keys(epgOverridesOut).length > 0) {
+          try {
+            const res = await fetch('/api/epgshare/channels', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password })
+            });
+            const data = await res.json();
+            if (data.success) {
+              const targetIds = new Set(Object.values(epgOverridesOut));
+              const matchedFiles = new Set();
+              data.sources.forEach(({ file, channelIds }) => {
+                if (channelIds.some(id => targetIds.has(id))) matchedFiles.add(file);
+              });
+              epgSourcesOut = [...matchedFiles].sort();
+            }
+          } catch (err) {
+            // epgSources is informational only - the export itself still succeeds.
+          }
+        }
+
+        const exportData = {
+          sportioExportVersion: 1,
+          exportedAt: new Date().toISOString(),
+          connectionType: provider.connectionType,
+          selectedSports: provider.selectedSports || [],
+          sportCategories: sportCategoriesByName,
+          epgOverrides: epgOverridesOut,
+          epgSources: epgSourcesOut
+        };
+
+        const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+        const blobUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        const slug = (provider.label || 'provider').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'provider';
+        link.href = blobUrl;
+        link.download = `sportio-settings-${slug}.json`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(blobUrl);
+
+        const categoryCount = Object.values(sportCategoriesByName).reduce((sum, arr) => sum + arr.length, 0);
+        const overrideCount = Object.keys(epgOverridesOut).length;
+        const lines = [`<div class="text-[#a8e0ac] font-semibold">Exported ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'} and ${overrideCount} EPG override${overrideCount === 1 ? '' : 's'}.</div>`];
+        if (categoriesSkipped > 0 || overridesSkipped > 0) {
+          lines.push(`<div class="text-[#e6e6e6]/55">${categoriesSkipped} categor${categoriesSkipped === 1 ? 'y' : 'ies'} and ${overridesSkipped} override${overridesSkipped === 1 ? '' : 's'} couldn't be named and were left out.</div>`);
+        }
+        showExportImportResult(lines.join(''));
+      } finally {
+        btn.disabled = false;
+        btn.className = 'bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2';
+        btn.innerHTML = '<i class="fa-solid fa-upload"></i> Export Config';
+      }
+    }
+
+    function handleImportFileSelected(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      document.getElementById('export-import-error').classList.add('hidden');
+      document.getElementById('export-import-result').classList.add('hidden');
+
+      const btn = document.getElementById('import-config-btn');
+      btn.disabled = true;
+      btn.className = 'bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 px-4 rounded-lg text-xs cursor-not-allowed transition flex items-center gap-2';
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Importing...';
+      const restoreImportBtn = () => {
+        btn.disabled = false;
+        btn.className = 'bg-[#56707d] hover:bg-[#66818f] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2';
+        btn.innerHTML = '<i class="fa-solid fa-download"></i> Import Config';
+      };
+
+      const reader = new FileReader();
+      reader.onload = async () => {
+        let data;
+        try {
+          data = JSON.parse(reader.result);
+        } catch (err) {
+          showExportImportError("That file isn't valid JSON.");
+          restoreImportBtn();
+          return;
+        }
+        if (!data || typeof data !== 'object' || data.sportioExportVersion !== 1
+          || typeof data.sportCategories !== 'object' || typeof data.epgOverrides !== 'object') {
+          showExportImportError("That doesn't look like a Sportio settings export.");
+          restoreImportBtn();
+          return;
+        }
+        await importProviderSettings(data);
+        event.target.value = '';
+        restoreImportBtn();
+      };
+      reader.onerror = () => {
+        showExportImportError('Could not read that file.');
+        restoreImportBtn();
+      };
+      reader.readAsText(file);
+    }
+
+    async function importProviderSettings(data, resultElId) {
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      if (!provider) return;
+
+      // Category/channel identity is resolved by name (Xtream) or tvg-id
+      // (M3U) - two entirely different id spaces with no meaningful
+      // cross-mapping between them, so a file/preset built for one
+      // connection type can never correctly apply to the other. Blocked
+      // outright rather than attempted-then-mostly-skipped.
+      if (data.connectionType && data.connectionType !== provider.connectionType) {
+        showExportImportResult(
+          `<div class="text-[#e56a6a] font-semibold">This configuration was made for an ${data.connectionType === 'm3u' ? 'M3U' : 'Xtream'} provider, but your active provider is ${provider.connectionType === 'm3u' ? 'M3U' : 'Xtream'}. Importing across different provider types isn't supported.</div>`,
+          resultElId
+        );
+        return;
+      }
+
+      await refreshCategoriesForActiveProvider();
+      const categoryIdByName = {};
+      fetchedCategories.forEach(c => { categoryIdByName[c.category_name] = String(c.category_id); });
+
+      // Leagues, categories, and EPG overrides are all a full replacement,
+      // not a merge - an imported file/preset represents someone's
+      // complete setup, and leaving the importing user's own prior
+      // selections mixed in would produce a hybrid neither side actually
+      // asked for.
+      provider.sportCategories = {};
+      provider.selectedSports = [];
+      const allowedSports = new Set([...SPORTS, 'GLOBAL']);
+
+      let categoriesApplied = 0;
+      let categoriesSkipped = 0;
+
+      Object.entries(data.sportCategories).forEach(([sport, names]) => {
+        if (!allowedSports.has(sport) || !Array.isArray(names)) return;
+        const resolved = new Set();
+        names.forEach(name => {
+          const id = categoryIdByName[name];
+          if (id) { resolved.add(id); categoriesApplied++; }
+          else categoriesSkipped++;
+        });
+        if (resolved.size > 0) {
+          provider.sportCategories[sport] = [...resolved];
+          if (sport !== 'GLOBAL' && !provider.selectedSports.includes(sport)) {
+            provider.selectedSports.push(sport);
+          }
+        }
+      });
+
+      if (Array.isArray(data.selectedSports)) {
+        data.selectedSports.forEach(sport => {
+          if (allowedSports.has(sport) && sport !== 'GLOBAL' && !provider.selectedSports.includes(sport)) {
+            provider.selectedSports.push(sport);
+          }
+        });
+      }
+
+      provider.epgOverrides = {};
+      let overridesApplied = 0;
+      let overridesNotFound = 0;
+      let overridesAmbiguous = 0;
+      const importedOverrides = data.epgOverrides || {};
+
+      if (provider.connectionType === 'm3u') {
+        // tvg-id is already local-compatible - apply directly.
+        Object.entries(importedOverrides).forEach(([tvgId, epgShareId]) => {
+          provider.epgOverrides[tvgId] = epgShareId;
+          overridesApplied++;
+        });
+      } else if (Object.keys(importedOverrides).length > 0) {
+        const usedCategoryIds = [...new Set(Object.values(provider.sportCategories).flat().map(String))];
+        const channels = await fetchXtreamChannelsForCategories(provider.xtream, usedCategoryIds);
+        const idsByName = {};
+        channels.forEach(ch => { (idsByName[ch.name] = idsByName[ch.name] || []).push(ch.id); });
+        Object.entries(importedOverrides).forEach(([channelName, epgShareId]) => {
+          const matches = idsByName[channelName] || [];
+          if (matches.length === 1) {
+            provider.epgOverrides[matches[0]] = epgShareId;
+            overridesApplied++;
+          } else if (matches.length === 0) {
+            overridesNotFound++;
+          } else {
+            // Multiple channels share this name - applying to either would
+            // be a guess, and a wrong EPG assignment is worse than a
+            // missing one, so this is left for the user to set by hand.
+            overridesAmbiguous++;
+          }
+        });
+      }
+
+      renderActiveProviderPanel();
+      markDashboardDirty();
+
+      const leagueCount = provider.selectedSports.length;
+      const lines = [
+        `<div class="text-[#a8e0ac] font-semibold">Applied ${categoriesApplied} categor${categoriesApplied === 1 ? 'y' : 'ies'} across ${leagueCount} league${leagueCount === 1 ? '' : 's'} - this replaced your previous league/category selections for this provider.</div>`,
+        `<div class="text-[#a8e0ac]">Applied ${overridesApplied} EPG override${overridesApplied === 1 ? '' : 's'} - this replaced your previous EPG overrides for this provider.</div>`
+      ];
+      const skippedParts = [];
+      if (categoriesSkipped > 0) skippedParts.push(`${categoriesSkipped} categor${categoriesSkipped === 1 ? 'y' : 'ies'} not found`);
+      if (overridesNotFound > 0) skippedParts.push(`${overridesNotFound} channel${overridesNotFound === 1 ? '' : 's'} not found`);
+      if (overridesAmbiguous > 0) skippedParts.push(`${overridesAmbiguous} channel${overridesAmbiguous === 1 ? '' : 's'} ambiguous (multiple matches)`);
+      if (skippedParts.length > 0) {
+        lines.push(`<div class="text-[#e6e6e6]/55">Skipped: ${skippedParts.join(', ')}.</div>`);
+      }
+      lines.push(`<div class="text-[#e6e6e6]/40 text-[10px] mt-1">Not saved yet - click Save and Copy Link to keep these changes.</div>`);
+      showExportImportResult(lines.join(''), resultElId);
+    }
+
+    // Fetches the active provider's own channel list, branching by
+    // connectionType the same way refreshCategoriesForActiveProvider does,
+    // and normalizes both shapes into {id, name, categoryIds} - M3U
+    // channels already carry a categories array (a channel can be in more
+    // than one group-title); Xtream streams carry a single category_id
+    // (or, on some providers, a category_ids array) instead, so that's
+    // wrapped into the same categoryIds shape here for the left
+    // accordion to group by uniformly regardless of source.
+    async function loadChannelEpgChannels() {
+      const statusEl = document.getElementById('channel-epg-status');
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      channelEpgChannels = [];
+      if (!provider) { renderChannelEpgCategories(); return; }
+
+      statusEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1.5"></i>Loading your channels...';
+
+      try {
+        if (provider.connectionType === 'm3u') {
+          if (!provider.m3u || !provider.m3u.playlistUrl) {
+            statusEl.textContent = 'This provider is not configured for M3U.';
+            renderChannelEpgCategories();
+            return;
+          }
+          if (getSelectedCategoryIds(provider).length === 0) {
+            statusEl.textContent = 'Select some leagues for this provider first (Add/Remove Leagues), then choose their categories in Category Search.';
+            renderChannelEpgCategories();
+            return;
+          }
+          const res = await fetch('/api/m3u/channels', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password, providerId: provider.id })
+          });
+          const data = await res.json();
+          if (data.success) {
+            channelEpgChannels = data.channels.map(ch => ({ id: ch.id, name: ch.name, categoryIds: (ch.categories || []).map(String) }));
+            statusEl.textContent = data.notReady
+              ? 'M3U data is still loading in the background - try again shortly.'
+              : `${channelEpgChannels.length} channel${channelEpgChannels.length === 1 ? '' : 's'}.`;
+          } else {
+            statusEl.textContent = data.error || 'Failed to load channels.';
+          }
+        } else {
+          if (!provider.xtream || !provider.xtream.url) {
+            statusEl.textContent = 'This provider is not configured for Xtream.';
+            renderChannelEpgCategories();
+            return;
+          }
+          const categoryIds = getSelectedCategoryIds(provider);
+          if (categoryIds.length === 0) {
+            statusEl.textContent = 'Select some leagues for this provider first (Add/Remove Leagues), then choose their categories in Category Search.';
+            renderChannelEpgCategories();
+            return;
+          }
+          const { url, username, password } = provider.xtream;
+          const res = await fetch('/api/xtream/streams', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url, username, password, categoryIds })
+          });
+          const data = await res.json();
+          if (data.success) {
+            // Keyed by stream_id, not epg_channel_id - confirmed against
+            // real provider data that epg_channel_id is frequently empty
+            // and, worse, sometimes identical across genuinely different
+            // channels (some providers just don't populate it
+            // meaningfully). Using it as the id both under-counted
+            // channels here (anything with a blank epg_channel_id got
+            // silently dropped) and broke selection once two channels
+            // shared one (clicking either always showed/highlighted
+            // whichever happened to come first). stream_id is the one
+            // field Xtream guarantees is present and unique per channel,
+            // and must match the same field the server's stream-building
+            // route now uses for its override join key.
+            channelEpgChannels = data.streams.map(s => ({
+              id: String(s.stream_id),
+              name: s.name,
+              // Always coerced to strings - provider.sportCategories (and
+              // therefore the category ids the left accordion groups by)
+              // is always string-valued, since it's built from checkbox
+              // .value attributes in Category Search, but Xtream's own
+              // API can hand back category_ids as an array of raw numbers
+              // rather than strings. Left uncoerced, this silently
+              // produces zero matches for every category
+              // (`[5].includes('5')` is false) even though the data is
+              // otherwise completely correct.
+              categoryIds: (s.category_ids && s.category_ids.length > 0
+                ? s.category_ids
+                : (s.category_id != null ? [s.category_id] : [])
+              ).map(String)
+            }));
+            statusEl.textContent = `${channelEpgChannels.length} channel${channelEpgChannels.length === 1 ? '' : 's'}.`;
+          } else {
+            statusEl.textContent = data.error || 'Failed to load channels.';
+          }
+        }
+      } catch (err) {
+        statusEl.textContent = 'Network error while loading channels.';
+      }
+
+      renderChannelEpgCategories();
+    }
+
+    // The set of category ids this provider currently has selected, across
+    // every sport (GLOBAL included) - the same union the server itself
+    // scopes /api/m3u/channels and the stream-matching route to, so the
+    // left accordion only ever shows categories actually in play.
+    function getSelectedCategoryIds(provider) {
+      return [...new Set(Object.values((provider && provider.sportCategories) || {}).flat().map(String))];
+    }
+
+    // fetchedCategories (already loaded/kept fresh by
+    // refreshCategoriesForActiveProvider for Category Search above) is
+    // reused here as the id -> name lookup rather than fetching categories
+    // a second time - for M3U the id and name are already the same
+    // group-title string anyway.
+    function getCategoryNameById(categoryId) {
+      const match = fetchedCategories.find(c => c.category_id === categoryId);
+      return match ? match.category_name : categoryId;
+    }
+
+    // --- Left panel: category accordion ---
+
+    function toggleChannelEpgOnlyOverrides() {
+      channelEpgOnlyOverrides = document.getElementById('channel-epg-only-overrides').checked;
+      renderChannelEpgCategories();
+    }
+
+    function renderChannelEpgCategories() {
+      const container = document.getElementById('channel-epg-categories');
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      if (!provider) { container.innerHTML = ''; return; }
+
+      const term = document.getElementById('channel-epg-search').value.trim().toLowerCase();
+      const categoryIds = getSelectedCategoryIds(provider)
+        .map(id => ({ id, name: getCategoryNameById(id) }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      // Rebuilt from scratch on every render - only rows actually visible
+      // right now are valid shift-click range endpoints.
+      channelEpgVisibleOrder = [];
+
+      if (channelEpgChannels.length === 0) {
+        container.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No channels loaded yet.</p>';
+        return;
+      }
+      if (categoryIds.length === 0) {
+        container.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No categories selected yet - pick some in Category Search above.</p>';
+        return;
+      }
+
+      let anyCategoryRendered = false;
+      const html = categoryIds.map(({ id: catId, name: catName }) => {
+        const channelsInCategory = channelEpgChannels.filter(ch => ch.categoryIds.includes(catId));
+        if (channelsInCategory.length === 0) return '';
+
+        const searchMatched = term
+          ? channelsInCategory.filter(ch => ch.name.toLowerCase().includes(term) || ch.id.toLowerCase().includes(term))
+          : channelsInCategory;
+        const matchingChannels = channelEpgOnlyOverrides
+          ? searchMatched.filter(ch => provider.epgOverrides && provider.epgOverrides[ch.id])
+          : searchMatched;
+        // While searching or filtering to overrides only, only categories
+        // with at least one match show up at all, and always expanded -
+        // otherwise, respect whatever the user manually expanded/collapsed.
+        const isFiltering = term || channelEpgOnlyOverrides;
+        if (isFiltering && matchingChannels.length === 0) return '';
+        anyCategoryRendered = true;
+        const isExpanded = isFiltering ? true : channelEpgExpandedCategories.has(catId);
+
+        const channelsHtml = isExpanded ? matchingChannels.map(ch => {
+          channelEpgVisibleOrder.push(ch.id);
+          const overrideTarget = provider.epgOverrides && provider.epgOverrides[ch.id];
+          const isSelected = channelEpgSelectedChannelIds.has(ch.id);
+          const statusHtml = overrideTarget
+            ? `<span class="text-[10px] font-semibold text-[#5aa8d1]">&rarr; ${overrideTarget === EPG_OVERRIDE_SELF_NAME ? 'Channel name' : escapeHtml(overrideTarget)}</span>`
+            : `<span class="text-[10px] text-[#e6e6e6]/45">Provider EPG</span>`;
+          return `
+            <button type="button" onclick="selectChannelForEpgEdit('${escapeJsAttr(ch.id)}', event)" class="w-full text-left pl-7 pr-3 py-1.5 transition ${isSelected ? 'bg-[#3b8fc4]/20 border-l-2 border-[#3b8fc4]' : 'border-l-2 border-transparent hover:bg-[#3b4d58]'}">
+              <div class="text-xs font-semibold truncate">${escapeHtml(ch.name)}</div>
+              ${statusHtml}
+            </button>
+          `;
+        }).join('') : '';
+
+        return `
+          <div class="border-b border-[#e6e6e6]/10 last:border-b-0">
+            <button type="button" onclick="toggleChannelEpgCategory('${escapeJsAttr(catId)}')" class="w-full flex items-center justify-between gap-2 px-3 py-2 text-left hover:bg-[#3b4d58]/60 transition">
+              <span class="text-xs font-semibold truncate flex items-center gap-2">
+                <i class="fa-solid fa-chevron-right text-[10px] text-[#e6e6e6]/55 transition-transform ${isExpanded ? 'rotate-90' : ''}"></i>
+                ${escapeHtml(catName)}
+              </span>
+              <span class="text-[10px] text-[#e6e6e6]/45 shrink-0">${matchingChannels.length}</span>
+            </button>
+            ${channelsHtml}
+          </div>
+        `;
+      }).join('');
+
+      if (anyCategoryRendered) {
+        container.innerHTML = html;
+      } else if (term) {
+        container.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No channels match your search.</p>';
+      } else if (channelEpgOnlyOverrides) {
+        container.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No channels have an EPG override yet.</p>';
+      } else {
+        // Every selected category came back with zero matching channels -
+        // distinct from "no categories selected" above. If this shows up
+        // with real channels loaded, it means none of them are tagged
+        // with any of the currently-selected category ids (a data
+        // mismatch, not truly "nothing to show") - Refresh Categories is
+        // the fix, since it re-pulls both sides fresh.
+        container.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">None of your loaded channels match your selected categories - try "Refresh Categories" above.</p>';
+      }
+    }
+
+    function toggleChannelEpgCategory(categoryId) {
+      if (channelEpgExpandedCategories.has(categoryId)) {
+        channelEpgExpandedCategories.delete(categoryId);
+      } else {
+        channelEpgExpandedCategories.add(categoryId);
+      }
+      renderChannelEpgCategories();
+    }
+
+    // Standard file-manager-style modifier behavior: plain click collapses
+    // to just this row, ctrl/cmd-click toggles this row in/out of whatever
+    // was already selected (and becomes the new range anchor), shift-click
+    // selects the visible-order range between the anchor and this row. An
+    // anchor that's since scrolled out of the visible set (category
+    // collapsed, search changed) can't anchor a range, so that falls back
+    // to a plain single-select rather than doing something surprising.
+    function selectChannelForEpgEdit(channelId, event) {
+      if (event && event.shiftKey && channelEpgSelectionAnchor) {
+        const anchorIdx = channelEpgVisibleOrder.indexOf(channelEpgSelectionAnchor);
+        const clickedIdx = channelEpgVisibleOrder.indexOf(channelId);
+        if (anchorIdx !== -1 && clickedIdx !== -1) {
+          const [start, end] = anchorIdx < clickedIdx ? [anchorIdx, clickedIdx] : [clickedIdx, anchorIdx];
+          channelEpgSelectedChannelIds = new Set(channelEpgVisibleOrder.slice(start, end + 1));
+        } else {
+          channelEpgSelectedChannelIds = new Set([channelId]);
+          channelEpgSelectionAnchor = channelId;
+        }
+      } else if (event && (event.ctrlKey || event.metaKey)) {
+        if (channelEpgSelectedChannelIds.has(channelId)) {
+          channelEpgSelectedChannelIds.delete(channelId);
+        } else {
+          channelEpgSelectedChannelIds.add(channelId);
+        }
+        channelEpgSelectionAnchor = channelId;
+      } else {
+        channelEpgSelectedChannelIds = new Set([channelId]);
+        channelEpgSelectionAnchor = channelId;
+      }
+
+      channelEpgSelectedChannelId = channelEpgSelectedChannelIds.size === 1
+        ? [...channelEpgSelectedChannelIds][0]
+        : null;
+      // Last channel's matches would be actively misleading here - source
+      // choice stays, but the results themselves are always per-channel.
+      channelEpgSuggestResults = null;
+      renderChannelEpgCategories();
+      if (channelEpgSelectedChannelIds.size >= 2) {
+        renderChannelEpgMultiEditor();
+      } else {
+        renderChannelEpgEditor();
+      }
+    }
+
+    // Bulk action: either set every selected channel's override to the
+    // reserved "use this channel's own name" sentinel, or clear every
+    // selected channel's override entirely - whichever is offered depends
+    // on whether the whole selection already has overrides applied, since
+    // "display channel names" is meaningless to offer on a selection that's
+    // already all set that way (or a mix), and "clear" is meaningless to
+    // offer on a selection with no overrides to clear.
+    function renderChannelEpgMultiEditor() {
+      const editor = document.getElementById('channel-epg-editor');
+      const count = channelEpgSelectedChannelIds.size;
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      const overrides = (provider && provider.epgOverrides) || {};
+      const allOverridden = [...channelEpgSelectedChannelIds].every(id => overrides[id] !== undefined);
+      const question = allOverridden ? 'Clear EPG overrides?' : 'Display channel names as descriptions?';
+      const applyFn = allOverridden ? 'applyMultiEpgClear' : 'applyMultiEpgSelfName';
+      editor.innerHTML = `
+        <div class="flex flex-col items-center text-center gap-4 py-6">
+          <p class="text-sm font-semibold">${count} channels selected</p>
+          <p class="text-xs text-[#e6e6e6]/55 max-w-[220px]">${question}</p>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" id="multi-epg-name-toggle" onchange="updateMultiEpgApplyState()" class="sr-only peer">
+            <div class="w-9 h-5 bg-[#56707d] rounded-full peer-checked:bg-[#3b8fc4] transition"></div>
+            <div class="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full transition peer-checked:translate-x-4"></div>
+          </label>
+          <div class="flex gap-2">
+            <button type="button" onclick="cancelMultiEpgSelection()" class="bg-[#56707d] hover:bg-[#66818f] font-bold py-2 px-4 rounded-lg text-xs transition">Cancel</button>
+            <button type="button" id="multi-epg-apply-btn" onclick="${applyFn}()" disabled class="bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2 px-4 rounded-lg text-xs cursor-not-allowed transition">Apply</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function updateMultiEpgApplyState() {
+      const toggle = document.getElementById('multi-epg-name-toggle');
+      const btn = document.getElementById('multi-epg-apply-btn');
+      const ready = !!(toggle && toggle.checked);
+      btn.disabled = !ready;
+      btn.className = ready
+        ? 'bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2 px-4 rounded-lg text-xs transition'
+        : 'bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2 px-4 rounded-lg text-xs cursor-not-allowed transition';
+    }
+
+    function cancelMultiEpgSelection() {
+      channelEpgSelectedChannelIds = new Set();
+      channelEpgSelectionAnchor = null;
+      channelEpgSelectedChannelId = null;
+      renderChannelEpgCategories();
+      renderChannelEpgEditor();
+    }
+
+    function applyMultiEpgSelfName() {
+      const toggle = document.getElementById('multi-epg-name-toggle');
+      if (!toggle || !toggle.checked) return;
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      if (!provider) return;
+      provider.epgOverrides = provider.epgOverrides || {};
+      channelEpgSelectedChannelIds.forEach(id => {
+        provider.epgOverrides[id] = EPG_OVERRIDE_SELF_NAME;
+      });
+      channelEpgSelectedChannelIds = new Set();
+      channelEpgSelectionAnchor = null;
+      channelEpgSelectedChannelId = null;
+      renderChannelEpgCategories();
+      renderChannelEpgEditor();
+      markDashboardDirty();
+    }
+
+    function applyMultiEpgClear() {
+      const toggle = document.getElementById('multi-epg-name-toggle');
+      if (!toggle || !toggle.checked) return;
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      if (!provider) return;
+      provider.epgOverrides = provider.epgOverrides || {};
+      channelEpgSelectedChannelIds.forEach(id => {
+        delete provider.epgOverrides[id];
+      });
+      channelEpgSelectedChannelIds = new Set();
+      channelEpgSelectionAnchor = null;
+      channelEpgSelectedChannelId = null;
+      renderChannelEpgCategories();
+      renderChannelEpgEditor();
+      markDashboardDirty();
+    }
+
+    // --- Right panel: editor for the currently selected channel ---
+
+    async function loadEpgShareChannelCatalog() {
+      if (epgShareSourcesCatalog !== null) return;
+      try {
+        const res = await fetch('/api/epgshare/channels', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password })
+        });
+        const data = await res.json();
+        epgShareSourcesCatalog = data.success ? data.sources : [];
+      } catch (err) {
+        epgShareSourcesCatalog = [];
+      }
+      renderChannelEpgEditor();
+    }
+
+    // A short, human-friendly label derived from the raw filename (e.g.
+    // "epg_ripper_US_SPORTS1.xml.gz" -> "US SPORTS1") - same derivation
+    // the admin's EPG Editor uses for the same files, so a source reads
+    // the same way in both places.
+    function epgShareSourceLabel(file) {
+      return file.replace(/^epg_ripper_/, '').replace(/\.xml\.gz$/, '').replace(/_/g, ' ');
+    }
+
+    // All enabled sources' channel ids merged into one deduped list - used
+    // for "All EPG sources" in the manual picker and for suggestion
+    // scoring (which deliberately searches everything regardless of which
+    // single source the manual picker might currently be scoped to).
+    function getMergedEpgShareChannelIds() {
+      const ids = new Set();
+      (epgShareSourcesCatalog || []).forEach(s => s.channelIds.forEach(id => ids.add(id)));
+      return [...ids].sort();
+    }
+
+    // Reduces a string to lowercase alphanumeric tokens - used on both
+    // sides of a suggestion match (the provider's own channel name, and an
+    // EPGShare01 channel id) so wildly different formatting conventions
+    // ("ESPN HD (US)" vs "ESPN.us") still line up.
+    function normalizeForMatch(str) {
+      return String(str || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    }
+
+    // A deliberately simple, dependency-free scoring heuristic - not fuzzy
+    // matching in any formal sense, just a handful of increasingly loose
+    // checks (exact match, prefix, substring, shared word count) since
+    // EPGShare01 channel ids are short, largely-readable slugs (e.g.
+    // "ESPN.us") rather than free-form text needing real fuzzy search.
+    function scoreEpgShareMatch(channelName, epgShareId) {
+      const a = normalizeForMatch(channelName);
+      const b = normalizeForMatch(epgShareId.replace(/\.[a-z]{2,3}$/i, ''));
+      if (!a || !b) return 0;
+      if (a === b) return 100;
+      if (b.startsWith(a) || a.startsWith(b)) return 80;
+      if (b.includes(a) || a.includes(b)) return 60;
+
+      // EPG ids concatenate multi-word names with no separator at all
+      // (confirmed directly: "Fox Sports 1" is "FoxSports1", "NBC Sports"
+      // is "NBCSports") - not even the "."-as-punctuation case
+      // normalizeForMatch already handles, since there's nothing there to
+      // normalize. The word-boundary checks above and the token-overlap
+      // check below both need actual separators on both sides to line up,
+      // so neither one alone catches this - comparing the channel name
+      // with its own spaces stripped out is what bridges it.
+      const aJoined = a.replace(/ /g, '');
+      if (aJoined && (b === aJoined || b.startsWith(aJoined) || aJoined.startsWith(b) || b.includes(aJoined) || aJoined.includes(b))) {
+        return 50;
+      }
+
+      const aTokens = new Set(a.split(' ').filter(t => t.length > 1));
+      const bTokens = new Set(b.split(' ').filter(t => t.length > 1));
+      let overlap = 0;
+      aTokens.forEach(t => { if (bTokens.has(t)) overlap++; });
+      return overlap > 0 ? 20 + overlap * 10 : 0;
+    }
+
+    // candidateIds is deliberately passed in rather than always pulled from
+    // getMergedEpgShareChannelIds() - the "Suggested matches" search scopes
+    // this to one chosen source's channelIds at a time.
+    function getSuggestedEpgShareMatches(channelName, candidateIds, limit = 5) {
+      return candidateIds
+        .map(id => ({ id, score: scoreEpgShareMatch(channelName, id) }))
+        .filter(x => x.score > 0)
+        .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
+        .slice(0, limit)
+        .map(x => x.id);
+    }
+
+    function renderChannelEpgEditor() {
+      const editor = document.getElementById('channel-epg-editor');
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      const channel = channelEpgChannels.find(ch => ch.id === channelEpgSelectedChannelId);
+
+      if (!provider || !channel) {
+        editor.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic">Select a channel on the left to edit its EPG source.</p>';
+        return;
+      }
+
+      const overrideTarget = provider.epgOverrides && provider.epgOverrides[channel.id];
+      const currentHtml = overrideTarget
+        ? `<div class="shrink-0 max-w-[55%] flex items-center gap-2 bg-[#3b4d58] rounded-lg px-2.5 py-1.5">
+             <div class="text-xs text-right min-w-0"><span class="text-[#e6e6e6]/55">Using:</span> <span class="font-mono text-[#5aa8d1] break-all">${overrideTarget === EPG_OVERRIDE_SELF_NAME ? 'Channel name' : escapeHtml(overrideTarget)}</span></div>
+             <button type="button" onclick="clearSelectedChannelEpgOverride()" class="text-[10px] font-bold text-[#e56a6a] hover:text-[#f0b8b8] transition shrink-0">Reset</button>
+           </div>`
+        : `<div class="shrink-0 text-xs text-[#e6e6e6]/55 bg-[#3b4d58] rounded-lg px-2.5 py-1.5 whitespace-nowrap">Using: <span class="font-semibold text-[#e6e6e6]/80">Provider EPG</span> (default)</div>`;
+
+      // Source dropdown for the "Suggested matches" search - one option per
+      // admin-enabled+cached source (no merged "all sources" choice here,
+      // unlike the manual picker below: matching is scoped to one source
+      // at a time by design). channelEpgSuggestSourceFilter persists across
+      // channel selections; channelEpgSuggestResults doesn't, so switching
+      // channels always requires a fresh Search click even though the
+      // source stays picked.
+      const sources = epgShareSourcesCatalog || [];
+      const catalogLoading = epgShareSourcesCatalog === null;
+      const suggestSourceOptionsHtml = sources.map(s => `
+        <option value="${escapeHtml(s.file)}" ${s.file === channelEpgSuggestSourceFilter ? 'selected' : ''}>${escapeHtml(epgShareSourceLabel(s.file))} (${s.channelIds.length})</option>
+      `).join('');
+      const searchDisabled = catalogLoading || !channelEpgSuggestSourceFilter;
+      const suggestResultsHtml = channelEpgSuggestResults === null
+        ? `<p class="text-xs text-[#e6e6e6]/55 italic">${catalogLoading ? 'Loading sources...' : 'Pick an EPG source above, then click Search.'}</p>`
+        : channelEpgSuggestResults.length > 0
+          ? channelEpgSuggestResults.map(id => `
+              <button type="button" onclick="applyEpgShareOverrideToSelected('${escapeJsAttr(id)}')" class="w-full text-left px-3 py-1.5 text-xs font-mono rounded-lg transition ${id === overrideTarget ? 'bg-[#3b8fc4]/30 text-[#5aa8d1]' : 'bg-[#3b4d58] hover:bg-[#455c69]'}">${escapeHtml(id)}</button>
+            `).join('')
+          : '<p class="text-xs text-[#e6e6e6]/55 italic">No close matches found in that source - try manual search below.</p>';
+
+      // Source dropdown for manual search: "All EPG sources" (merged, the
+      // default) plus one option per source, each labeled with its channel
+      // count - lets a user narrow the manual search down to a specific
+      // source instead of always searching everything merged together, and
+      // doubles as visibility into exactly which source(s) are available.
+      const totalChannels = getMergedEpgShareChannelIds().length;
+      const manualSourceOptionsHtml = sources.map(s => `
+        <option value="${escapeHtml(s.file)}" ${s.file === channelEpgManualSourceFilter ? 'selected' : ''}>${escapeHtml(epgShareSourceLabel(s.file))} (${s.channelIds.length})</option>
+      `).join('');
+
+      editor.innerHTML = `
+        <div class="flex items-start justify-between gap-3 mb-3">
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-bold truncate">${escapeHtml(channel.name)}</div>
+            <div class="text-[10px] text-[#e6e6e6]/45 font-mono truncate">${escapeHtml(channel.id)}</div>
+          </div>
+          ${currentHtml}
+        </div>
+        <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Suggested matches</label>
+        <div class="flex gap-2 mb-2">
+          <select id="channel-epg-suggest-source" onchange="onChannelEpgSuggestSourceChange()" ${catalogLoading ? 'disabled' : ''} class="flex-1 min-w-0 bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none">
+            <option value="" ${channelEpgSuggestSourceFilter === '' ? 'selected' : ''}>${catalogLoading ? 'Loading sources...' : 'Select a source...'}</option>
+            ${suggestSourceOptionsHtml}
+          </select>
+          <button type="button" onclick="searchChannelEpgSuggestions()" ${searchDisabled ? 'disabled' : ''} class="shrink-0 font-bold px-3 py-1.5 rounded-lg text-xs transition flex items-center gap-1.5 ${searchDisabled ? 'bg-[#56707d] text-[#e6e6e6]/40 cursor-not-allowed' : 'bg-[#3b8fc4] hover:bg-[#4fa3d8]'}">
+            <i class="fa-solid fa-magnifying-glass"></i> Search
+          </button>
+        </div>
+        <div class="space-y-1 mb-4">${suggestResultsHtml}</div>
+        <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Or choose manually</label>
+        <select id="channel-epg-manual-source" onchange="onChannelEpgManualSourceChange()" class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none mb-2">
+          <option value="" ${channelEpgManualSourceFilter === '' ? 'selected' : ''}>All EPG sources (${totalChannels})</option>
+          ${manualSourceOptionsHtml}
+        </select>
+        <div class="relative mb-2">
+          <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-xs text-[#e6e6e6]/55"></i>
+          <input type="text" id="channel-epg-manual-search" oninput="renderManualEpgShareList()" placeholder="Search EPG channels..." class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg pl-8 pr-3 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none">
+        </div>
+        <div id="channel-epg-manual-list" class="max-h-48 overflow-y-auto bg-[#3b4d58] rounded-lg divide-y divide-[#e6e6e6]/10"></div>
+      `;
+      renderManualEpgShareList();
+    }
+
+    function onChannelEpgSuggestSourceChange() {
+      channelEpgSuggestSourceFilter = document.getElementById('channel-epg-suggest-source').value;
+      // Stale results from whichever source was picked before - require a
+      // fresh Search click rather than silently re-scoring in place.
+      channelEpgSuggestResults = null;
+      renderChannelEpgEditor();
+    }
+
+    function searchChannelEpgSuggestions() {
+      const channel = channelEpgChannels.find(ch => ch.id === channelEpgSelectedChannelId);
+      const source = (epgShareSourcesCatalog || []).find(s => s.file === channelEpgSuggestSourceFilter);
+      if (!channel || !source) return;
+      channelEpgSuggestResults = getSuggestedEpgShareMatches(channel.name, source.channelIds);
+      renderChannelEpgEditor();
+    }
+
+    function onChannelEpgManualSourceChange() {
+      channelEpgManualSourceFilter = document.getElementById('channel-epg-manual-source').value;
+      renderManualEpgShareList();
+    }
+
+    function renderManualEpgShareList() {
+      const listEl = document.getElementById('channel-epg-manual-list');
+      if (!listEl) return;
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      const overrideTarget = provider && provider.epgOverrides && provider.epgOverrides[channelEpgSelectedChannelId];
+      const selectedSource = (epgShareSourcesCatalog || []).find(s => s.file === channelEpgManualSourceFilter);
+      const catalog = selectedSource ? selectedSource.channelIds : getMergedEpgShareChannelIds();
+      const term = document.getElementById('channel-epg-manual-search').value.trim().toLowerCase();
+      const filtered = term ? catalog.filter(id => id.toLowerCase().includes(term)) : catalog;
+
+      if (catalog.length === 0) {
+        listEl.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No EPG sources are available yet - ask your admin to enable some in the EPG Editor.</p>';
+        return;
+      }
+      if (filtered.length === 0) {
+        listEl.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No EPG channels match your search.</p>';
+        return;
+      }
+
+      // Capped so a broad/empty search on a large catalog doesn't render
+      // thousands of rows at once - narrowing the search reveals more.
+      const capped = filtered.slice(0, 200);
+      listEl.innerHTML = capped.map(id => `
+        <button type="button" onclick="applyEpgShareOverrideToSelected('${escapeJsAttr(id)}')" class="w-full text-left px-3 py-2 text-xs font-mono hover:bg-[#455c69] transition truncate ${id === overrideTarget ? 'text-[#5aa8d1] font-semibold' : ''}">${escapeHtml(id)}</button>
+      `).join('') + (filtered.length > capped.length
+        ? `<p class="text-[10px] text-[#e6e6e6]/45 italic px-3 py-2">${filtered.length - capped.length} more - narrow your search to see them.</p>`
+        : '');
+    }
+
+    function applyEpgShareOverrideToSelected(epgShareChannelId) {
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      if (!provider || !channelEpgSelectedChannelId) return;
+      provider.epgOverrides = provider.epgOverrides || {};
+      provider.epgOverrides[channelEpgSelectedChannelId] = epgShareChannelId;
+      renderChannelEpgCategories();
+      renderChannelEpgEditor();
+      markDashboardDirty();
+    }
+
+    function clearSelectedChannelEpgOverride() {
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      if (!provider || !provider.epgOverrides || !channelEpgSelectedChannelId) return;
+      delete provider.epgOverrides[channelEpgSelectedChannelId];
+      renderChannelEpgCategories();
+      renderChannelEpgEditor();
+      markDashboardDirty();
     }
 
     // --- Dashboard: Delete Account ---
@@ -1683,20 +3422,25 @@
     function toggleDeleteAccountPanel() {
       const panel = document.getElementById('delete-account-panel');
       if (panel.classList.contains('hidden')) {
+        closeSourcesPanelSilently();
         closeEditXtreamPanelSilently();
         closeEditM3uPanelSilently();
-        closeManageSportsPanelSilently();
         closeChangeTimezonePanelSilently();
+        closeFormatterPanelSilently();
+        closeChannelEpgPanelSilently();
+        closeExportImportPanelSilently();
         document.getElementById('delete-confirm-input').value = '';
         updateDeleteButton();
         panel.classList.remove('hidden');
       } else {
         cancelDeleteAccount();
       }
+      updateSettingsButtonStates();
     }
 
     function closeDeleteAccountPanelSilently() {
       document.getElementById('delete-account-panel').classList.add('hidden');
+      updateSettingsButtonStates();
     }
 
     function cancelDeleteAccount() {
@@ -1746,43 +3490,93 @@
       renderTimezoneList('dashboard-timezone-list', dashboardTimezoneSelection, 'selectDashboardTimezone', document.getElementById('dashboard-timezone-search').value);
     }
 
+    // Writes straight into activeUser the moment a timezone is clicked -
+    // no separate Confirm step, matching Formatter/Leagues. dashboardTimezoneSelection
+    // stays as the render-time source of truth for which row is
+    // highlighted, it just no longer waits for a save click to become real.
     function selectDashboardTimezone(tz) {
       dashboardTimezoneSelection = tz;
+      activeUser.timeZone = tz;
       renderDashboardTimezoneList();
       updateDashboardTimezoneSelectedLabel();
+      markDashboardDirty();
     }
 
     function updateDashboardTimezoneSelectedLabel() {
       document.getElementById('dashboard-timezone-selected').textContent = `Selected: ${dashboardTimezoneSelection.replace(/_/g, ' ')} (${getTimezoneOffsetLabel(dashboardTimezoneSelection)})`;
     }
 
-    // Stages the selected timezone for this session only - see
-    // confirmEditXtream for why nothing is sent to the server here.
-    function saveChangeTimezone() {
-      activeUser.timeZone = dashboardTimezoneSelection;
-      closeChangeTimezonePanelSilently();
+    // --- Add/remove leagues, folded straight into Category Search itself
+    // (no separate settings panel any more) - a league's own accordion
+    // header carries an "x" to remove it, and a trailing "Add League"
+    // control (hidden once every available league is already in) lets you
+    // pick from whatever's left. Both write straight into the active
+    // provider's selectedSports the moment they're clicked, matching every
+    // other setting on this page. Re-rendering Category Search right away
+    // (via renderActiveProviderPanel) would normally rebuild the category
+    // checkboxes from provider.sportCategories, discarding any not-yet-
+    // saved checkbox picks - committing them first (same helper
+    // switchProviderTab uses) folds them in before that happens, so
+    // there's nothing left to lose and no need to interrupt with a
+    // confirm() for an edit that never leaves this panel.
+
+    function removeLeagueFromCategorySearch(sport) {
+      const provider = activeUser.providers[activeProviderIndex];
+      commitActiveProviderCategoryState();
+      provider.selectedSports = [...getVisibleSports(provider)];
+      const idx = provider.selectedSports.indexOf(sport);
+      if (idx !== -1) provider.selectedSports.splice(idx, 1);
+      renderActiveProviderPanel();
       markDashboardDirty();
-      showStatus('Timezone updated for this session - click Save and Copy Link to save.');
     }
 
-    function toggleManagedSport(sport) {
-      toggleSportInArray(manageSportsSelection, sport);
-      renderLeagueGrid('manage-sports-grid', manageSportsSelection, 'toggleManagedSport');
+    function addLeagueToCategorySearch(sport) {
+      const provider = activeUser.providers[activeProviderIndex];
+      commitActiveProviderCategoryState();
+      provider.selectedSports = [...getVisibleSports(provider)];
+      if (!provider.selectedSports.includes(sport)) provider.selectedSports.push(sport);
+      document.getElementById('add-league-panel').classList.add('hidden');
+      renderActiveProviderPanel();
+      markDashboardDirty();
     }
 
-    // Stages the selected leagues for this session only - see
-    // confirmEditXtream for why nothing is sent to the server here.
-    function saveManagedSports() {
-      if (dashboardHasUnsavedChanges && !confirm(UNSAVED_CHANGES_WARNING)) {
-        return;
+    function toggleAddLeaguePanel() {
+      const panel = document.getElementById('add-league-panel');
+      if (panel.classList.contains('hidden')) {
+        renderAddLeagueGrid();
+        panel.classList.remove('hidden');
+      } else {
+        panel.classList.add('hidden');
       }
+    }
 
-      const selectedSports = [...manageSportsSelection];
-      activeUser.selectedSports = selectedSports;
-      document.getElementById('manage-sports-panel').classList.add('hidden');
-      renderSportsConfig();
-      markDashboardDirty();
-      showStatus('Leagues updated for this session - click Save and Copy Link to save.');
+    function renderAddLeagueGrid() {
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      if (!provider) return;
+      const remaining = SPORTS.filter(s => !getVisibleSports(provider).includes(s));
+      document.getElementById('add-league-grid').innerHTML = remaining.map(sport => {
+        const label = SPORT_LABELS[sport] || sport;
+        const icon = SPORT_ICONS[sport] || 'fa-trophy';
+        return `
+          <button type="button" onclick="addLeagueToCategorySearch('${sport}')" class="flex flex-col items-center justify-center gap-2 border rounded-lg py-4 px-2 text-xs font-semibold transition bg-[#3b4d58] border-[#e6e6e6]/15 text-[#e6e6e6]/75 hover:border-[#3b8fc4]/50 hover:text-[#e6e6e6]">
+            <i class="fa-solid ${icon} text-xl"></i>
+            <span>${label}</span>
+          </button>
+        `;
+      }).join('');
+    }
+
+    // Called from renderActiveProviderPanel on every render, since which
+    // leagues remain "addable" changes any time selectedSports does - hides
+    // the trigger entirely once nothing's left to add, and closes the
+    // picker if it was open when the last available league just got added.
+    function updateAddLeagueButtonVisibility() {
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      const btn = document.getElementById('add-league-btn');
+      if (!provider || !btn) return;
+      const remaining = SPORTS.filter(s => !getVisibleSports(provider).includes(s));
+      btn.classList.toggle('hidden', remaining.length === 0);
+      if (remaining.length === 0) document.getElementById('add-league-panel').classList.add('hidden');
     }
 
     let dashboardHasUnsavedChanges = false;
@@ -1792,16 +3586,22 @@
       updateSaveCopyButton();
     }
 
+    // Only the color/icon/label are touched, via classList rather than a
+    // wholesale className overwrite, so the button's own layout classes
+    // are left alone.
     function updateSaveCopyButton() {
-      const btn = document.getElementById('copy-link-btn');
-      if (!btn) return;
-      if (dashboardHasUnsavedChanges) {
-        btn.className = 'bg-[#4a9d52] hover:bg-[#5cb164] text-xs font-bold py-2 px-4 rounded-lg transition flex items-center';
-        btn.innerHTML = '<i class="fa-solid fa-floppy-disk mr-2"></i>Save and Copy Link';
-      } else {
-        btn.className = 'bg-[#4a6fa5] hover:bg-[#5a82bc] text-xs font-bold py-2 px-4 rounded-lg transition flex items-center';
-        btn.innerHTML = '<i class="fa-solid fa-copy mr-2"></i>Copy Install Link';
-      }
+      const btns = document.querySelectorAll('.js-copy-link-btn');
+      if (!btns.length) return;
+      btns.forEach(btn => {
+        btn.classList.remove('bg-[#3b8fc4]', 'hover:bg-[#4fa3d8]', 'bg-[#4a9d52]', 'hover:bg-[#5cb164]');
+        if (dashboardHasUnsavedChanges) {
+          btn.classList.add('bg-[#4a9d52]', 'hover:bg-[#5cb164]');
+          btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i>Save and Copy Link';
+        } else {
+          btn.classList.add('bg-[#3b8fc4]', 'hover:bg-[#4fa3d8]');
+          btn.innerHTML = '<i class="fa-solid fa-copy"></i>Copy Install Link';
+        }
+      });
     }
 
     // Briefly flashes the top button to confirm a save from any of the
@@ -1813,7 +3613,8 @@
 
     function toggleAllAccordions() {
       allAccordionsExpanded = !allAccordionsExpanded;
-      ['GLOBAL', ...getVisibleSports()].forEach(sport => {
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      ['GLOBAL', ...getVisibleSports(provider)].forEach(sport => {
         const body = document.getElementById(`body-${sport}`);
         const chevron = document.getElementById(`chevron-${sport}`);
         if (!body || !chevron) return;
@@ -1836,12 +3637,145 @@
         : '<i class="fa-solid fa-expand"></i> Expand All';
     }
 
-    function renderSportsConfig() {
-      // Only one of these two is ever relevant for a given account - an
-      // account has exactly one connectionType, set at registration and
-      // not currently changeable. Xtream is the default/fallback for
-      // accounts created before M3U support existed.
-      const isM3u = activeUser && activeUser.connectionType === 'm3u';
+    // Renders the tab strip (one tab per provider, plus a trailing "+ Add
+    // Provider" tab) and highlights whichever index is currently active.
+    function renderProviderTabs() {
+      const strip = document.getElementById('provider-tabs');
+      if (!strip || !activeUser) return;
+
+      strip.innerHTML = activeUser.providers.map((provider, i) => {
+        const isActive = i === activeProviderIndex;
+        const icon = provider.connectionType === 'm3u' ? 'fa-list' : 'fa-plug';
+        // Same accent color used everywhere else on this page for an
+        // active/selected state - no new visual language just for tabs.
+        const classes = isActive
+          ? 'bg-[#3b8fc4] border-[#3b8fc4] text-white'
+          : 'bg-[#2f3e47] border-[#e6e6e6]/15 text-[#e6e6e6]/75 hover:border-[#e6e6e6]/40';
+        const removeBtn = activeUser.providers.length > 1
+          ? `<button type="button" onclick="event.stopPropagation(); removeProviderTab(${i})" class="opacity-60 hover:opacity-100 hover:text-[#e56a6a] transition" title="Remove provider"><i class="fa-solid fa-xmark"></i></button>`
+          : '';
+        return `
+          <div class="flex items-center gap-2 border rounded-lg pl-3 pr-2.5 py-2 text-xs font-semibold cursor-pointer transition shrink-0 whitespace-nowrap ${classes}" onclick="switchProviderTab(${i})">
+            <i class="fa-solid ${icon} text-[10px]"></i>
+            <span>${escapeHtml(provider.label || `Provider ${i + 1}`)}</span>
+            <button type="button" onclick="event.stopPropagation(); renameProviderTab(${i})" class="opacity-60 hover:opacity-100 transition" title="Rename"><i class="fa-solid fa-pen text-[10px]"></i></button>
+            ${removeBtn}
+          </div>
+        `;
+      }).join('') + `
+        <button type="button" onclick="addProviderTab()" class="flex items-center gap-1.5 border border-dashed border-[#e6e6e6]/30 text-[#e6e6e6]/55 hover:text-[#e6e6e6] hover:border-[#e6e6e6]/50 rounded-lg px-3 py-2 text-xs font-semibold transition shrink-0 whitespace-nowrap">
+          <i class="fa-solid fa-plus"></i> Add Provider
+        </button>
+      `;
+      updateProviderContextBadges();
+    }
+
+    // Sources, Channel EPG, and Export/Import are the settings panels that
+    // read from the active provider tab rather than the whole account -
+    // this names that provider right on each panel instead of a standing
+    // disclaimer, and only when there's actually more than one provider to
+    // disambiguate between. Driven off renderProviderTabs() (rather than
+    // called separately) so it can never drift out of sync with the tab
+    // strip - rename/add/remove/switch all funnel through there already.
+    function updateProviderContextBadges() {
+      const multiProvider = !!(activeUser && activeUser.providers.length > 1);
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      const label = provider ? (provider.label || `Provider ${activeProviderIndex + 1}`) : '';
+      const icon = provider && provider.connectionType === 'm3u' ? 'fa-list' : 'fa-plug';
+      ['sources-provider-badge', 'channel-epg-provider-badge', 'preset-provider-badge', 'export-provider-badge', 'import-provider-badge'].forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.classList.toggle('hidden', !multiProvider);
+        el.querySelector('i').className = `fa-solid ${icon} text-[9px]`;
+        el.querySelector('span').textContent = label;
+      });
+    }
+
+    function renameProviderTab(index) {
+      const provider = activeUser.providers[index];
+      const newLabel = prompt('Provider name:', provider.label || `Provider ${index + 1}`);
+      if (newLabel === null) return;
+      const trimmed = newLabel.trim();
+      if (!trimmed) return;
+      provider.label = trimmed;
+      markDashboardDirty();
+      renderProviderTabs();
+    }
+
+    async function removeProviderTab(index) {
+      if (activeUser.providers.length <= 1) return;
+      const provider = activeUser.providers[index];
+      if (!confirm(`Remove "${provider.label || 'this provider'}"? Its saved credentials and category mappings will be deleted once you save.`)) {
+        return;
+      }
+
+      activeUser.providers.splice(index, 1);
+      if (activeProviderIndex >= activeUser.providers.length) {
+        activeProviderIndex = activeUser.providers.length - 1;
+      } else if (activeProviderIndex > index) {
+        activeProviderIndex -= 1;
+      }
+      await refreshCategoriesForActiveProvider();
+      renderActiveProviderPanel();
+      markDashboardDirty();
+    }
+
+    // Switching tabs blows away and rebuilds the shared editor/accordion
+    // below the strip - so whatever's currently checked in the tab being
+    // left has to be committed into that provider's own object first (see
+    // commitActiveProviderCategoryState), and any open editor panel for it
+    // closed/reverted, before the new provider's data takes over the same
+    // DOM elements.
+    async function switchProviderTab(index) {
+      if (index === activeProviderIndex) return;
+      closeEditXtreamPanelSilently();
+      closeEditM3uPanelSilently();
+      closeChangeTimezonePanelSilently();
+      closeDeleteAccountPanelSilently();
+      closeFormatterPanelSilently();
+      closeChannelEpgPanelSilently();
+      closeExportImportPanelSilently();
+      commitActiveProviderCategoryState();
+      activeProviderIndex = index;
+      await refreshCategoriesForActiveProvider();
+      renderActiveProviderPanel();
+    }
+
+    // Reads whatever's currently checked in the shared Category Search
+    // container and folds it into the active provider's own sportCategories
+    // - called before switching away from a tab (so its in-progress state
+    // survives) and before saving (so the currently-active tab's state,
+    // which was never "switched away from", still makes it into the save).
+    function commitActiveProviderCategoryState() {
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      if (!provider) return;
+
+      // When no categories are currently loaded for this provider (its
+      // source is temporarily unreachable, or a refresh just failed), the
+      // accordion never rendered any checkboxes at all - every section
+      // shows "No categories loaded yet." instead. collectCheckedCategories
+      // would then report every visible sport as newly empty, which would
+      // silently wipe this provider's real, already-saved selections for
+      // no reason other than a transient fetch failure. Skip the commit
+      // entirely in that case - provider.sportCategories already holds the
+      // last known-good state, and nothing actually present in the DOM
+      // disagrees with it.
+      if (fetchedCategories.length === 0) return;
+
+      const collected = collectCheckedCategories(['GLOBAL', ...getVisibleSports(provider)], 'sports-config-container');
+      provider.sportCategories = { ...(provider.sportCategories || {}), ...collected };
+    }
+
+    // Renders the shared Edit Xtream/M3U trigger buttons and Category
+    // Search accordion for whichever provider is currently active. Every
+    // element id involved here is a single, unprefixed instance - see the
+    // provider-tabs comment in the HTML for why that's safe.
+    function renderActiveProviderPanel() {
+      renderProviderTabs();
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      if (!provider) return;
+
+      const isM3u = provider.connectionType === 'm3u';
       document.getElementById('edit-xtream-trigger-btn').classList.toggle('hidden', isM3u);
       document.getElementById('edit-m3u-trigger-btn').classList.toggle('hidden', !isM3u);
       if (isM3u) {
@@ -1849,44 +3783,217 @@
       }
 
       renderCategoryConfig(
-        getVisibleSports(),
+        getVisibleSports(provider),
         'sports-config-container',
         '',
-        (sport) => (activeUser && activeUser.sportCategories && activeUser.sportCategories[sport]) || [],
-        () => (activeUser && activeUser.sportCategories && activeUser.sportCategories.GLOBAL) || [],
+        (sport) => (provider.sportCategories && provider.sportCategories[sport]) || [],
+        () => (provider.sportCategories && provider.sportCategories.GLOBAL) || [],
         (activeUser && activeUser.sportOrder) || [],
         (newOrder) => {
           if (activeUser) activeUser.sportOrder = newOrder;
           markDashboardDirty();
         }
       );
-      // A fresh render always reflects exactly what's saved on the server,
-      // so any prior unsaved-changes state is now stale - clear it.
-      dashboardHasUnsavedChanges = false;
-      updateSaveCopyButton();
       // Every section renders collapsed by default, so the Expand/Collapse
-      // All control needs to match that on every fresh render too.
+      // All control needs to match that on every render, regardless of
+      // what triggered it (login, a tab switch, a settings change).
       allAccordionsExpanded = false;
       updateExpandAllButton();
+      updateAddLeagueButtonVisibility();
     }
 
-    // Persists category folder selections. Returns true/false so callers
-    // (the unified Copy Link button) know whether it's safe to proceed.
-    // The single function that actually persists anything to the server -
-    // every other panel on this page (Edit Xtream, Add/Remove Leagues,
-    // Change Timezone) only stages its changes into activeUser locally.
-    // This sends the complete current state in one request when "Save and
-    // Copy Link" is clicked, so a closed browser without ever clicking that
+    // Clears the unsaved-changes indicator - only ever called right after
+    // state is known to exactly match the server (login, a fresh account,
+    // or a successful save), never as a side effect of rendering, since
+    // rendering also happens mid-edit (e.g. switching tabs after a rename)
+    // when there may well be a genuine pending change to preserve.
+    function markDashboardClean() {
+      dashboardHasUnsavedChanges = false;
+      updateSaveCopyButton();
+    }
+
+    // --- Dashboard: Add Provider ---
+
+    function generateProviderId() {
+      return `provider-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    }
+
+    function nextProviderLabel() {
+      return `Provider ${activeUser.providers.length + 1}`;
+    }
+
+    function addProviderTab() {
+      closeEditXtreamPanelSilently();
+      closeEditM3uPanelSilently();
+      closeChangeTimezonePanelSilently();
+      closeDeleteAccountPanelSilently();
+      closeFormatterPanelSilently();
+      closeChannelEpgPanelSilently();
+      closeExportImportPanelSilently();
+
+      document.getElementById('add-provider-choose').classList.remove('hidden');
+      document.getElementById('add-provider-xtream').classList.add('hidden');
+      document.getElementById('add-provider-m3u').classList.add('hidden');
+      ['add-provider-xtream-url', 'add-provider-xtream-username', 'add-provider-xtream-password', 'add-provider-m3u-playlist-url', 'add-provider-m3u-epg-url'].forEach(id => {
+        document.getElementById(id).value = '';
+      });
+      document.getElementById('add-provider-xtream-error').classList.add('hidden');
+      document.getElementById('add-provider-m3u-error').classList.add('hidden');
+      updateAddProviderXtreamButton();
+      updateAddProviderM3uButton();
+      document.getElementById('add-provider-panel').classList.remove('hidden');
+    }
+
+    function cancelAddProvider() {
+      document.getElementById('add-provider-panel').classList.add('hidden');
+    }
+
+    function addProviderGoToXtream() {
+      document.getElementById('add-provider-choose').classList.add('hidden');
+      document.getElementById('add-provider-xtream').classList.remove('hidden');
+    }
+
+    function addProviderGoToM3u() {
+      document.getElementById('add-provider-choose').classList.add('hidden');
+      document.getElementById('add-provider-m3u').classList.remove('hidden');
+    }
+
+    function updateAddProviderXtreamButton() {
+      const btn = document.getElementById('add-provider-xtream-btn');
+      const url = document.getElementById('add-provider-xtream-url').value.trim();
+      const username = document.getElementById('add-provider-xtream-username').value.trim();
+      const password = document.getElementById('add-provider-xtream-password').value.trim();
+
+      if (url && username && password) {
+        btn.disabled = false;
+        btn.className = 'w-full flex items-center justify-center gap-2 bg-white text-[#c0392b] hover:bg-[#f0f0f0] active:scale-95 transition-all duration-150 font-bold py-2.5 rounded-lg text-xs';
+      } else {
+        btn.disabled = true;
+        btn.className = 'w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-xs cursor-not-allowed';
+      }
+    }
+
+    async function testAddProviderXtream() {
+      const url = document.getElementById('add-provider-xtream-url').value.trim();
+      const username = document.getElementById('add-provider-xtream-username').value.trim();
+      const password = document.getElementById('add-provider-xtream-password').value.trim();
+      const errorEl = document.getElementById('add-provider-xtream-error');
+      errorEl.classList.add('hidden');
+
+      try {
+        const res = await fetch('/api/xtream/categories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, username, password })
+        });
+        const data = await res.json();
+        if (data.success) {
+          commitActiveProviderCategoryState();
+          activeUser.providers.push({
+            id: generateProviderId(),
+            label: nextProviderLabel(),
+            connectionType: 'xtream',
+            xtream: { url, username, password },
+            selectedSports: [],
+            sportCategories: {}
+          });
+          fetchedCategories = data.categories;
+          activeProviderIndex = activeUser.providers.length - 1;
+          cancelAddProvider();
+          renderActiveProviderPanel();
+          markDashboardDirty();
+        } else {
+          errorEl.textContent = "Couldn't connect. Please check credentials.";
+          errorEl.classList.remove('hidden');
+        }
+      } catch (err) {
+        errorEl.textContent = "Couldn't connect. Please check credentials.";
+        errorEl.classList.remove('hidden');
+      }
+    }
+
+    function updateAddProviderM3uButton() {
+      const btn = document.getElementById('add-provider-m3u-btn');
+      const playlistUrl = document.getElementById('add-provider-m3u-playlist-url').value.trim();
+      const epgUrl = document.getElementById('add-provider-m3u-epg-url').value.trim();
+
+      if (playlistUrl && epgUrl) {
+        btn.disabled = false;
+        btn.className = 'w-full flex items-center justify-center gap-2 bg-white text-[#c0392b] hover:bg-[#f0f0f0] active:scale-95 transition-all duration-150 font-bold py-2.5 rounded-lg text-xs';
+      } else {
+        btn.disabled = true;
+        btn.className = 'w-full flex items-center justify-center gap-2 bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2.5 rounded-lg text-xs cursor-not-allowed';
+      }
+    }
+
+    async function importAddProviderM3u() {
+      const playlistUrl = document.getElementById('add-provider-m3u-playlist-url').value.trim();
+      const epgUrl = document.getElementById('add-provider-m3u-epg-url').value.trim();
+      const errorEl = document.getElementById('add-provider-m3u-error');
+      const importingEl = document.getElementById('add-provider-m3u-importing');
+      const btn = document.getElementById('add-provider-m3u-btn');
+
+      errorEl.classList.add('hidden');
+      importingEl.classList.remove('hidden');
+      btn.disabled = true;
+
+      try {
+        const res = await fetch('/api/m3u/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ playlistUrl, epgUrl })
+        });
+        const data = await res.json();
+        importingEl.classList.add('hidden');
+
+        if (data.success) {
+          commitActiveProviderCategoryState();
+          activeUser.providers.push({
+            id: generateProviderId(),
+            label: nextProviderLabel(),
+            connectionType: 'm3u',
+            m3u: { playlistUrl, epgUrl },
+            selectedSports: [],
+            sportCategories: {}
+          });
+          fetchedCategories = data.categories.map(c => ({ category_id: c.name, category_name: c.name }));
+          activeProviderIndex = activeUser.providers.length - 1;
+          cancelAddProvider();
+          renderActiveProviderPanel();
+          markDashboardDirty();
+        } else {
+          errorEl.textContent = data.error || "Couldn't import. Please check both URLs.";
+          errorEl.classList.remove('hidden');
+          btn.disabled = false;
+          updateAddProviderM3uButton();
+        }
+      } catch (err) {
+        importingEl.classList.add('hidden');
+        errorEl.textContent = "Couldn't import. Please check both URLs.";
+        errorEl.classList.remove('hidden');
+        btn.disabled = false;
+        updateAddProviderM3uButton();
+      }
+    }
+
+    // Persists every provider's category folder selections at once. Returns
+    // true/false so callers (the unified Copy Link button) know whether
+    // it's safe to proceed. The single function that actually persists
+    // anything to the server - every other panel on this page (Edit
+    // Xtream, Add/Remove Leagues, Change Timezone, Add/Remove/Rename
+    // Provider) only stages its changes into activeUser locally. This
+    // sends the complete current state in one request when "Save and Copy
+    // Link" is clicked, so a closed browser without ever clicking that
     // button leaves the account exactly as it was before any of this
     // session's edits.
     async function saveAllChanges() {
       if (!activeUser) return false;
 
-      const collected = collectCheckedCategories(['GLOBAL', ...getVisibleSports()], 'sports-config-container');
-      // Merge with whatever was already saved, so any sport currently hidden
-      // via Manage Sports keeps its folder selections intact rather than
-      // being wiped out just because it wasn't on screen to collect from.
-      const sportCategories = { ...(activeUser.sportCategories || {}), ...collected };
+      // Only the currently-active tab's checkboxes are actually live in the
+      // DOM right now - every other provider's sportCategories is already
+      // fully up to date in memory, committed the moment the user switched
+      // away from its tab (see switchProviderTab/commitActiveProviderCategoryState).
+      commitActiveProviderCategoryState();
 
       try {
         const res = await fetch('/api/user/update', {
@@ -1895,16 +4002,15 @@
           body: JSON.stringify({
             uuid: activeUser.uuid,
             password: activeUser.password,
-            xtream: activeUser.xtream,
-            selectedSports: activeUser.selectedSports,
+            providers: activeUser.providers,
             timeZone: activeUser.timeZone,
-            sportCategories,
-            sportOrder: activeUser.sportOrder
+            sportOrder: activeUser.sportOrder,
+            nameFormat: activeUser.nameFormat,
+            titleFormat: activeUser.titleFormat
           })
         });
         const data = await res.json();
         if (data.success) {
-          activeUser.sportCategories = sportCategories;
           return true;
         } else {
           showStatus(data.error || 'Failed to save settings.', true);
@@ -1934,18 +4040,26 @@
 
     function copyManifestUrl(successMessage) {
       if (!activeUser) return;
-      const manifestUrl = `${window.location.origin}/user/${activeUser.uuid}/manifest.json`;
-      const message = successMessage || 'Link copied to clipboard!';
+      copyTextToClipboard(`${window.location.origin}/user/${activeUser.uuid}/manifest.json`, successMessage);
+    }
 
-      // navigator.clipboard only exists in secure contexts (https:// or localhost).
-      // This app is often accessed over plain http://<vps-ip>, so fall back to a
-      // manual textarea+execCommand copy when the modern API isn't available.
+    // navigator.clipboard only exists in secure contexts (https:// or localhost).
+    // This app is often accessed over plain http://<vps-ip>, so fall back to a
+    // manual textarea+execCommand copy when the modern API isn't available.
+    // Shared by the manifest link button and every Formatter preview's
+    // copy button, rather than each keeping its own copy of this logic.
+    function copyTextToClipboard(text, successMessage) {
+      // successMessage === null means "copy silently" - the caller has its
+      // own confirmation UI and doesn't want the corner toast at all,
+      // as opposed to undefined which falls back to the default toast text.
+      const silent = successMessage === null;
+      const message = successMessage || 'Copied to clipboard!';
       if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(manifestUrl)
-          .then(() => showStatus(message))
-          .catch(() => fallbackCopy(manifestUrl, message));
+        navigator.clipboard.writeText(text)
+          .then(() => { if (!silent) showStatus(message); })
+          .catch(() => fallbackCopy(text, successMessage));
       } else {
-        fallbackCopy(manifestUrl, message);
+        fallbackCopy(text, successMessage);
       }
     }
 
@@ -1967,7 +4081,7 @@
       document.body.removeChild(textarea);
 
       if (copied) {
-        showStatus(successMessage || 'Link copied to clipboard!');
+        if (successMessage !== null) showStatus(successMessage || 'Link copied to clipboard!');
       } else {
         showStatus(`Couldn't auto-copy. Manifest URL: ${text}`, true);
       }

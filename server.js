@@ -6,7 +6,9 @@ const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const zlib = require('zlib');
 const m3u = require('./m3u.js');
+const epgshare = require('./epgshare01.js');
 
 // Xtream credentials are encrypted at rest in users.json using this key.
 // Must be a 64-character hex string (32 bytes) for AES-256-GCM. Generate one
@@ -127,12 +129,35 @@ const PORT = process.env.PORT || 2323;
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'users.json');
 const M3U_SETTINGS_FILE = path.join(DATA_DIR, 'm3u-settings.json');
+const EPGSHARE_SETTINGS_FILE = path.join(DATA_DIR, 'epgshare-settings.json');
 const ADMIN_CONFIG_FILE = path.join(DATA_DIR, 'admin-config.json');
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   console.log(`[Storage] Created data directory at ${DATA_DIR}`);
 }
+
+// Deliberately NOT under DATA_DIR - data/ is gitignored and excluded from
+// the Docker build context (instance-local runtime state: accounts,
+// admin credentials, caches), but stock presets are curated, shippable
+// content an operator explicitly wants committed and distributed with the
+// repo. Built from __dirname directly so it can never drift under data/.
+// Never written to at runtime (see LOCAL_PRESETS_FILE below for that) -
+// this file only ever changes by editing it and shipping a code update.
+const PRESETS_DIR = path.join(__dirname, 'presets');
+const PRESETS_FILE = path.join(PRESETS_DIR, 'presets.json');
+
+if (!fs.existsSync(PRESETS_DIR)) {
+  fs.mkdirSync(PRESETS_DIR, { recursive: true });
+  console.log(`[Storage] Created presets directory at ${PRESETS_DIR}`);
+}
+
+// The instance-local counterpart to PRESETS_FILE: presets an admin creates
+// through this instance's own admin panel. Lives under DATA_DIR precisely
+// because it must NOT be shipped/committed - it's this deployment's own
+// content, and it must survive pulling a code update that ships a new
+// PRESETS_FILE without being clobbered by (or clobbering) that update.
+const LOCAL_PRESETS_FILE = path.join(DATA_DIR, 'local-presets.json');
 
 app.use(cors());
 app.use(express.json());
@@ -188,23 +213,78 @@ function clearFailedAttempts(ip) {
   loginAttempts.delete(ip);
 }
 
+// Wraps a legacy single-provider account (top-level connectionType/xtream/
+// m3u/sportCategories/selectedSports) into the current providers[] shape.
+// Idempotent - already-migrated users (providers is already an array) pass
+// through untouched, so this is safe to run unconditionally on every load
+// regardless of a given user's migration state. Every field is defended
+// with a fallback rather than trusted to be complete, since a legacy record
+// could be hand-edited or the product of an earlier partial write.
+function migrateUserToProviders(user) {
+  if (Array.isArray(user.providers)) return user;
+
+  const { connectionType, xtream, m3u, sportCategories, selectedSports, ...rest } = user;
+  const resolvedType = connectionType || 'xtream';
+  let resolvedXtream = xtream;
+  let resolvedM3u = m3u;
+
+  // Only one of xtream/m3u should ever be populated on a legacy record -
+  // if both somehow are, connectionType is the authoritative signal for
+  // which one was actually in use (matching how every legacy route already
+  // branched), so the other is dropped rather than carried into the new
+  // provider object where nothing would ever read it.
+  if (xtream && m3u) {
+    console.error(`[Migration] User ${user.uuid} had both xtream and m3u set; keeping only the one matching connectionType (${resolvedType}).`);
+    if (resolvedType === 'm3u') resolvedXtream = undefined;
+    else resolvedM3u = undefined;
+  }
+
+  return {
+    ...rest,
+    providers: [{
+      id: 'provider-1',
+      label: 'Provider 1',
+      connectionType: resolvedType,
+      xtream: resolvedXtream,
+      m3u: resolvedM3u,
+      sportCategories: sportCategories || {},
+      selectedSports: selectedSports || []
+    }]
+  };
+}
+
 let userConfigs = {};
 if (fs.existsSync(DATA_FILE)) {
   try {
     const raw = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
     for (const [uuid, user] of Object.entries(raw)) {
-      userConfigs[uuid] = { ...user, xtream: decryptXtreamFromStorage(user.xtream), m3u: decryptM3uFromStorage(user.m3u) };
+      // Decryption happens on whichever shape this specific record is
+      // still in - already-migrated records carry credentials per-provider,
+      // legacy records carry them at the top level - before migration
+      // wraps a legacy record into providers[], so migrateUserToProviders
+      // always receives already-decrypted credentials either way.
+      const decrypted = Array.isArray(user.providers)
+        ? { ...user, providers: user.providers.map(p => ({ ...p, xtream: decryptXtreamFromStorage(p.xtream), m3u: decryptM3uFromStorage(p.m3u) })) }
+        : { ...user, xtream: decryptXtreamFromStorage(user.xtream), m3u: decryptM3uFromStorage(user.m3u) };
+      userConfigs[uuid] = migrateUserToProviders(decrypted);
     }
   } catch (err) {
     console.error('[Storage] Error loading users.json:', err.message);
   }
 }
 
+// Every in-memory user is guaranteed to have a providers[] array by this
+// point (migrateUserToProviders ran unconditionally on load above), so
+// saving never needs to branch on shape - just encrypt each provider's own
+// credentials independently.
 function saveUserConfigs() {
   try {
     const toWrite = {};
     for (const [uuid, user] of Object.entries(userConfigs)) {
-      toWrite[uuid] = { ...user, xtream: encryptXtreamForStorage(user.xtream), m3u: encryptM3uForStorage(user.m3u) };
+      toWrite[uuid] = {
+        ...user,
+        providers: (user.providers || []).map(p => ({ ...p, xtream: encryptXtreamForStorage(p.xtream), m3u: encryptM3uForStorage(p.m3u) }))
+      };
     }
     fs.writeFileSync(DATA_FILE, JSON.stringify(toWrite, null, 2), 'utf8');
   } catch (err) {
@@ -212,9 +292,10 @@ function saveUserConfigs() {
   }
 }
 
-// Any accounts loaded with legacy plaintext Xtream credentials get
-// re-saved immediately, so encryption is applied automatically without
-// anyone needing to re-enter their credentials.
+// Any accounts loaded with legacy plaintext credentials, or in the legacy
+// single-provider shape, get re-saved immediately - so both encryption and
+// the providers[] migration are applied automatically without anyone
+// needing to re-enter their credentials or take any action.
 saveUserConfigs();
 
 // Admin-configured M3U refresh schedule - deliberately a small, separate,
@@ -248,6 +329,280 @@ function saveM3uSettings(settings) {
 }
 
 let m3uSettings = loadM3uSettings();
+
+// Admin-controlled EPGShare01 source pool - empty by default. This is NOT
+// a global "override all EPG" switch: enabling a source here only makes
+// its programme data available and keeps it warm in cache (see
+// epgshare01.js) - a user still has to separately choose, per channel, to
+// actually use one of these sources in place of their provider's own EPG
+// (that per-channel picker is a separate, not-yet-built piece of UI).
+// Fetching and parsing even one extra XMLTV feed is real, avoidable load,
+// so the pool starts empty until an admin explicitly enables sources.
+// Shares the M3U refresh schedule above rather than getting its own - one
+// schedule panel on the admin page, not two to keep in sync.
+const DEFAULT_EPGSHARE_SETTINGS = { enabledSources: [] };
+
+function loadEpgShareSettings() {
+  if (!fs.existsSync(EPGSHARE_SETTINGS_FILE)) return { ...DEFAULT_EPGSHARE_SETTINGS };
+  try {
+    const raw = JSON.parse(fs.readFileSync(EPGSHARE_SETTINGS_FILE, 'utf8'));
+    // Re-validated against the known filename convention on every load
+    // (not just on save) - epgshare01.refreshEnabledSources builds fetch
+    // URLs directly from this list, so a corrupted/hand-edited settings
+    // file should never be able to smuggle an arbitrary URL in.
+    const enabledSources = Array.isArray(raw.enabledSources)
+      ? raw.enabledSources.filter(f => epgshare.isKnownSourceFile(f))
+      : [];
+    return { enabledSources };
+  } catch (err) {
+    console.error('[Storage] Error loading epgshare-settings.json, using defaults:', err.message);
+    return { ...DEFAULT_EPGSHARE_SETTINGS };
+  }
+}
+
+function saveEpgShareSettings(settings) {
+  try {
+    fs.writeFileSync(EPGSHARE_SETTINGS_FILE, JSON.stringify(settings, null, 2), 'utf8');
+  } catch (err) {
+    console.error('[Storage] Failed to save epgshare-settings.json:', err.message);
+  }
+}
+
+let epgShareSettings = loadEpgShareSettings();
+
+// Admin-curated presets - a named, iconed bundle of the exact payload
+// exportProviderSettings() already produces client-side (index.html):
+// category/channel NAMES rather than raw ids (so it's portable across
+// accounts the same way a user-to-user export is), never credentials.
+// Applied either from the dashboard's Presets/Configs panel (existing
+// account) or from the setup wizard's preset step (new account, resolved
+// against the connection just tested/imported) - see importProviderSettings
+// and applyWizardPreset in index.html.
+const ALLOWED_PRESET_ICONS = new Set([
+  // Sports & achievement
+  'trophy', 'medal', 'award', 'ranking-star', 'futbol', 'basketball', 'baseball', 'football',
+  'volleyball', 'hockey-puck', 'golf-ball-tee', 'bowling-ball', 'table-tennis-paddle-ball',
+  'dumbbell', 'hand-fist', 'person-running', 'person-biking', 'person-swimming', 'person-skiing',
+  'person-snowboarding', 'stopwatch', 'flag-checkered',
+  // Media & entertainment
+  'tv', 'film', 'video', 'music', 'headphones', 'microphone', 'camera', 'clapperboard',
+  'gamepad', 'dice', 'chess', 'chess-king', 'puzzle-piece', 'ticket', 'masks-theater',
+  'record-vinyl', 'compact-disc',
+  // General objects & symbols
+  'star', 'heart', 'fire', 'bolt', 'crown', 'gem', 'shield', 'shield-halved', 'gift', 'key',
+  'lock', 'lock-open', 'bell', 'bookmark', 'tag', 'tags', 'box', 'briefcase', 'suitcase',
+  'thumbs-up', 'hand', 'peace', 'infinity', 'atom', 'certificate', 'flag', 'circle', 'square',
+  'compass',
+  // Nature & weather
+  'globe', 'sun', 'moon', 'cloud', 'snowflake', 'umbrella', 'mountain', 'tree', 'leaf',
+  'water', 'wind', 'cloud-sun', 'cloud-rain', 'temperature-high',
+  // Transportation
+  'car', 'truck', 'motorcycle', 'bicycle', 'plane', 'ship', 'train', 'rocket', 'bus',
+  'van-shuttle', 'anchor',
+  // Places & buildings
+  'map', 'map-pin', 'location-dot', 'clock', 'calendar', 'calendar-days', 'building', 'city',
+  'home', 'landmark', 'university', 'hospital', 'store', 'industry', 'warehouse',
+  // Tech
+  'satellite', 'satellite-dish', 'wifi', 'signal', 'microchip', 'server', 'desktop', 'mobile',
+  'tablet-screen-button',
+  // People
+  'users', 'user', 'user-group', 'child', 'hat-cowboy', 'mask',
+  // Food & drink
+  'pizza-slice', 'burger', 'mug-hot', 'beer-mug-empty', 'wine-glass', 'apple-whole', 'carrot',
+  // Animals
+  'feather', 'paw', 'dragon', 'dog', 'cat', 'fish', 'horse', 'spider', 'frog', 'kiwi-bird',
+  'crow', 'dove'
+]);
+
+const PRESET_NAME_MAX_LENGTH = 60;
+
+// Re-validated on every load (not just on save), same reasoning as
+// epgShareSettings above - a malformed or hand-edited presets.json (this
+// file is meant to be hand-editable/mergeable via git, unlike data/*)
+// should have its bad entries silently dropped rather than crash the
+// whole store or let bad data reach a client.
+function isValidStoredPreset(p) {
+  return !!p && typeof p === 'object'
+    && typeof p.id === 'string'
+    && typeof p.name === 'string'
+    && ALLOWED_PRESET_ICONS.has(p.icon)
+    && (p.connectionType === 'xtream' || p.connectionType === 'm3u')
+    && Array.isArray(p.selectedSports) && p.selectedSports.every(s => typeof s === 'string')
+    && typeof p.sportCategories === 'object' && p.sportCategories !== null
+    && Object.values(p.sportCategories).every(names => Array.isArray(names) && names.every(n => typeof n === 'string'))
+    && typeof p.epgOverrides === 'object' && p.epgOverrides !== null
+    && Object.values(p.epgOverrides).every(v => typeof v === 'string')
+    && (p.epgSources === undefined || (Array.isArray(p.epgSources) && p.epgSources.every(f => typeof f === 'string')));
+}
+
+function loadPresets(file, label) {
+  if (!fs.existsSync(file)) return [];
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return Array.isArray(raw)
+      ? raw.filter(isValidStoredPreset).map(p => ({ ...p, epgSources: p.epgSources || [] }))
+      : [];
+  } catch (err) {
+    console.error(`[Storage] Error loading ${label}, using an empty list:`, err.message);
+    return [];
+  }
+}
+
+// Stock presets are never written at runtime - only shipped via the repo -
+// so there is deliberately no saveStockPresets. Local presets are this
+// instance's own, so they get the usual load/save pair.
+function loadStockPresets() {
+  return loadPresets(PRESETS_FILE, 'presets.json');
+}
+
+function loadLocalPresets() {
+  return loadPresets(LOCAL_PRESETS_FILE, 'local-presets.json');
+}
+
+function saveLocalPresets(list) {
+  try {
+    fs.writeFileSync(LOCAL_PRESETS_FILE, JSON.stringify(list, null, 2), 'utf8');
+  } catch (err) {
+    console.error('[Storage] Failed to save local-presets.json:', err.message);
+  }
+}
+
+// One-time recovery path for instances that predate the stock/local split
+// above. Before that split, admin-created presets were appended directly
+// into PRESETS_FILE - a git-tracked file - so updating past this point
+// requires that local drift be moved out of git's way first (see the
+// README's upgrade note), which backs it up here instead of discarding it.
+// On first boot after that, anything in the backup that isn't already
+// accounted for as stock or local content is exactly that drift, and gets
+// folded into local-presets.json where it belongs from now on. The backup
+// is then deleted, so this only ever does something once per instance -
+// nothing ever writes here again, so there's nothing left to migrate on
+// any later update.
+const LEGACY_PRESETS_BACKUP_FILE = path.join(DATA_DIR, 'presets-legacy-backup.json');
+
+function migrateLegacyLocalPresets() {
+  if (!fs.existsSync(LEGACY_PRESETS_BACKUP_FILE)) return;
+  const backedUp = loadPresets(LEGACY_PRESETS_BACKUP_FILE, 'presets-legacy-backup.json');
+  const knownIds = new Set([...stockPresets, ...localPresets].map(p => p.id));
+  const recovered = backedUp.filter(p => !knownIds.has(p.id));
+  if (recovered.length > 0) {
+    localPresets = [...localPresets, ...recovered];
+    saveLocalPresets(localPresets);
+    console.log(`[Storage] Recovered ${recovered.length} preset(s) created before the stock/local split into local-presets.json.`);
+  }
+  try {
+    fs.unlinkSync(LEGACY_PRESETS_BACKUP_FILE);
+  } catch (err) {
+    console.error('[Storage] Failed to remove presets-legacy-backup.json after migration:', err.message);
+  }
+}
+
+let stockPresets = loadStockPresets();
+let localPresets = loadLocalPresets();
+migrateLegacyLocalPresets();
+
+// The combined view every read site actually serves - callers never need to
+// care which file a given preset came from.
+function getAllPresets() {
+  return [...stockPresets, ...localPresets];
+}
+
+// Gates a preset from reaching users (via /api/presets and
+// /api/presets/public) until an admin has actually looked at it - a preset
+// authored through the admin panel's own create flow (see
+// /api/admin/presets/create) already gets that look right there via the
+// missing-EPG-source prompt, but presets can also arrive by shipping an
+// updated presets.json in a code update, with no admin interaction at all.
+// Without a gate, a preset like that goes live for every account the
+// instant the update is deployed, EPG overrides included - and if those
+// overrides need an EPGShare01 source this admin hasn't enabled, they just
+// silently resolve to nothing.
+//
+// Keyed by preset id -> a content hash, not just a plain "seen it" flag, so
+// a later edit to an already-published preset (say, a future update adds
+// more EPG overrides to one that's already live) drops it back into
+// pending too - editing a live preset is exactly as capable of introducing
+// an unreviewed EPG dependency as adding a brand new one. This also means
+// there is deliberately no separate "pending" field to remember to set on
+// a preset when authoring one by hand - a preset becomes pending purely by
+// its id+content not already being in this file, so it can't be forgotten.
+const REVIEWED_PRESETS_FILE = path.join(DATA_DIR, 'reviewed-presets.json');
+
+// Object order doesn't reflect anything meaningful (insertion order across
+// however presets.json happens to be edited/merged), and JSON.stringify's
+// key order for JS objects generally follows insertion order - so without
+// sorting, an edit that's a no-op for hashing purposes (a git merge that
+// reorders sportCategories keys, for instance) would still flip a preset
+// back to pending. Array order is left alone: those lists (selectedSports,
+// category names, epgSources) come straight from a real export/authoring
+// action, and reordering happens to matter for at least one of them
+// downstream, so array order is treated as meaningful content.
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + stableStringify(value[k])).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function hashPresetContent(preset) {
+  const content = {
+    name: preset.name,
+    icon: preset.icon,
+    connectionType: preset.connectionType,
+    selectedSports: preset.selectedSports,
+    sportCategories: preset.sportCategories,
+    epgOverrides: preset.epgOverrides,
+    epgSources: preset.epgSources || []
+  };
+  return crypto.createHash('sha256').update(stableStringify(content)).digest('hex');
+}
+
+function loadReviewedPresets() {
+  if (!fs.existsSync(REVIEWED_PRESETS_FILE)) return null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(REVIEWED_PRESETS_FILE, 'utf8'));
+    return (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+  } catch (err) {
+    console.error('[Storage] Error loading reviewed-presets.json, treating as empty:', err.message);
+    return {};
+  }
+}
+
+function saveReviewedPresets(map) {
+  try {
+    fs.writeFileSync(REVIEWED_PRESETS_FILE, JSON.stringify(map, null, 2), 'utf8');
+  } catch (err) {
+    console.error('[Storage] Failed to save reviewed-presets.json:', err.message);
+  }
+}
+
+let reviewedPresets = loadReviewedPresets();
+if (reviewedPresets === null) {
+  // No review file yet - either a fresh install, or an upgrade from before
+  // this gate existed. Either way, whatever's already sitting in
+  // presets.json predates the concept of review and may already be live
+  // for users, so it's grandfathered in as reviewed rather than yanked out
+  // from under them. Only presets added or edited from this point on need
+  // an actual look.
+  reviewedPresets = {};
+  getAllPresets().forEach(p => { reviewedPresets[p.id] = hashPresetContent(p); });
+  saveReviewedPresets(reviewedPresets);
+}
+
+function isPresetReviewed(preset) {
+  return reviewedPresets[preset.id] === hashPresetContent(preset);
+}
+
+function markPresetReviewed(preset) {
+  reviewedPresets = { ...reviewedPresets, [preset.id]: hashPresetContent(preset) };
+  saveReviewedPresets(reviewedPresets);
+}
+
+function computeMissingSourcesForPreset(preset) {
+  const validEpgSources = Array.isArray(preset.epgSources) ? preset.epgSources.filter(f => epgshare.isKnownSourceFile(f)) : [];
+  return validEpgSources.filter(f => !epgShareSettings.enabledSources.includes(f));
+}
 
 // App-managed admin credentials - lets a fresh install set an admin
 // password through the UI itself, rather than requiring a manual
@@ -293,7 +648,20 @@ const ESPN_ENDPOINTS = {
   MLS: 'https://site.api.espn.com/apis/site/v2/sports/soccer/usa.1/scoreboard',
   LALIGA: 'https://site.api.espn.com/apis/site/v2/sports/soccer/esp.1/scoreboard',
   WORLDCUP: 'https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard',
-  UFC: 'https://site.api.espn.com/apis/site/v2/sports/mma/ufc/scoreboard'
+  UFC: 'https://site.api.espn.com/apis/site/v2/sports/mma/ufc/scoreboard',
+  AFL: 'https://site.api.espn.com/apis/site/v2/sports/australian-football/afl/scoreboard',
+  // Rugby leagues use ESPN's own numeric league id in place of a slug
+  // (confirmed live - rugby has no single-table "one league" the way
+  // EPL/MLS do, so each competition needs its own id here, the same as
+  // any other league in this map).
+  URC: 'https://site.api.espn.com/apis/site/v2/sports/rugby/270557/scoreboard',
+  PREM: 'https://site.api.espn.com/apis/site/v2/sports/rugby/267979/scoreboard',
+  // Cricket, like rugby, has no single "the league" slug - ESPN keys IPL
+  // by its own numeric league id (confirmed live against real data: event
+  // shape carries the same homeAway/team/logo/color fields every other
+  // sport here already relies on, so no special-casing was needed
+  // downstream in fetchTodayGames).
+  IPL: 'https://site.api.espn.com/apis/site/v2/sports/cricket/8048/scoreboard'
 };
 
 // UFC events, unlike every other sport here, don't map to a single
@@ -324,7 +692,11 @@ const ESPN_LEAGUES = {
   MLS: 'usa.1',
   LALIGA: 'esp.1',
   WORLDCUP: 'fifa.world',
-  UFC: 'ufc'
+  UFC: 'ufc',
+  AFL: 'afl',
+  URC: '270557',
+  PREM: '267979',
+  IPL: '8048'
 };
 
 // The "Upcoming Schedule" placeholder's background image, one per sport
@@ -344,7 +716,13 @@ const SCHEDULE_BACKGROUND_FILES = {
   EPL: 'soccer.svg',
   MLS: 'soccer.svg',
   LALIGA: 'soccer.svg',
-  WORLDCUP: 'soccer.svg'
+  WORLDCUP: 'soccer.svg',
+  AFL: 'afl.svg',
+  // Every rugby league shares rugby.svg - add any future rugby league here
+  // pointing at the same file rather than giving it its own asset.
+  URC: 'rugby.svg',
+  PREM: 'rugby.svg',
+  IPL: 'cricket.svg'
 };
 
 const scheduleBackgroundCache = {};
@@ -466,6 +844,40 @@ function getSvgGroupBounds(markup, groupId) {
   return { x: parseFloat(x[1]), y: parseFloat(y[1]), width: parseFloat(width[1]), height: parseFloat(height[1]) };
 }
 
+// Finds a top-level <g id="groupId">...</g> by counting nested <g> depth,
+// rather than assuming the first </g> is the match like getSvgGroupBounds/
+// replaceSvgGroup do - needed for the UFC template's Layer_1, which nests
+// several <g> elements of its own (the hex-pattern group), so a naive
+// non-greedy match would close early on one of those instead of the
+// layer's real closing tag.
+function findSvgGroupRange(markup, groupId) {
+  const openMatch = markup.match(new RegExp(`<g id="${groupId}"[^>]*>`));
+  if (!openMatch) return null;
+  const contentStart = openMatch.index + openMatch[0].length;
+  const tagPattern = /<g[\s>]|<\/g>/g;
+  tagPattern.lastIndex = contentStart;
+  let depth = 1;
+  let m;
+  while ((m = tagPattern.exec(markup))) {
+    if (m[0] === '</g>') {
+      depth--;
+      if (depth === 0) return { closeStart: m.index };
+    } else {
+      depth++;
+    }
+  }
+  return null;
+}
+
+// Inserts markup as the LAST child of a named group, i.e. rendered on top
+// of everything else already in that group - used to layer the UFC
+// poster's fighter images above its Layer_1 background/border art.
+function appendToSvgGroup(markup, groupId, insertion) {
+  const range = findSvgGroupRange(markup, groupId);
+  if (!range) return markup;
+  return markup.slice(0, range.closeStart) + insertion + markup.slice(range.closeStart);
+}
+
 function getBackgroundOverlayInline() {
   const filePath = path.join(__dirname, 'assets', 'background', 'overlay_background.svg');
   return getInlineSvgOverlay(filePath, 'bg-overlay');
@@ -487,7 +899,18 @@ const TEAM_LOGO_BUCKET_OVERRIDES = {
   // used without this override).
   NCAAFB: 'ncaa',
   NCAAMB: 'ncaa',
-  NCAAWB: 'ncaa'
+  NCAAWB: 'ncaa',
+  // Confirmed live - ESPN buckets ALL rugby team logos under
+  // 'rugby/teams' regardless of competition (not a per-competition
+  // folder, and not just 'rugby' either).
+  URC: 'rugby/teams',
+  PREM: 'rugby/teams',
+  // AFL needs no override - ESPN_LEAGUES.AFL ('afl') already matches its
+  // real logo bucket folder.
+  // Confirmed live - ESPN buckets ALL cricket team logos under the literal
+  // folder 'cricket', not the numeric league id ('8048') ESPN_LEAGUES.IPL
+  // uses for the scoreboard endpoint itself.
+  IPL: 'cricket'
 };
 
 function getTeamLogoBucket(sportKey) {
@@ -504,7 +927,10 @@ const SPORT_DISPLAY_NAMES = {
   MLS: 'MLS',
   LALIGA: 'La Liga',
   WORLDCUP: 'FIFA World Cup',
-  UFC: 'UFC'
+  UFC: 'UFC',
+  URC: 'United Rugby Championship',
+  PREM: 'Premiership Rugby',
+  IPL: 'Indian Premier League'
 };
 
 function getSportDisplayName(sportKey) {
@@ -579,6 +1005,132 @@ async function getBase64ImageWithDimensions(url) {
     return { dataUri: `data:${contentType};base64,${base64}`, width: dimensions.width, height: dimensions.height };
   } catch (err) {
     console.error(`[ImageLoader] Failed to fetch image with dimensions: ${url}. Error: ${err.message}`);
+    return null;
+  }
+}
+
+// Finds the tightest bounding box of non-transparent pixels in an RGBA
+// PNG - needed because the real UFC league logo pulled from ESPN's CDN is
+// a 500x500 canvas where the actual wordmark only occupies its vertical
+// center (large transparent margins above/below), so positioning/scaling
+// off the raw canvas bounds (like getPngDimensions does) places the
+// visible logo well below - and narrower than - where it's meant to sit.
+// Only PNGs with an alpha channel can have this kind of padding; anything
+// else (a plain RGB/greyscale image, no transparency) has nothing to
+// trim, so this returns its full bounds untouched.
+function getPngContentBounds(buffer) {
+  const dimensions = getPngDimensions(buffer);
+  if (!dimensions) return null;
+  const fullBounds = { x: 0, y: 0, width: dimensions.width, height: dimensions.height };
+
+  let offset = 8;
+  let bitDepth, colorType;
+  const idatChunks = [];
+  while (offset < buffer.length) {
+    const len = buffer.readUInt32BE(offset);
+    const type = buffer.toString('ascii', offset + 4, offset + 8);
+    const data = buffer.slice(offset + 8, offset + 8 + len);
+    if (type === 'IHDR') {
+      bitDepth = data.readUInt8(8);
+      colorType = data.readUInt8(9);
+    } else if (type === 'IDAT') {
+      idatChunks.push(data);
+    } else if (type === 'IEND') {
+      break;
+    }
+    offset += 8 + len + 4;
+  }
+
+  // Only color types 4 (greyscale+alpha) and 6 (RGBA) carry a per-pixel
+  // alpha channel; anything else is fully opaque with nothing to trim.
+  // Interlaced/non-8-bit PNGs aren't worth the extra decoding complexity
+  // for what's just a positioning nicety, so those fall back untrimmed too.
+  if (bitDepth !== 8 || (colorType !== 4 && colorType !== 6)) return fullBounds;
+
+  try {
+    const { width, height } = dimensions;
+    const channels = colorType === 6 ? 4 : 2;
+    const stride = width * channels;
+    const raw = zlib.inflateSync(Buffer.concat(idatChunks));
+    const out = Buffer.alloc(height * stride);
+    let rawOffset = 0;
+    for (let y = 0; y < height; y++) {
+      const filterType = raw[rawOffset]; rawOffset++;
+      const rowStart = y * stride;
+      const prevRowStart = (y - 1) * stride;
+      for (let x = 0; x < stride; x++) {
+        const rawByte = raw[rawOffset + x];
+        const a = x >= channels ? out[rowStart + x - channels] : 0;
+        const b = y > 0 ? out[prevRowStart + x] : 0;
+        const c = (y > 0 && x >= channels) ? out[prevRowStart + x - channels] : 0;
+        let val;
+        switch (filterType) {
+          case 0: val = rawByte; break;
+          case 1: val = rawByte + a; break;
+          case 2: val = rawByte + b; break;
+          case 3: val = rawByte + Math.floor((a + b) / 2); break;
+          case 4: {
+            const p = a + b - c;
+            const pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+            val = rawByte + ((pa <= pb && pa <= pc) ? a : (pb <= pc ? b : c));
+            break;
+          }
+          default: val = rawByte;
+        }
+        out[rowStart + x] = val & 0xFF;
+      }
+      rawOffset += stride;
+    }
+
+    let minX = width, maxX = -1, minY = -1, maxY = -1;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const alpha = out[y * stride + x * channels + (channels - 1)];
+        if (alpha > 10) {
+          if (minY === -1) minY = y;
+          maxY = y;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+        }
+      }
+    }
+    if (minY === -1) return fullBounds;
+    return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+  } catch (err) {
+    console.error(`[ImageLoader] Failed to compute PNG content bounds:`, err.message);
+    return fullBounds;
+  }
+}
+
+// Same fetch as getBase64ImageWithDimensions, but also returns the image's
+// visible content bounding box (see getPngContentBounds) - needed for the
+// UFC poster's league logo, which must be sized/positioned by its actual
+// visible artwork, not the padded canvas ESPN serves it on.
+async function getBase64ImageWithContentBounds(url) {
+  try {
+    const response = await axios.get(url, {
+      responseType: 'arraybuffer',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        'Referer': 'https://www.espn.com/'
+      },
+      timeout: 5000
+    });
+    const contentType = response.headers['content-type'] || 'image/png';
+    const buffer = Buffer.from(response.data, 'binary');
+    const dimensions = getPngDimensions(buffer);
+    if (!dimensions) return null;
+    const contentBounds = getPngContentBounds(buffer);
+    const base64 = buffer.toString('base64');
+    return {
+      dataUri: `data:${contentType};base64,${base64}`,
+      width: dimensions.width,
+      height: dimensions.height,
+      contentBounds
+    };
+  } catch (err) {
+    console.error(`[ImageLoader] Failed to fetch image with content bounds: ${url}. Error: ${err.message}`);
     return null;
   }
 }
@@ -774,7 +1326,8 @@ async function fetchUpcomingGames(sport, userTimeZone = 'America/New_York', limi
 
       const homeNick = homeTeam.name || homeTeam.shortDisplayName || homeTeam.displayName || 'Home';
       const awayNick = awayTeam.name || awayTeam.shortDisplayName || awayTeam.displayName || 'Away';
-      return `${formatGameDateLabel(event.date, userTimeZone)} \u2014 ${awayNick} at ${homeNick}`;
+      const startTime = formatTeamTime(event.date, userTimeZone) || 'TBD';
+      return `${formatGameDateLabel(event.date, userTimeZone)}: ${awayNick} at ${homeNick} - ${startTime}`;
     });
   } catch (err) {
     console.error(`[ESPN] Error fetching upcoming schedule for ${sport}:`, err.message);
@@ -798,64 +1351,64 @@ app.get('/poster/ufc/:fighterAId/:fighterBId.svg', async (req, res) => {
   const userTz = req.query.tz || 'America/New_York';
   const { fighterAId, fighterBId } = req.params;
 
-  // Fighter A (home) uses their LEFT stance image, anchored by its TOP-
-  // RIGHT corner; Fighter B (away) uses their RIGHT stance image,
-  // anchored by its TOP-LEFT corner - confirmed directly against the
-  // reference template's own marker names and positions, not assumed.
-  // Rendered at true native resolution (no scaling at all) - confirmed
-  // explicitly that having part of the image extend past the poster's
-  // edges is intentional, not something to avoid. Real pixel dimensions
-  // are needed up front for this (not left to the SVG renderer to infer
-  // implicitly), given known quirks in how some Stremio-ecosystem clients
-  // handle SVG.
+  // Fighter A (home) uses their LEFT stance image, Fighter B (away) uses
+  // their RIGHT stance image - both rendered 700px tall, scaled
+  // proportionately (real pixel dimensions needed up front for that, not
+  // left to the SVG renderer to infer implicitly, given known quirks in
+  // how some Stremio-ecosystem clients handle SVG), and each horizontally
+  // centered within its own half of the poster (home in x:0-300, away in
+  // x:300-600), 100px from the top edge.
   const [homeImage, awayImage] = await Promise.all([
     getBase64ImageWithDimensions(`https://a.espncdn.com/i/headshots/mma/players/stance/left/${fighterAId}.png`),
     getBase64ImageWithDimensions(`https://a.espncdn.com/i/headshots/mma/players/stance/right/${fighterBId}.png`)
   ]);
 
   // Real UFC league logo, same source already confirmed working for the
-  // /logo/ufc.svg route - unlike the fighter images above, this one
-  // scales PROPORTIONATELY to fit within its marker's bounds (not native
-  // resolution/intentionally cropped) - confirmed directly against what
-  // was asked for this specific marker.
+  // /logo/ufc.svg route - rendered 130px wide, scaled proportionately, so
+  // its real pixel dimensions are needed too (not just fit into a fixed
+  // box via preserveAspectRatio alone). Its content bounds are needed on
+  // top of that: the raw PNG ESPN serves is a 500x500 canvas with the
+  // wordmark occupying only its vertical center, so sizing/positioning
+  // off the padded canvas (rather than the visible artwork) would put
+  // the "top of the logo" well below where it's meant to sit.
   const ufcLogoUrl = await getRealLeagueLogoUrl('UFC');
-  const ufcLogoData = ufcLogoUrl ? await getBase64Image(ufcLogoUrl) : null;
+  const ufcLogoData = ufcLogoUrl ? await getBase64ImageWithContentBounds(ufcLogoUrl) : null;
 
   const template = getUfcPosterTemplateInline();
-
-  // Marker groups' own bounds - confirmed live against the real template:
-  // away's marker is a 10x10 rect at (139.23, 54.93), home's is a 10x10
-  // rect at (396.38, 54.93). Neither marker itself is meant to render -
-  // replaceSvgGroup swaps each one out entirely for the real fighter
-  // image, at that exact point in the document so layer order (fighter
-  // images below the logo/plaque layer that comes after them in the
-  // template) is preserved, not just appended at the end.
-  const homeMarkerBounds = getSvgGroupBounds(template.markup, 'home_fighter\\._left_stance\\._anchor_point');
-  const awayMarkerBounds = getSvgGroupBounds(template.markup, 'away_fighter\\._right_stance\\._anchor_point');
-  const ufcLogoBounds = getSvgGroupBounds(template.markup, 'ufc_logo');
-
   let markup = template.markup;
 
+  const FIGHTER_IMAGE_HEIGHT = 700;
+  const FIGHTER_IMAGE_TOP = 100;
+
+  const awayWidth = awayImage ? awayImage.width * (FIGHTER_IMAGE_HEIGHT / awayImage.height) : 0;
+  const awayX = 300 + (300 - awayWidth) / 2;
   const awayImageMarkup = awayImage
-    ? `<image href="${awayImage.dataUri}" x="${awayMarkerBounds.x}" y="${awayMarkerBounds.y}" width="${awayImage.width}" height="${awayImage.height}" />`
-    : (awayMarkerBounds ? buildLogoFallback(awayMarkerBounds.x, awayMarkerBounds.y, 300, fighterBName, '#c0392b') : '');
-  markup = replaceSvgGroup(markup, 'away_fighter\\._right_stance\\._anchor_point', awayImageMarkup);
+    ? `<image href="${awayImage.dataUri}" x="${awayX}" y="${FIGHTER_IMAGE_TOP}" width="${awayWidth}" height="${FIGHTER_IMAGE_HEIGHT}" />`
+    : buildLogoFallback(450, FIGHTER_IMAGE_TOP, 300, fighterBName, '#c0392b');
+  markup = appendToSvgGroup(markup, 'Layer_1', awayImageMarkup);
 
-  // Home's image is anchored by its TOP-RIGHT corner, not top-left like
-  // away and like every other image placement in this app - so its x
-  // position is the marker's x MINUS the image's own width, putting the
-  // image's right edge exactly at the marker rather than its left edge.
+  const homeWidth = homeImage ? homeImage.width * (FIGHTER_IMAGE_HEIGHT / homeImage.height) : 0;
+  const homeX = (300 - homeWidth) / 2;
   const homeImageMarkup = homeImage
-    ? `<image href="${homeImage.dataUri}" x="${homeMarkerBounds.x - homeImage.width}" y="${homeMarkerBounds.y}" width="${homeImage.width}" height="${homeImage.height}" />`
-    : (homeMarkerBounds ? buildLogoFallback(homeMarkerBounds.x - 300, homeMarkerBounds.y, 300, fighterAName, '#2a2a2a') : '');
-  markup = replaceSvgGroup(markup, 'home_fighter\\._left_stance\\._anchor_point', homeImageMarkup);
+    ? `<image href="${homeImage.dataUri}" x="${homeX}" y="${FIGHTER_IMAGE_TOP}" width="${homeWidth}" height="${FIGHTER_IMAGE_HEIGHT}" />`
+    : buildLogoFallback(150, FIGHTER_IMAGE_TOP, 300, fighterAName, '#2a2a2a');
+  markup = appendToSvgGroup(markup, 'Layer_1', homeImageMarkup);
 
-  const ufcLogoMarkup = ufcLogoBounds
-    ? (ufcLogoData
-        ? `<image href="${ufcLogoData}" x="${ufcLogoBounds.x}" y="${ufcLogoBounds.y}" width="${ufcLogoBounds.width}" height="${ufcLogoBounds.height}" preserveAspectRatio="xMidYMid meet" />`
-        : `<text x="${ufcLogoBounds.x + ufcLogoBounds.width / 2}" y="${ufcLogoBounds.y + ufcLogoBounds.height / 2 + 10}" font-family="'Trebuchet MS', Verdana, sans-serif" font-size="32" font-weight="800" fill="#ffffff" text-anchor="middle">UFC</text>`)
-    : '';
-  markup = replaceSvgGroup(markup, 'ufc_logo', ufcLogoMarkup);
+  const UFC_LOGO_WIDTH = 130;
+  const UFC_LOGO_TOP = 21;
+  const ufcLogoX = (600 - UFC_LOGO_WIDTH) / 2;
+  // A nested <svg> crops the padded source image down to just its content
+  // bounds: viewBox positions/sizes the crop window in the source image's
+  // own pixel space, while this element's own x/y/width/height place that
+  // cropped result on the poster - so the box the browser actually lays
+  // out (and that x="..." y="..." positions) is the visible logo itself.
+  const ufcLogoMarkup = ufcLogoData
+    ? (() => {
+        const { x: cx, y: cy, width: cw, height: ch } = ufcLogoData.contentBounds;
+        const displayHeight = ch * (UFC_LOGO_WIDTH / cw);
+        return `<svg x="${ufcLogoX}" y="${UFC_LOGO_TOP}" width="${UFC_LOGO_WIDTH}" height="${displayHeight}" viewBox="${cx} ${cy} ${cw} ${ch}"><image href="${ufcLogoData.dataUri}" x="0" y="0" width="${ufcLogoData.width}" height="${ufcLogoData.height}" /></svg>`;
+      })()
+    : `<text x="300" y="${UFC_LOGO_TOP + 40}" font-family="'Trebuchet MS', Verdana, sans-serif" font-size="32" font-weight="800" fill="#ffffff" text-anchor="middle">UFC</text>`;
 
   // The plaque itself is already fully rendered, visible static art from
   // the template (an unnamed rounded-rect path, part of the "keep 2"
@@ -872,6 +1425,7 @@ app.get('/poster/ufc/:fighterAId/:fighterBId.svg', async (req, res) => {
     <defs>${template.defs}</defs>
     ${markup}
     ${timeMarkup}
+    ${ufcLogoMarkup}
   </svg>`;
 
   res.setHeader('Content-Type', 'image/svg+xml');
@@ -907,15 +1461,25 @@ app.get('/poster/:sport/:homeId/:awayId.svg', async (req, res) => {
   const awayAbbr = (req.query.awayAbbr || '').toLowerCase();
 
   // Scoreboard-optimized logo first, full standard logo as fallback if the
-  // scoreboard variant isn't available.
+  // scoreboard variant isn't available. Both are guessed from the sport's
+  // usual CDN pattern (bucket/500/{id}.png), which most sports follow -
+  // but not all (confirmed live: AFL keys its logos by lowercase
+  // abbreviation, not numeric team id, and has no /scoreboard/ variant at
+  // all, so both guesses above 404 for it). homeLogoUrl/awayLogoUrl - the
+  // exact URL ESPN's own scoreboard data already gave for this team,
+  // passed through from fetchTodayGames - is the last resort for exactly
+  // that case, so a sport with a non-standard CDN layout still gets its
+  // real logo instead of falling all the way back to buildLogoFallback.
   const homeScoreboardUrl = homeAbbr ? `https://a.espncdn.com/i/teamlogos/${league}/500/scoreboard/${homeAbbr}.png` : '';
   const awayScoreboardUrl = awayAbbr ? `https://a.espncdn.com/i/teamlogos/${league}/500/scoreboard/${awayAbbr}.png` : '';
   const homeStandardUrl = `https://a.espncdn.com/i/teamlogos/${league}/500/${homeId}.png`;
   const awayStandardUrl = `https://a.espncdn.com/i/teamlogos/${league}/500/${awayId}.png`;
+  const homeLogoUrlParam = req.query.homeLogoUrl || '';
+  const awayLogoUrlParam = req.query.awayLogoUrl || '';
 
   const [homeLogoData, awayLogoData] = await Promise.all([
-    getBase64ImageWithFallback([homeScoreboardUrl, homeStandardUrl]),
-    getBase64ImageWithFallback([awayScoreboardUrl, awayStandardUrl])
+    getBase64ImageWithFallback([homeScoreboardUrl, homeStandardUrl, homeLogoUrlParam]),
+    getBase64ImageWithFallback([awayScoreboardUrl, awayStandardUrl, awayLogoUrlParam])
   ]);
 
   const template = getPosterTemplateInline();
@@ -983,7 +1547,11 @@ const SPORT_THEMES = {
   MLS: { primary: '#0B1F41', secondary: '#EE3524' },
   LALIGA: { primary: '#EE8707', secondary: '#000000' },
   WORLDCUP: { primary: '#326295', secondary: '#C8A951' },
-  UFC: { primary: '#000000', secondary: '#D20A0A' }
+  UFC: { primary: '#000000', secondary: '#D20A0A' },
+  AFL: { primary: '#1B1B1B', secondary: '#E4002B' },
+  URC: { primary: '#003087', secondary: '#FFB81C' },
+  PREM: { primary: '#00205B', secondary: '#C8102E' },
+  IPL: { primary: '#004C8C', secondary: '#F6A100' }
 };
 
 // Primary accent used for the subtle poster background gradient per sport.
@@ -1153,15 +1721,20 @@ app.get('/landscape/:sport/:homeId/:awayId.svg', async (req, res) => {
   const homeAbbr = (req.query.homeAbbr || '').toLowerCase();
   const awayAbbr = (req.query.awayAbbr || '').toLowerCase();
 
-  // Same scoreboard-first, standard-logo-fallback pattern as the poster.
+  // Same scoreboard-first, standard-logo-fallback pattern as the poster,
+  // plus the same homeLogoUrl/awayLogoUrl last resort for sports whose CDN
+  // layout doesn't match either guessed pattern (see the poster route for
+  // why - confirmed live against AFL).
   const homeScoreboardUrl = homeAbbr ? `https://a.espncdn.com/i/teamlogos/${league}/500/scoreboard/${homeAbbr}.png` : '';
   const awayScoreboardUrl = awayAbbr ? `https://a.espncdn.com/i/teamlogos/${league}/500/scoreboard/${awayAbbr}.png` : '';
   const homeStandardUrl = `https://a.espncdn.com/i/teamlogos/${league}/500/${homeId}.png`;
   const awayStandardUrl = `https://a.espncdn.com/i/teamlogos/${league}/500/${awayId}.png`;
+  const homeLogoUrlParam = req.query.homeLogoUrl || '';
+  const awayLogoUrlParam = req.query.awayLogoUrl || '';
 
   const [homeLogoData, awayLogoData] = await Promise.all([
-    getBase64ImageWithFallback([homeScoreboardUrl, homeStandardUrl]),
-    getBase64ImageWithFallback([awayScoreboardUrl, awayStandardUrl])
+    getBase64ImageWithFallback([homeScoreboardUrl, homeStandardUrl, homeLogoUrlParam]),
+    getBase64ImageWithFallback([awayScoreboardUrl, awayStandardUrl, awayLogoUrlParam])
   ]);
 
   const overlayInline = getBackgroundOverlayInline();
@@ -1568,11 +2141,33 @@ async function fetchTodayUFCEvents(hostUrl, userTimeZone = 'America/New_York') {
 // fetchTodayGames already does via getLocalDateString(userTimeZone). Do
 // not assume an unfiltered scoreboard call is safe just because it works
 // for daily sports like MLB/NBA.
+// Shared across the catalog, meta, and stream routes so a burst of requests
+// for the same sport doesn't each hit ESPN independently. Keyed by host and
+// timeZone (not just sport) because the returned game objects embed
+// host-specific poster/background URLs and timeZone-formatted date/time
+// strings baked into their description text - two users in different
+// timeZones must not share a cached result. No explicit date in the key:
+// the target date is derived from the current time inside the fetchers
+// themselves, and the 60s TTL means the only staleness risk is a request
+// landing right at a user's local midnight, which is a rare and harmless
+// one-cycle delay rather than a correctness issue worth extra key
+// complexity.
+const gamesCache = new Map(); // `${sport}|${hostUrl}|${userTimeZone}` -> { fetchedAt, games }
+const GAMES_CACHE_MS = 60 * 1000;
+
 async function fetchGamesForSport(sport, hostUrl, userTimeZone = 'America/New_York') {
-  if (sport === 'UFC') {
-    return fetchTodayUFCEvents(hostUrl, userTimeZone);
+  const cacheKey = `${sport}|${hostUrl}|${userTimeZone}`;
+  const cached = gamesCache.get(cacheKey);
+  if (cached && (Date.now() - cached.fetchedAt) < GAMES_CACHE_MS) {
+    return cached.games;
   }
-  return fetchTodayGames(sport, hostUrl, userTimeZone);
+
+  const games = sport === 'UFC'
+    ? await fetchTodayUFCEvents(hostUrl, userTimeZone)
+    : await fetchTodayGames(sport, hostUrl, userTimeZone);
+
+  gamesCache.set(cacheKey, { fetchedAt: Date.now(), games });
+  return games;
 }
 
 // Fetches the current/upcoming program title+description for a single
@@ -1650,6 +2245,12 @@ async function fetchAllTeamNamesForSport(sportKey) {
   // that concept doesn't really translate to a single fighter-vs-fighter
   // matchup anyway.
   if (sportKey === 'UFC') return [];
+
+  // Confirmed live - ESPN's /teams endpoint 404s for cricket/8048 (IPL),
+  // unlike every other league here. Skip straight to an empty list for the
+  // same reason as UFC above, rather than hitting a request that can never
+  // succeed on every single IPL stream lookup.
+  if (sportKey === 'IPL') return [];
 
   const cached = teamNameCache.get(sportKey);
   if (cached && (Date.now() - cached.fetchedAt) < TEAM_NAME_CACHE_MS) {
@@ -1798,6 +2399,125 @@ app.post('/api/m3u/import', async (req, res) => {
 // cache fresh in the background; a user-facing request has no reason to
 // duplicate that work itself.
 app.post('/api/m3u/categories', async (req, res) => {
+  const { uuid, password, providerId } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  const user = userConfigs[uuid];
+  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid UUID or password.' });
+  }
+  clearFailedAttempts(ip);
+
+  // An account can have several M3U providers now, so the request has to
+  // say which one it means - falling back to the first provider on the
+  // account keeps this working for older single-provider callers that
+  // don't send providerId yet.
+  const provider = (user.providers || []).find(p => p.id === providerId) || (user.providers || [])[0];
+  if (!provider || provider.connectionType !== 'm3u' || !provider.m3u || !provider.m3u.playlistUrl) {
+    return res.status(400).json({ error: 'This provider is not configured for M3U.' });
+  }
+
+  const source = m3u.getCachedM3USource(provider.m3u.playlistUrl);
+  if (!source) {
+    // A brand-new source the scheduler hasn't completed its first fetch
+    // for yet, or a genuinely failed/unreachable source - either way,
+    // there's honestly nothing to show right now, not an error to hide.
+    return res.json({ success: true, categories: [], notReady: true });
+  }
+
+  return res.json({ success: true, categories: source.categoryList });
+});
+
+// Companion to /api/m3u/categories above, same auth/lookup pattern - but
+// returns individual channels (id/name/logo/categories) rather than just
+// the category folder list, for the Channel EPG picker to browse and
+// search. Scoped to whatever categories the provider already has selected
+// across all its sports (GLOBAL included) - a full unscoped channel list
+// could be thousands of entries from categories this account doesn't even
+// use, and none of that is relevant to an EPG override for THIS account.
+// Falls back to every channel only when nothing's been selected yet
+// (a brand-new provider, so there's nothing to scope down to).
+app.post('/api/m3u/channels', async (req, res) => {
+  const { uuid, password, providerId } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  const user = userConfigs[uuid];
+  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid UUID or password.' });
+  }
+  clearFailedAttempts(ip);
+
+  const provider = (user.providers || []).find(p => p.id === providerId) || (user.providers || [])[0];
+  if (!provider || provider.connectionType !== 'm3u' || !provider.m3u || !provider.m3u.playlistUrl) {
+    return res.status(400).json({ error: 'This provider is not configured for M3U.' });
+  }
+
+  const source = m3u.getCachedM3USource(provider.m3u.playlistUrl);
+  if (!source) {
+    return res.json({ success: true, channels: [], notReady: true });
+  }
+
+  const categorySet = new Set(Object.values(provider.sportCategories || {}).flat());
+  const channels = categorySet.size > 0
+    ? source.channels.filter(ch => ch.categories.some(c => categorySet.has(c)))
+    : source.channels;
+
+  return res.json({ success: true, channels: channels.map(ch => ({ id: ch.id, name: ch.name, logo: ch.logo, categories: ch.categories })) });
+});
+
+// Xtream's equivalent of /api/m3u/channels above - there's no cached
+// source to read here (Xtream is always a live API call), so this takes
+// the category ids to fetch directly rather than looking them up from a
+// stored provider, mirroring /api/xtream/categories' raw-credentials
+// pattern. The caller (Channel EPG picker) is expected to pass the same
+// selected-categories union /api/m3u/channels derives server-side itself.
+app.post('/api/xtream/streams', async (req, res) => {
+  const { url, username, password, categoryIds } = req.body;
+  if (!url || !username || !password) return res.status(400).json({ error: 'Missing credentials' });
+  if (!Array.isArray(categoryIds) || categoryIds.length === 0) {
+    return res.json({ success: true, streams: [] });
+  }
+
+  const pseudoUser = { xtream: { url, username, password } };
+  const streams = await fetchXtreamLiveStreams(pseudoUser, categoryIds);
+  return res.json({
+    success: true,
+    // category_id (single) and category_ids (some providers use an array
+    // instead) are both passed through as-is - the Channel EPG picker
+    // groups by whichever one a given stream actually has, same fallback
+    // buildCategoryNameLookup already relies on elsewhere.
+    streams: streams.map(s => ({
+      stream_id: s.stream_id,
+      name: s.name,
+      epg_channel_id: s.epg_channel_id || '',
+      category_id: s.category_id ?? null,
+      category_ids: Array.isArray(s.category_ids) ? s.category_ids : null
+    }))
+  });
+});
+
+// Lists every channel id available, grouped by source, across the
+// sources an admin has actually enabled and that are already cached (see
+// epgshare.getEnabledChannelCatalog) - the browsable catalog the Channel
+// EPG picker searches (optionally scoped to one source) to pick an
+// override target. Any logged-in user can call
+// this (it's read-only, public EPGShare01 metadata, not account-specific)
+// - the uuid/password check here is just to keep it consistent with every
+// other user-facing route rather than leaving one route as a genuine
+// exception.
+app.post('/api/epgshare/channels', async (req, res) => {
   const { uuid, password } = req.body;
   const ip = req.ip;
 
@@ -1813,45 +2533,82 @@ app.post('/api/m3u/categories', async (req, res) => {
   }
   clearFailedAttempts(ip);
 
-  if (user.connectionType !== 'm3u' || !user.m3u || !user.m3u.playlistUrl) {
-    return res.status(400).json({ error: 'This account is not configured for M3U.' });
-  }
+  return res.json({ success: true, sources: epgshare.getEnabledChannelCatalog(epgShareSettings.enabledSources) });
+});
 
-  const source = m3u.getCachedM3USource(user.m3u.playlistUrl);
-  if (!source) {
-    // A brand-new source the scheduler hasn't completed its first fetch
-    // for yet, or a genuinely failed/unreachable source - either way,
-    // there's honestly nothing to show right now, not an error to hide.
-    return res.json({ success: true, categories: [], notReady: true });
-  }
+// The dashboard's Presets/Configs panel browsing list - read-only,
+// account-agnostic content (an admin-curated preset is never
+// account-specific and never carries credentials), so any logged-in
+// user can call this. Requiring {uuid, password} anyway keeps it
+// consistent with every other user-facing route rather than leaving
+// this one a genuine exception - same reasoning as
+// /api/epgshare/channels just above.
+app.post('/api/presets', async (req, res) => {
+  const { uuid, password } = req.body;
+  const ip = req.ip;
 
-  return res.json({ success: true, categories: source.categoryList });
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  const user = userConfigs[uuid];
+  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid UUID or password.' });
+  }
+  clearFailedAttempts(ip);
+
+  // Unreviewed presets (brand new or edited since a shipped update, not yet
+  // looked at by this admin - see isPresetReviewed above) are withheld
+  // entirely rather than shown with a caveat, since an unreviewed preset
+  // may reference an EPG source this admin hasn't enabled yet.
+  return res.json({ success: true, presets: getAllPresets().filter(isPresetReviewed) });
+});
+
+// Same read-only, account-agnostic preset list as /api/presets above, but
+// reachable before an account exists - the setup wizard needs to offer
+// presets between the connection step and account creation, and there's no
+// uuid/password yet at that point. No credentials ever live on a preset, so
+// there's nothing here worth gating behind auth; same reasoning as the
+// wizard's own pre-account /api/xtream/categories and /api/m3u/import.
+app.post('/api/presets/public', (req, res) => {
+  return res.json({ success: true, presets: getAllPresets().filter(isPresetReviewed) });
 });
 
 app.post('/api/user/register', async (req, res) => {
   if (!ENCRYPTION_KEY_CONFIGURED) {
     return res.status(503).json({ error: 'Encryption key not configured yet. See the homepage for setup instructions.' });
   }
-  const { xtream, m3u, connectionType, selectedSports, sportCategories, password, timeZone, sportOrder } = req.body;
+  const { xtream, m3u, connectionType, selectedSports, sportCategories, epgOverrides, password, timeZone, sportOrder } = req.body;
   if (!password || typeof password !== 'string' || password.length === 0) {
     return res.status(400).json({ error: 'A password is required.' });
   }
   const uuid = uuidv4();
   const passwordHash = await bcrypt.hash(password, 10);
 
-  userConfigs[uuid] = { 
-    uuid, 
-    passwordHash, 
-    // Explicitly stored rather than inferred from which of xtream/m3u is
-    // present - an account should only ever have exactly one populated,
-    // and every downstream route (catalog/meta/stream) needs a reliable,
-    // unambiguous field to branch on, the same way sport itself is used
-    // to branch fetchGamesForSport.
-    connectionType: connectionType || 'xtream',
-    xtream, 
-    m3u,
-    selectedSports, 
-    sportCategories,
+  userConfigs[uuid] = {
+    uuid,
+    passwordHash,
+    // The wizard only ever creates one provider - additional providers are
+    // added later from the dashboard, never at registration. Explicitly
+    // stored rather than inferred from which of xtream/m3u is present - an
+    // individual provider should only ever have exactly one populated, and
+    // every downstream route needs a reliable, unambiguous field to branch
+    // on, the same way sport itself is used to branch fetchGamesForSport.
+    providers: [{
+      id: 'provider-1',
+      label: 'Provider 1',
+      connectionType: connectionType || 'xtream',
+      xtream,
+      m3u,
+      selectedSports,
+      sportCategories,
+      // Only ever populated when the wizard's preset step resolved one -
+      // the manual leagues/categories path never sets this at registration,
+      // same as before this field existed.
+      epgOverrides: epgOverrides && typeof epgOverrides === 'object' ? epgOverrides : {}
+    }],
     timeZone: timeZone || 'America/New_York',
     sportOrder,
     createdAt: new Date().toISOString()
@@ -1883,22 +2640,20 @@ app.post('/api/user/login', async (req, res) => {
   }
 
   clearFailedAttempts(ip);
-  return res.json({ 
-    success: true, 
-    uuid: user.uuid, 
-    connectionType: user.connectionType || 'xtream',
-    xtream: user.xtream, 
-    m3u: user.m3u,
-    selectedSports: user.selectedSports, 
-    sportCategories: user.sportCategories, 
+  return res.json({
+    success: true,
+    uuid: user.uuid,
+    providers: user.providers || [],
     timeZone: user.timeZone || 'America/New_York',
     sportOrder: user.sportOrder || [],
-    manifestUrl: `/user/${uuid}/manifest.json` 
+    nameFormat: user.nameFormat || DEFAULT_NAME_FORMAT,
+    titleFormat: user.titleFormat || DEFAULT_TITLE_FORMAT,
+    manifestUrl: `/user/${uuid}/manifest.json`
   });
 });
 
 app.post('/api/user/update', async (req, res) => {
-  const { uuid, password, xtream, m3u, selectedSports, sportCategories, timeZone, sportOrder } = req.body;
+  const { uuid, password, providers, timeZone, sportOrder, nameFormat, titleFormat } = req.body;
   const ip = req.ip;
 
   if (isRateLimited(ip)) {
@@ -1913,12 +2668,26 @@ app.post('/api/user/update', async (req, res) => {
     return res.status(401).json({ error: 'Invalid UUID or password.' });
   }
   clearFailedAttempts(ip);
-  if (xtream !== undefined) user.xtream = xtream;
-  if (m3u !== undefined) user.m3u = m3u;
-  if (selectedSports !== undefined) user.selectedSports = selectedSports;
-  if (sportCategories !== undefined) user.sportCategories = sportCategories;
+
+  if (providers !== undefined) {
+    // The dashboard always sends the complete, current providers array in
+    // one shot (same "one big save" pattern the account already used for
+    // its single provider) - but a malformed or replayed request must
+    // never be allowed to leave an account with zero working providers,
+    // regardless of what the client's own UI does to prevent that.
+    if (!Array.isArray(providers) || providers.length === 0) {
+      return res.status(400).json({ error: 'An account must have at least one provider.' });
+    }
+    user.providers = providers;
+  }
   if (timeZone) user.timeZone = timeZone;
   if (sportOrder !== undefined) user.sportOrder = sportOrder;
+  // Blank/whitespace-only is treated as "go back to default" rather than
+  // saved literally - an empty template would otherwise render every
+  // stream's name/title as a blank string, which is never actually what
+  // someone clearing the field out wants.
+  if (nameFormat !== undefined) user.nameFormat = nameFormat.trim() || undefined;
+  if (titleFormat !== undefined) user.titleFormat = titleFormat.trim() || undefined;
   saveUserConfigs();
 
   return res.json({ success: true, uuid: user.uuid, manifestUrl: `/user/${uuid}/manifest.json` });
@@ -2080,7 +2849,7 @@ app.post('/api/admin/users', async (req, res) => {
   // of account this is.
   const users = Object.values(userConfigs).map(user => ({
     uuid: user.uuid,
-    connectionType: user.connectionType || 'xtream',
+    connectionTypes: (user.providers || []).map(p => p.connectionType || 'xtream'),
     createdAt: user.createdAt || null,
     lastAccessedAt: user.lastAccessedAt || null
   }));
@@ -2142,6 +2911,372 @@ app.post('/api/admin/m3u-settings/update', async (req, res) => {
   return res.json({ success: true, settings: m3uSettings });
 });
 
+// Manual out-of-cycle refresh - empties the shared cache first so a stale
+// entry can never be served while the fresh fetch is in flight, then
+// re-fetches every currently active source the same way the scheduler
+// does. Awaited so the admin gets a definitive success/failure response
+// rather than firing this and hoping.
+app.post('/api/admin/m3u-cache/recache', async (req, res) => {
+  const { username, password } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  m3u.m3uSourceCache.clear();
+  await m3u.refreshAllM3USources(getActiveM3uSources);
+
+  // Recache every admin-enabled EPGShare01 source too - an empty
+  // enabledSources list (the default) means this is just a no-op loop,
+  // not a skipped step, so no separate "is EPGShare enabled" branch is
+  // needed here.
+  epgshare.clearEpgShareCache();
+  const epgShareResults = await epgshare.refreshEnabledSources(epgShareSettings.enabledSources);
+  const epgShareRefreshedCount = epgShareResults.filter(r => r.success).length;
+
+  return res.json({
+    success: true,
+    cachedSources: m3u.m3uSourceCache.size,
+    epgShareRefreshed: epgShareRefreshedCount,
+    epgShareFailed: epgShareResults.length - epgShareRefreshedCount,
+    // Per-source detail (file + error) so a failure is diagnosable from
+    // the admin page itself, not just an aggregate "N failed" count.
+    epgShareResults
+  });
+});
+
+// Lists every EPGShare01 source file available to enable, with its
+// compressed and (exact, via gzip's ISIZE trailer - see epgshare01.js)
+// decompressed size, for the admin picker's column view. This is just
+// metadata about what's available - fetching it never fetches or parses
+// any source's actual EPG data. Cached after the first call (the full
+// listing + ~100 tiny range requests takes a few seconds); pass
+// { refresh: true } to force a re-fetch instead of serving the cache.
+app.post('/api/admin/epgshare-catalog', async (req, res) => {
+  const { username, password, refresh } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  try {
+    const catalog = (!refresh && epgshare.getCachedCatalog()) || await epgshare.refreshCatalog();
+    return res.json({ success: true, fetchedAt: catalog.fetchedAt, sources: catalog.sources });
+  } catch (err) {
+    console.error('[EPGShare01] Failed to fetch source catalog:', err.message);
+    return res.status(502).json({ error: 'Failed to fetch the EPGShare01 source list. Try again shortly.' });
+  }
+});
+
+app.post('/api/admin/epgshare-settings', async (req, res) => {
+  const { username, password } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  return res.json({ success: true, settings: epgShareSettings });
+});
+
+// Takes effect on the shared scheduler's very next cycle - no restart
+// needed, same as the M3U settings update route. Note this only controls
+// which sources are FETCHED AND AVAILABLE, not who's actually using them -
+// there's no per-request behavior change from this route at all, that
+// only happens once the (separate, not yet built) per-channel picker
+// reads from whatever ends up cached here.
+app.post('/api/admin/epgshare-settings/update', async (req, res) => {
+  const { username, password, enabledSources } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  if (!Array.isArray(enabledSources) || !enabledSources.every(f => epgshare.isKnownSourceFile(f))) {
+    return res.status(400).json({ error: 'enabledSources must be a list of valid EPGShare01 source filenames.' });
+  }
+
+  const previouslyEnabled = new Set(epgShareSettings.enabledSources);
+  const newlyEnabled = enabledSources.filter(f => !previouslyEnabled.has(f));
+  epgShareSettings = { enabledSources: [...new Set(enabledSources)] };
+  saveEpgShareSettings(epgShareSettings);
+
+  // Fetch newly-enabled sources immediately rather than leaving them
+  // cache-empty until the next scheduled run - mirrors the M3U
+  // scheduler's "fetch on startup" reasoning. Sources that were already
+  // enabled keep whatever's already cached; sources that got disabled are
+  // simply left in cache until the next full recache (no urgency to evict
+  // them early - they're just unused, not harmful).
+  if (newlyEnabled.length > 0) {
+    epgshare.refreshEnabledSources(newlyEnabled).catch(err => {
+      console.error('[EPGShare01] Initial fetch for newly-enabled sources failed:', err.message);
+    });
+  }
+
+  return res.json({ success: true, settings: epgShareSettings });
+});
+
+app.post('/api/admin/presets', async (req, res) => {
+  const { username, password } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  // Unlike the user-facing /api/presets, the admin's own list shows
+  // everything including unreviewed presets - reviewed/missingSources are
+  // computed per preset so admin.html can flag which ones still need a
+  // look without a second round trip.
+  return res.json({
+    success: true,
+    presets: getAllPresets().map(p => ({ ...p, isStock: stockPresets.some(sp => sp.id === p.id), reviewed: isPresetReviewed(p), missingSources: computeMissingSourcesForPreset(p) }))
+  });
+});
+
+// Takes the exact payload exportProviderSettings() (index.html) produces
+// - only those known fields are ever persisted, so a hand-edited upload
+// can't smuggle extra data (credentials were never in the export shape to
+// begin with) into what gets committed to the repo.
+app.post('/api/admin/presets/create', async (req, res) => {
+  const { username, password, name, icon, config, onMissingSources } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  const trimmedName = typeof name === 'string' ? name.trim() : '';
+  if (!trimmedName || trimmedName.length > PRESET_NAME_MAX_LENGTH) {
+    return res.status(400).json({ error: `Name must be 1-${PRESET_NAME_MAX_LENGTH} characters.` });
+  }
+  if (!ALLOWED_PRESET_ICONS.has(icon)) {
+    return res.status(400).json({ error: 'Choose an icon from the picker.' });
+  }
+  if (!config || typeof config !== 'object' || config.sportioExportVersion !== 1
+    || typeof config.sportCategories !== 'object' || config.sportCategories === null
+    || typeof config.epgOverrides !== 'object' || config.epgOverrides === null) {
+    return res.status(400).json({ error: "That doesn't look like a settings export file." });
+  }
+
+  const validEpgSources = Array.isArray(config.epgSources)
+    ? config.epgSources.filter(f => epgshare.isKnownSourceFile(f))
+    : [];
+
+  // The export names which EPGShare01 source(s) its overrides actually
+  // need - if this admin hasn't enabled one, those overrides would
+  // silently never resolve to anything (findOverrideProgramme only
+  // searches enabled+cached sources). Surfaced as a distinct response
+  // shape (not a hard error) so the client can offer a real choice
+  // instead of either silently shipping dead overrides or blocking
+  // creation outright.
+  const missingSources = validEpgSources.filter(f => !epgShareSettings.enabledSources.includes(f));
+  if (missingSources.length > 0 && !onMissingSources) {
+    return res.json({ success: false, needsConfirmation: true, missingSources });
+  }
+
+  if (onMissingSources === 'enable' && missingSources.length > 0) {
+    epgShareSettings = { enabledSources: [...new Set([...epgShareSettings.enabledSources, ...missingSources])] };
+    saveEpgShareSettings(epgShareSettings);
+    epgshare.refreshEnabledSources(missingSources).catch(err => {
+      console.error('[EPGShare01] Initial fetch for newly-enabled sources failed:', err.message);
+    });
+  }
+
+  const preset = {
+    id: uuidv4(),
+    name: trimmedName,
+    icon,
+    connectionType: config.connectionType === 'm3u' ? 'm3u' : 'xtream',
+    selectedSports: Array.isArray(config.selectedSports) ? config.selectedSports.filter(s => typeof s === 'string') : [],
+    sportCategories: Object.fromEntries(
+      Object.entries(config.sportCategories).filter(([, names]) => Array.isArray(names))
+        .map(([sport, names]) => [sport, names.filter(n => typeof n === 'string')])
+    ),
+    epgOverrides: Object.fromEntries(
+      Object.entries(config.epgOverrides).filter(([, v]) => typeof v === 'string')
+    ),
+    epgSources: validEpgSources,
+    createdAt: new Date().toISOString()
+  };
+
+  // Written to LOCAL_PRESETS_FILE, never PRESETS_FILE - this is this
+  // instance's own preset, not something this deployment ships to anyone
+  // else. To make a preset part of the stock set distributed with the repo,
+  // it has to be added to presets/presets.json by hand and committed.
+  localPresets = [...localPresets, preset];
+  saveLocalPresets(localPresets);
+  // Created right here through this form, missing-source prompt included -
+  // that already is the review, so this doesn't also need to sit in the
+  // pending queue.
+  markPresetReviewed(preset);
+
+  return res.json({ success: true, preset, epgShareSettings });
+});
+
+// Renames one of this instance's own local presets. Stock presets can only
+// be renamed by editing presets/presets.json and shipping an update, same
+// as removing one (see /api/admin/presets/delete) - there is no in-place
+// edit path for content shipped via the repo.
+app.post('/api/admin/presets/rename', async (req, res) => {
+  const { username, password, id, name } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  const trimmedName = typeof name === 'string' ? name.trim() : '';
+  if (!trimmedName || trimmedName.length > PRESET_NAME_MAX_LENGTH) {
+    return res.status(400).json({ error: `Name must be 1-${PRESET_NAME_MAX_LENGTH} characters.` });
+  }
+
+  if (stockPresets.some(p => p.id === id)) {
+    return res.status(400).json({ error: 'This is a built-in preset - it can only be renamed by shipping a code update, not from an instance admin panel.' });
+  }
+
+  const preset = localPresets.find(p => p.id === id);
+  if (!preset) {
+    return res.status(404).json({ error: 'Preset not found.' });
+  }
+
+  preset.name = trimmedName;
+  saveLocalPresets(localPresets);
+  // The admin performing the rename has already seen the result, same
+  // reasoning as create - no need to also bounce it into the pending
+  // review queue just because the name change flipped its content hash.
+  markPresetReviewed(preset);
+
+  return res.json({ success: true, preset });
+});
+
+app.post('/api/admin/presets/review', async (req, res) => {
+  const { username, password, id, action } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  if (action !== 'publish' && action !== 'publish-and-enable') {
+    return res.status(400).json({ error: 'Invalid action.' });
+  }
+  const preset = getAllPresets().find(p => p.id === id);
+  if (!preset) {
+    return res.status(404).json({ error: 'Preset not found.' });
+  }
+
+  if (action === 'publish-and-enable') {
+    const missingSources = computeMissingSourcesForPreset(preset);
+    if (missingSources.length > 0) {
+      epgShareSettings = { enabledSources: [...new Set([...epgShareSettings.enabledSources, ...missingSources])] };
+      saveEpgShareSettings(epgShareSettings);
+      epgshare.refreshEnabledSources(missingSources).catch(err => {
+        console.error('[EPGShare01] Initial fetch for newly-enabled sources failed:', err.message);
+      });
+    }
+  }
+
+  markPresetReviewed(preset);
+
+  return res.json({ success: true, epgShareSettings });
+});
+
+app.post('/api/admin/presets/delete', async (req, res) => {
+  const { username, password, id } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  // Stock presets ship with the repo and are only ever removed by editing
+  // presets/presets.json and shipping an update - this endpoint can only
+  // remove this instance's own local presets.
+  if (stockPresets.some(p => p.id === id)) {
+    return res.status(400).json({ error: 'This is a built-in preset - it can only be removed by shipping a code update, not from an instance admin panel.' });
+  }
+  const beforeCount = localPresets.length;
+  localPresets = localPresets.filter(p => p.id !== id);
+  if (localPresets.length === beforeCount) {
+    return res.status(404).json({ error: 'Preset not found.' });
+  }
+  saveLocalPresets(localPresets);
+  if (Object.prototype.hasOwnProperty.call(reviewedPresets, id)) {
+    const { [id]: _removed, ...rest } = reviewedPresets;
+    reviewedPresets = rest;
+    saveReviewedPresets(reviewedPresets);
+  }
+
+  return res.json({ success: true });
+});
+
 app.post('/api/admin/user/delete', async (req, res) => {
   const { username, password, targetUuid } = req.body;
   const ip = req.ip;
@@ -2179,13 +3314,22 @@ app.get('/user/:uuid/manifest.json', (req, res) => {
 
   const targetDateStr = getLocalDateDash(user.timeZone);
 
-  // A sport only appears as a catalog if at least one category folder
-  // has been mapped to it - this keeps unconfigured sports out of Nuvio.
+  // A sport only appears as a catalog if at least one category folder has
+  // been mapped to it in AT LEAST ONE provider - this keeps unconfigured
+  // sports out of Nuvio while letting different providers each contribute
+  // different leagues (or the same league redundantly) to the same account.
   // GLOBAL is a special key (categories that apply to every real sport's
-  // search automatically) and is never itself a browsable catalog.
-  const activeSports = Object.entries(user.sportCategories || {})
-    .filter(([sport, categoryIds]) => sport !== 'GLOBAL' && Array.isArray(categoryIds) && categoryIds.length > 0)
-    .map(([sport]) => sport);
+  // search automatically, scoped to that one provider) and is never itself
+  // a browsable catalog.
+  const activeSportsSet = new Set();
+  for (const provider of user.providers || []) {
+    for (const [sport, categoryIds] of Object.entries(provider.sportCategories || {})) {
+      if (sport !== 'GLOBAL' && Array.isArray(categoryIds) && categoryIds.length > 0) {
+        activeSportsSet.add(sport);
+      }
+    }
+  }
+  const activeSports = [...activeSportsSet];
 
   // Catalog order reflects the user's own drag-and-drop ordering of the
   // Category Search accordions, not raw object insertion order (which
@@ -2276,64 +3420,97 @@ app.get('/user/:uuid/meta/sports/:id.json', async (req, res) => {
   if (!user) return res.json({ meta: {} });
 
   const hostUrl = `${req.protocol}://${req.get('host')}`;
-  const [prefix, sport, idVal] = req.params.id.split(':');
+  // Every meta id this route ever receives is shaped sb:{sport}:{gameId} or
+  // sb:{sport}:none (see the catalog route above) - the dead
+  // non-"sb"-prefixed branch (unreachable - nothing in the app ever
+  // constructed that shape of id) has been removed, matching the
+  // equivalent cleanup already done on the stream route below.
+  const [, sport, idVal] = req.params.id.split(':');
 
-  if (prefix === 'sb') {
-    if (idVal === 'none') {
-      const userTz = user.timeZone || 'America/New_York';
-      const upcoming = await fetchUpcomingGames(sport, userTz, 20);
-      const description = upcoming.length > 0
-        ? `Upcoming ${getSportDisplayName(sport)} Games:\n\n${upcoming.join('\n')}`
-        : 'No Games Scheduled';
-
-      return res.json({
-        meta: {
-          id: req.params.id,
-          type: 'sports',
-          name: 'Upcoming Schedule',
-          poster: `${hostUrl}/poster/none/${sport.toLowerCase()}.svg`,
-          background: `${hostUrl}/background/schedule/${sport.toLowerCase()}.svg`,
-          logo: `${hostUrl}/logo/${sport.toLowerCase()}.svg`,
-          description
-        }
-      });
-    }
-
+  if (idVal === 'none') {
     const userTz = user.timeZone || 'America/New_York';
-    const games = await fetchGamesForSport(sport.toUpperCase(), hostUrl, userTz);
-    const game = games.find(g => g.id === idVal);
-    if (!game) return res.json({ meta: {} });
+    const upcoming = await fetchUpcomingGames(sport, userTz, 20);
+    const description = upcoming.length > 0
+      ? `Upcoming ${getSportDisplayName(sport)} Games:\n\n${upcoming.join('\n')}`
+      : 'No Games Scheduled';
 
     return res.json({
       meta: {
         id: req.params.id,
         type: 'sports',
-        name: game.name,
-        poster: game.poster,
-        background: game.background,
-        logo: game.logo,
-        description: game.description
-      }
-    });
-  } else {
-    const sportCategoryIds = user.sportCategories?.[sport.toUpperCase()] || [];
-    const globalCategoryIds = user.sportCategories?.GLOBAL || [];
-    const configuredCategoryIds = [...new Set([...sportCategoryIds, ...globalCategoryIds])];
-    const xtreamStreams = await fetchXtreamLiveStreams(user, configuredCategoryIds);
-    const stream = xtreamStreams.find(s => String(s.stream_id) === String(idVal));
-
-    return res.json({
-      meta: {
-        id: req.params.id,
-        type: 'sports',
-        name: stream ? stream.name : 'Live Stream',
-        poster: stream?.stream_icon || 'https://images.unsplash.com/photo-1540747913346-19e32dc3e97e?auto=format&fit=crop&w=600&q=80',
-        background: `${hostUrl}/landscape/${sport.toLowerCase()}.svg`,
-        description: `Direct Channel ID: ${idVal}`
+        name: 'Upcoming Schedule',
+        poster: `${hostUrl}/poster/none/${sport.toLowerCase()}.svg`,
+        background: `${hostUrl}/background/schedule/${sport.toLowerCase()}.svg`,
+        logo: `${hostUrl}/logo/${sport.toLowerCase()}.svg`,
+        description
       }
     });
   }
+
+  const userTz = user.timeZone || 'America/New_York';
+  const games = await fetchGamesForSport(sport.toUpperCase(), hostUrl, userTz);
+  const game = games.find(g => g.id === idVal);
+  if (!game) return res.json({ meta: {} });
+
+  return res.json({
+    meta: {
+      id: req.params.id,
+      type: 'sports',
+      name: game.name,
+      poster: game.poster,
+      background: game.background,
+      logo: game.logo,
+      description: game.description
+    }
+  });
 });
+
+// What every account gets until it opts into something custom via the
+// Formatter panel - an account that's never touched it sees this, not a
+// blank/raw fallback.
+const DEFAULT_NAME_FORMAT = '{homeNick} vs. {awayNick}\n{status}';
+const DEFAULT_TITLE_FORMAT = '📁 {category}  | 📺 {channelName}\nℹ️ {epgDescription}';
+
+// Deliberately plain {placeholder} substitution, not a templating engine -
+// an unrecognized placeholder (a typo) is left as literal text rather than
+// silently vanishing, so a mistake is obvious in the rendered result
+// instead of just quietly missing. A recognized placeholder with no value
+// for this particular stream (e.g. {epgDescription} when the channel has
+// no EPG data) renders as empty, not "undefined".
+function applyFormatter(template, fields) {
+  return template.replace(/\{(\w+)\}/g, (match, key) => {
+    return Object.prototype.hasOwnProperty.call(fields, key) ? (fields[key] || '') : match;
+  });
+}
+
+// Builds the placeholder value set for one candidate stream - deliberately
+// a curated subset of everything technically available (game venue,
+// records, stat leaders, team colors, etc. all exist upstream but aren't
+// included here), since the Formatter is meant for naming/labeling a
+// stream, not reproducing the full game-description blurb already shown
+// elsewhere.
+function buildFormatterFields(game, stream) {
+  return {
+    channelName: stream.name || '',
+    category: stream.categoryLabel || '',
+    epgDescription: stream.description || '',
+    provider: stream.providerLabel || '',
+    homeTeam: game.homeTeam || '',
+    awayTeam: game.awayTeam || '',
+    homeNick: game.homeNick || '',
+    awayNick: game.awayNick || '',
+    status: game.status || ''
+  };
+}
+
+// Reserved provider.epgOverrides value meaning "use this channel's own
+// (live) name as its description" instead of an EPGShare01 channel id -
+// mirrored exactly in public/index.html, which is the only other place
+// this string is written or compared. Safe to reserve: real EPGShare01
+// ids look like "365BLK.us2"/"NBA-BostonCeltics.us", never
+// double-underscore-wrapped. See applyChannelEpgOverrides below for
+// where it's actually resolved.
+const EPG_OVERRIDE_SELF_NAME = '__CHANNEL_NAME__';
 
 app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
   const user = userConfigs[req.params.uuid];
@@ -2347,22 +3524,27 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
   if (idVal === 'none') return res.json({ streams: [] });
 
   const hostUrl = `${req.protocol}://${req.get('host')}`;
-  const sportCategoryIds = user.sportCategories?.[sport.toUpperCase()] || [];
-  const globalCategoryIds = user.sportCategories?.GLOBAL || [];
-  const configuredCategoryIds = [...new Set([...sportCategoryIds, ...globalCategoryIds])];
-  const isM3u = user.connectionType === 'm3u';
+  const upperSport = sport.toUpperCase();
 
-  let m3uSource = null;
-  if (isM3u) {
-    if (!user.m3u || !user.m3u.playlistUrl) return res.json({ streams: [] });
-    m3uSource = m3u.getCachedM3USource(user.m3u.playlistUrl);
-    if (!m3uSource) return res.json({ streams: [] });
-  } else {
-    if (!user.xtream || !user.xtream.url) return res.json({ streams: [] });
-  }
+  // Every provider that has this sport (or its own GLOBAL) mapped to at
+  // least one category folder contributes its own candidate streams below -
+  // category folder ids are provider-specific numbers/strings with no
+  // cross-provider meaning, so each provider's ids are only ever matched
+  // against that same provider's own source, never against another
+  // provider's source.
+  const contributingProviders = (user.providers || [])
+    .map(provider => {
+      const sportCategoryIds = provider.sportCategories?.[upperSport] || [];
+      const globalCategoryIds = provider.sportCategories?.GLOBAL || [];
+      const configuredCategoryIds = [...new Set([...sportCategoryIds, ...globalCategoryIds])];
+      return { provider, configuredCategoryIds };
+    })
+    .filter(({ configuredCategoryIds }) => configuredCategoryIds.length > 0);
+
+  if (contributingProviders.length === 0) return res.json({ streams: [] });
 
   const userTz = user.timeZone || 'America/New_York';
-  const games = await fetchGamesForSport(sport.toUpperCase(), hostUrl, userTz);
+  const games = await fetchGamesForSport(upperSport, hostUrl, userTz);
   const game = games.find(g => g.id === idVal);
 
   if (!game) return res.json({ streams: [] });
@@ -2375,41 +3557,109 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
   const gameTimestampMs = game.date ? new Date(game.date).getTime() : null;
   const gameTimestamp = gameTimestampMs && !isNaN(gameTimestampMs) ? gameTimestampMs / 1000 : null;
 
-  // Normalizes both sources into the same {name, description,
-  // startTimestamp, streamUrl, categoryLabel} shape, so every bit of
-  // matching/ranking logic below this point runs completely unchanged
-  // regardless of which source produced the candidates - it was already
-  // written once, tested, and proven correct; the goal here is reusing
-  // it exactly, not maintaining two parallel copies.
-  let candidateStreams;
-  let allTeamNames;
-  if (isM3u) {
-    candidateStreams = m3u.getCandidateStreamsForGame(m3uSource, configuredCategoryIds, gameTimestamp);
-    allTeamNames = await fetchAllTeamNamesForSport(sport.toUpperCase());
-  } else {
-    const xtreamStreams = await fetchXtreamLiveStreams(user, configuredCategoryIds);
-    const categories = await fetchXtreamCategories(user);
-    const getCategoryName = buildCategoryNameLookup(categories);
-    // EPG data and the full league roster in parallel, so checking
-    // against a much broader "foreign team" list adds no extra wait time.
-    const [epgByStreamId, teamNames] = await Promise.all([
-      fetchEpgForStreams(user, xtreamStreams),
-      fetchAllTeamNamesForSport(sport.toUpperCase())
-    ]);
-    allTeamNames = teamNames;
-    // Normalized into the exact same shape M3U produces above, so the
-    // matching logic below never needs to know which source it came from.
-    candidateStreams = xtreamStreams.map(s => {
-      const epg = epgByStreamId[s.stream_id] || { text: '', startTimestamp: null };
-      return {
-        name: s.name,
-        description: epg.text,
-        startTimestamp: epg.startTimestamp,
-        streamUrl: `${user.xtream.url.replace(/\/+$/, '')}/live/${encodeURIComponent(user.xtream.username)}/${encodeURIComponent(user.xtream.password)}/${s.stream_id}.m3u8`,
-        categoryLabel: getCategoryName(s)
-      };
+  // Depends only on the sport, not on which or how many providers are
+  // contributing - fetched once up front rather than once per provider.
+  const allTeamNames = await fetchAllTeamNamesForSport(upperSport);
+
+  // Only worth labeling which provider a stream came from once there's
+  // more than one provider on the account at all - keeps single-provider
+  // accounts (the common case) visually identical to before this feature.
+  const showProviderLabel = (user.providers || []).length > 1;
+
+  // Each contributing provider builds its own candidate list independently
+  // and in PARALLEL (not sequentially) - Xtream is a real network round
+  // trip per provider, and one slow provider shouldn't stack its latency
+  // onto every other provider's response time. Every candidate, regardless
+  // of source, is normalized into the same {name, description,
+  // startTimestamp, streamUrl, categoryLabel} shape the matching/ranking
+  // logic below already expects - that normalization is what lets this
+  // loop grow the candidate pool without touching the ranking logic at all.
+  // A user's per-channel EPG override (provider.epgOverrides: {providerChannelId
+  // -> epgShareChannelId}, set from the dashboard's Channel EPG picker) is
+  // applied here, right where `provider` is still in scope - joined by the
+  // same provider-native channel id (tvg-id / epg_channel_id) every
+  // candidate stream already carries. A stream with no override for its
+  // channel, or whose override target isn't in any currently cached
+  // admin-enabled source, passes through completely unchanged - this never
+  // blanks out a description that would otherwise have come from the
+  // provider's own EPG.
+  const applyChannelEpgOverrides = (streams, provider) => {
+    const overrides = provider.epgOverrides;
+    if (!overrides || Object.keys(overrides).length === 0) return streams;
+    return streams.map(s => {
+      const targetChannelId = overrides[s.channelId];
+      if (!targetChannelId) return s;
+      // No external source involved at all - reads the channel's current
+      // name fresh off this candidate on every request, so it tracks the
+      // channel's own name automatically as it changes, with no caching.
+      if (targetChannelId === EPG_OVERRIDE_SELF_NAME) {
+        return { ...s, description: s.name };
+      }
+      const override = epgshare.findOverrideProgramme(targetChannelId, epgShareSettings.enabledSources, gameTimestamp);
+      if (!override) return s;
+      // description, not title - findOverrideProgramme already falls back
+      // to the EPGShare01 entry's title when that specific entry has no
+      // <desc> of its own, so this is never blanked out even then.
+      return { ...s, description: override.description, startTimestamp: override.startTimestamp };
     });
-  }
+  };
+
+  const perProviderResults = await Promise.allSettled(
+    contributingProviders.map(async ({ provider, configuredCategoryIds }) => {
+      if (provider.connectionType === 'm3u') {
+        if (!provider.m3u || !provider.m3u.playlistUrl) return [];
+        const m3uSource = m3u.getCachedM3USource(provider.m3u.playlistUrl);
+        if (!m3uSource) return [];
+        const streams = applyChannelEpgOverrides(m3u.getCandidateStreamsForGame(m3uSource, configuredCategoryIds, gameTimestamp), provider);
+        return showProviderLabel ? streams.map(s => ({ ...s, providerLabel: provider.label })) : streams;
+      }
+
+      if (!provider.xtream || !provider.xtream.url) return [];
+      // fetchXtreamLiveStreams/fetchXtreamCategories/fetchEpgForStreams only
+      // ever read the `.xtream` field off whatever's passed in, so a
+      // provider-scoped credential set stands in for the "user" they expect
+      // without needing those functions to know providers exist at all.
+      const pseudoUser = { xtream: provider.xtream };
+      const xtreamStreams = await fetchXtreamLiveStreams(pseudoUser, configuredCategoryIds);
+      const categories = await fetchXtreamCategories(pseudoUser);
+      const getCategoryName = buildCategoryNameLookup(categories);
+      const epgByStreamId = await fetchEpgForStreams(pseudoUser, xtreamStreams);
+      const xtreamCandidates = xtreamStreams.map(s => {
+        const epg = epgByStreamId[s.stream_id] || { text: '', startTimestamp: null };
+        return {
+          name: s.name,
+          description: epg.text,
+          startTimestamp: epg.startTimestamp,
+          streamUrl: `${provider.xtream.url.replace(/\/+$/, '')}/live/${encodeURIComponent(provider.xtream.username)}/${encodeURIComponent(provider.xtream.password)}/${s.stream_id}.m3u8`,
+          categoryLabel: getCategoryName(s),
+          // stream_id, not epg_channel_id - confirmed against real
+          // provider data that epg_channel_id is frequently empty AND,
+          // worse, sometimes identical across genuinely different
+          // channels on the same account (some providers just don't
+          // populate it meaningfully). stream_id is the one field Xtream
+          // guarantees is present and unique per channel, so it's the
+          // only safe join key for a per-channel override - not used by
+          // anything Xtream-specific here, only kept so the EPGShare01
+          // override above can join against it.
+          channelId: String(s.stream_id),
+          ...(showProviderLabel ? { providerLabel: provider.label } : {})
+        };
+      });
+      return applyChannelEpgOverrides(xtreamCandidates, provider);
+    })
+  );
+
+  // A provider that failed (dead server, bad credentials, network error)
+  // contributes nothing rather than aborting the whole request - a healthy
+  // provider's streams must never be lost just because a different one on
+  // the same account is down.
+  const candidateStreams = perProviderResults.flatMap(result => {
+    if (result.status === 'rejected') {
+      console.error('[Stream] A provider failed to produce candidate streams:', result.reason?.message || result.reason);
+      return [];
+    }
+    return result.value;
+  });
 
   const homeKw = (game.homeTeam || '').toLowerCase().split(' ').filter(w => w.length > 2);
   const awayKw = (game.awayTeam || '').toLowerCase().split(' ').filter(w => w.length > 2);
@@ -2554,10 +3804,29 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
 
   // Confirmed via direct testing in Nuvio that a forced rank-prefix isn't
   // actually needed - Nuvio respects our intended order as returned.
+  const nameFormat = user.nameFormat || DEFAULT_NAME_FORMAT;
+  const titleFormat = user.titleFormat || DEFAULT_TITLE_FORMAT;
   const streams = streamsToReturn.map((s) => {
+    const fields = buildFormatterFields(game, s);
+    const name = applyFormatter(nameFormat, fields);
+    const title = applyFormatter(titleFormat, fields);
     return {
-      name: s.name,
-      title: `\uD83D\uDCC1 ${s.categoryLabel || ''}`,
+      name,
+      title,
+      // `description` is Stremio's modern replacement for the deprecated
+      // `title` field - some meta-addons (e.g. AIOStreams) read it as a
+      // fallback text source, so mirroring it here costs nothing and helps
+      // those aggregators surface our labeling instead of showing blank.
+      description: title,
+      // Aggregators like AIOStreams run their own quality/resolution
+      // parser over each stream and check behaviorHints.filename first,
+      // before name/title/description - since our streams are plain-text
+      // labeled (no torrent-style quality tags to find), that parser comes
+      // up empty and the stream shows no text unless we hand it something
+      // here directly.
+      behaviorHints: {
+        filename: `${name} - ${title}`
+      },
       url: s.streamUrl
     };
   });
@@ -2575,8 +3844,35 @@ app.listen(PORT, '0.0.0.0', () => {
 // refreshAllM3USources itself, not here.
 function getActiveM3uSources() {
   return Object.values(userConfigs)
-    .filter(u => u.connectionType === 'm3u' && u.m3u)
-    .map(u => ({ playlistUrl: u.m3u.playlistUrl, epgUrl: u.m3u.epgUrl }));
+    .flatMap(u => u.providers || [])
+    .filter(p => p.connectionType === 'm3u' && p.m3u)
+    .map(p => ({ playlistUrl: p.m3u.playlistUrl, epgUrl: p.m3u.epgUrl }));
 }
 
 m3u.startM3uScheduler(getActiveM3uSources, () => m3uSettings);
+
+// Runs every admin-enabled EPGShare01 source through the exact same
+// schedule as the M3U cache above (computeNextScheduledRun, reused from
+// m3u.js rather than duplicated) - deliberately a separate, independent
+// setTimeout loop rather than teaching m3u.js about EPGShare01, so that
+// module stays self-contained. An empty enabledSources list (the default)
+// just means refreshEnabledSources has nothing to do on a given tick, not
+// that the tick is skipped - so enabling sources takes effect on the very
+// next tick without needing to restart any timer.
+let epgShareSchedulerTimeoutHandle = null;
+
+function startEpgShareScheduler() {
+  async function runAndReschedule() {
+    await epgshare.refreshEnabledSources(epgShareSettings.enabledSources);
+    const nextRun = m3u.computeNextScheduledRun(m3uSettings.daysOfWeek, m3uSettings.times, m3uSettings.timeZone);
+    const delay = nextRun ? nextRun.getTime() - Date.now() : 60 * 60 * 1000;
+    epgShareSchedulerTimeoutHandle = setTimeout(runAndReschedule, delay);
+  }
+
+  // Immediate first attempt on startup, same reasoning as the M3U
+  // scheduler - runAndReschedule itself already no-ops when there's
+  // nothing enabled.
+  runAndReschedule();
+}
+
+startEpgShareScheduler();
