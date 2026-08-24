@@ -10,6 +10,25 @@ const zlib = require('zlib');
 const m3u = require('./m3u.js');
 const epgshare = require('./epgshare01.js');
 
+// Without these, Node's default behavior for an unhandled promise rejection
+// (Node 15+) is to crash the entire process - and Docker's restart policy
+// then takes several seconds to bring it back up. One flaky upstream call
+// (an IPTV provider, ESPN, EPGShare01) anywhere in the app would otherwise
+// take down every concurrent user's request, not just the one that hit it -
+// exactly the "catalog goes blank, works again a few seconds later" pattern.
+// Logging and continuing keeps a single bad request/promise from being able
+// to do that. uncaughtException is included too for the same reason, even
+// though Node's own docs call the process state "undefined" afterward -
+// for this app, staying up and serving everyone else is the safer default
+// versus a hard crash, and every request handler already isolates its own
+// state rather than sharing mutable request-scoped data across requests.
+process.on('unhandledRejection', (reason) => {
+  console.error('[Process] Unhandled promise rejection (continuing):', reason && reason.stack || reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[Process] Uncaught exception (continuing):', err && err.stack || err);
+});
+
 // Xtream credentials are encrypted at rest in users.json using this key.
 // Must be a 64-character hex string (32 bytes) for AES-256-GCM. Generate one
 // with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
