@@ -1163,6 +1163,29 @@ function escapeXml(str) {
     .replace(/'/g, '&apos;');
 }
 
+// Every art route below (poster/landscape/logo) builds its SVG from a mix
+// of network calls (already safe - getBase64Image and friends never throw,
+// they return null on failure) and synchronous template/markup functions
+// that were never guarded. In Express 4, a synchronous throw or a rejected
+// promise inside an async route handler with no try/catch here becomes an
+// unhandled rejection at the process level, not a caught request error -
+// this app's global handler (see unhandledRejection above) now logs and
+// survives that instead of crashing, which means the request itself is
+// left with no response ever sent, hanging forever instead of failing
+// fast. Every art route catches around its body and falls back to this
+// instead, so a template bug degrades to a plain placeholder image rather
+// than an indefinite spinner in the client.
+function sendSvgErrorFallback(res, width, height, label) {
+  const fontSize = Math.round(width * 0.06);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">
+    <rect width="${width}" height="${height}" fill="#111827" />
+    ${label ? `<text x="${width / 2}" y="${height / 2}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="${fontSize}" font-weight="700" fill="#e5e7eb" text-anchor="middle">${escapeXml(label)}</text>` : ''}
+  </svg>`;
+  res.setHeader('Content-Type', 'image/svg+xml');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.status(200).send(svg);
+}
+
 // Splits a name into two roughly-balanced lines at the word boundary
 // closest to the middle, so longer team names wrap cleanly instead of
 // being squeezed onto one line.
@@ -1364,6 +1387,7 @@ function getUfcPosterTemplateInline() {
 // matches routes in registration order, so the more specific UFC route
 // needs to come first or it would never be reached.
 app.get('/poster/ufc/:fighterAId/:fighterBId.svg', async (req, res) => {
+ try {
   const fighterAName = req.query.home || 'Fighter A';
   const fighterBName = req.query.away || 'Fighter B';
   const gameUtcDate = req.query.date || null;
@@ -1450,6 +1474,10 @@ app.get('/poster/ufc/:fighterAId/:fighterBId.svg', async (req, res) => {
   res.setHeader('Content-Type', 'image/svg+xml');
   res.setHeader('Cache-Control', 'public, max-age=3600');
   res.send(svg);
+ } catch (err) {
+  console.error('[Poster] Failed to render UFC poster:', err.message);
+  sendSvgErrorFallback(res, 600, 900, 'UFC');
+ }
 });
 
 function getPosterTemplateInline() {
@@ -1458,6 +1486,7 @@ function getPosterTemplateInline() {
 }
 
 app.get('/poster/:sport/:homeId/:awayId.svg', async (req, res) => {
+ try {
   const { sport, homeId, awayId } = req.params;
   const gameUtcDate = req.query.date || null;
   const userTz = req.query.tz || 'America/New_York';
@@ -1551,6 +1580,10 @@ app.get('/poster/:sport/:homeId/:awayId.svg', async (req, res) => {
   res.setHeader('Content-Type', 'image/svg+xml');
   res.setHeader('Cache-Control', 'public, max-age=3600');
   res.send(svg);
+ } catch (err) {
+  console.error(`[Poster] Failed to render ${req.params.sport} poster:`, err.message);
+  sendSvgErrorFallback(res, 600, 900, req.params.sport.toUpperCase());
+ }
 });
 
 const SPORT_THEMES = {
@@ -1670,6 +1703,7 @@ const LANDSCAPE_BOUNDARY_PATH = "M 2393 0 L 2313 20 L 2279 40 L 2256 60 L 2238 8
 // Registered BEFORE the generic team-based landscape route below, for the
 // same routing-order reason as the UFC poster route above.
 app.get('/landscape/ufc/:fighterAId/:fighterBId.svg', async (req, res) => {
+ try {
   const fighterAName = req.query.home || 'Fighter A';
   const fighterBName = req.query.away || 'Fighter B';
   const fighterAFlagUrl = req.query.homeFlagUrl || '';
@@ -1725,9 +1759,14 @@ app.get('/landscape/ufc/:fighterAId/:fighterBId.svg', async (req, res) => {
   res.setHeader('Content-Type', 'image/svg+xml');
   res.setHeader('Cache-Control', 'public, max-age=3600');
   res.send(svg);
+ } catch (err) {
+  console.error('[Landscape] Failed to render UFC landscape:', err.message);
+  sendSvgErrorFallback(res, 3840, 2160, 'UFC');
+ }
 });
 
 app.get('/landscape/:sport/:homeId/:awayId.svg', async (req, res) => {
+ try {
   const { sport, homeId, awayId } = req.params;
   const sportKey = sport.toUpperCase();
   const league = getTeamLogoBucket(sportKey);
@@ -1784,9 +1823,14 @@ app.get('/landscape/:sport/:homeId/:awayId.svg', async (req, res) => {
   res.setHeader('Content-Type', 'image/svg+xml');
   res.setHeader('Cache-Control', 'public, max-age=3600');
   res.send(svg);
+ } catch (err) {
+  console.error(`[Landscape] Failed to render ${req.params.sport} landscape:`, err.message);
+  sendSvgErrorFallback(res, 3840, 2160, req.params.sport.toUpperCase());
+ }
 });
 
 app.get('/poster/none/:sport.svg', async (req, res) => {
+ try {
   const sportKey = req.params.sport.toUpperCase();
   const theme = SPORT_THEMES[sportKey] || SPORT_THEMES.MLB;
 
@@ -1820,6 +1864,10 @@ app.get('/poster/none/:sport.svg', async (req, res) => {
   res.setHeader('Content-Type', 'image/svg+xml');
   res.setHeader('Cache-Control', 'public, max-age=3600');
   res.send(svg);
+ } catch (err) {
+  console.error(`[Poster] Failed to render Upcoming Schedule poster for ${req.params.sport}:`, err.message);
+  sendSvgErrorFallback(res, 600, 900, 'UPCOMING');
+ }
 });
 
 // League logos don't follow one consistent CDN URL pattern the way team
@@ -1864,6 +1912,7 @@ async function getRealLeagueLogoUrl(sportKey) {
 }
 
 app.get('/logo/:sport.svg', async (req, res) => {
+ try {
   const sportKey = req.params.sport.toUpperCase();
   const leagueLogoUrl = await getRealLeagueLogoUrl(sportKey);
 
@@ -1879,6 +1928,10 @@ app.get('/logo/:sport.svg', async (req, res) => {
   res.setHeader('Content-Type', 'image/svg+xml');
   res.setHeader('Cache-Control', 'public, max-age=86400');
   res.send(svg);
+ } catch (err) {
+  console.error(`[Logo] Failed to render logo for ${req.params.sport}:`, err.message);
+  sendSvgErrorFallback(res, 1080, 1080, req.params.sport.toUpperCase());
+ }
 });
 
 async function fetchTodayGames(sport, hostUrl, userTimeZone = 'America/New_York') {
