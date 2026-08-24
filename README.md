@@ -12,15 +12,86 @@ Sportio Live is a self-hosted Nuvio/Stremio addon that turns your IPTV into a li
 *Sportio Live doesn't provide any streams itself*
 
 
-[Supported Leagues](#supported-leagues)
+[Getting Started](#getting-started) &nbsp;·&nbsp; [Supported Leagues](#supported-leagues) &nbsp;·&nbsp; [Screenshots](#screenshots)
 
+---
 
-[Screenshots](#screenshots)
+## Getting started
 
+**You'll need:** Docker (with Compose), either an Xtream URL + username/password **or** an M3U playlist + EPG URL from your IPTV provider, and a reverse proxy for HTTPS - Stremio and Nuvio both require it to add the addon at all (see [HTTPS](#https) below).
 
-## Setup
+1. Clone the repo and `cd` into it:
+   ```bash
+   git clone https://github.com/Sportio-Live/sportio-live.git
+   cd sportio-live
+   ```
+2. Create a `.env` file with a login for the admin panel - leave `ENCRYPTION_KEY` out for now, the app generates it for you in step 4:
+   ```
+   ADMIN_USERNAME=<pick a username for the admin page>
+   ADMIN_PASSWORD=<pick a password for the admin page>
+   ```
+3. Build and start the container:
+   ```bash
+   docker compose up -d --build
+   ```
+4. Open `http://<your-server>:2323`. On a fresh install the app walks you through a one-time setup before anything else works:
+   - Confirms the admin login (skipped here, since it's already set in `.env`)
+   - Generates your encryption key - click **Generate a Key**, paste the value into `.env` as `ENCRYPTION_KEY=<value>`, then restart the container (`docker compose up -d --build`) and click **I've restarted the container - check again**
+5. Run the setup wizard: connect your Xtream or M3U provider, then either pick a matching [preset](#presets) or manually choose which IPTV categories to search when browsing games.
+6. Copy the manifest link the wizard gives you into Stremio/Nuvio as a custom addon.
 
-A guided wizard gets a new account running in a few clicks - manually choose which IPTV categories should be searched when browsing games or select from a IPTV provider based preset.
+> Losing the encryption key means losing every saved Xtream credential permanently - back it up somewhere safe.
+
+### Running a pre-built image (no clone, no build step)
+
+Every update to `main` is published as a ready-to-run image - useful for platforms (Unraid, Synology, Portainer, TrueNAS, Kubernetes, etc.) that expect an image reference instead of building from source.
+
+1. Make a directory for it and `cd` in - `docker compose` will create `data/` and `presets/` here next to the compose file:
+   ```bash
+   mkdir sportio-live && cd sportio-live
+   ```
+2. Create a `docker-compose.yml`:
+   ```yaml
+   services:
+     sportio-live:
+       image: ghcr.io/sportio-live/sportio-live:latest
+       container_name: sportio-live
+       restart: unless-stopped
+       ports:
+         - "2323:2323"
+       environment:
+         - PORT=2323
+         - HOST=0.0.0.0
+         - ADMIN_USERNAME=<pick a username for the admin page>
+         - ADMIN_PASSWORD=<pick a password for the admin page>
+       volumes:
+         - ./data:/usr/src/app/data
+         - ./presets:/usr/src/app/presets
+   ```
+3. Pull and start it:
+   ```bash
+   docker compose up -d
+   ```
+4. Open `http://<your-server>:2323`. On a fresh install the app walks you through a one-time setup before anything else works:
+   - Confirms the admin login (skipped here, since it's already set above)
+   - Generates your encryption key - click **Generate a Key**, add the value to the `environment:` block above as `ENCRYPTION_KEY=<value>`, then restart the container (`docker compose up -d`) and click **I've restarted the container - check again**
+5. Run the setup wizard: connect your Xtream or M3U provider, then either pick a matching [preset](#presets) or manually choose which IPTV categories to search when browsing games.
+6. Copy the manifest link the wizard gives you into Stremio/Nuvio as a custom addon.
+
+To update, `docker compose pull && docker compose up -d`.
+
+### Updating
+
+```
+git pull
+docker compose up -d --build
+```
+
+### HTTPS
+
+Sportio Live doesn't handle TLS itself, and this isn't just a hardening tip - Stremio and Nuvio both refuse to add an addon that isn't served over HTTPS, so plain HTTP only gets you as far as local testing. Put a reverse proxy in front (Nginx Proxy Manager, Caddy, Traefik) with a real certificate; it also protects the IPTV credentials passing through the wizard and dashboard. If your proxy shares a Docker network with other containers, make sure Sportio Live joins that same network in `docker-compose.yml`.
+
+---
 
 ## Multi-provider support
 
@@ -77,71 +148,6 @@ Every account has its own configured timezone with the actual date and time bake
 | Combat | UFC |
 | Aussie Rules | AFL |
 | Rugby | United Rugby Championship, Premiership Rugby |
-
----
-
-## Getting started
-
-
-**Requirements:** Docker, Xtream URL & username/password ***or*** M3U playlist & EPG URL,  a reverse proxy for HTTPS (recommended).
-
-1. Clone the repo and `cd` into it.
-2. Generate an encryption key.
-3. Create a `.env` file:
-   ```
-   ENCRYPTION_KEY=<paste the key you generated>
-   ADMIN_USERNAME=<pick a username for the admin page>
-   ADMIN_PASSWORD=<pick a password for the admin page>
-   ```
-4. Build and start: `docker compose up -d --build`
-5. Open `http://<your-server>:2323` and run the setup wizard.
-6. Copy your manifest link into Stremio/Nuvio as a custom addon.
-
-> Losing the encryption key means losing every saved Xtream credential permanently - back it up somewhere safe.
-
-### Running a pre-built image (no clone, no build step)
-
-Every update to `main` is published as a ready-to-run image - useful for platforms (Unraid, Synology, Portainer, TrueNAS, Kubernetes, etc.) that expect an image reference instead of building from source. Steps 1 and 4 above become:
-
-```yaml
-services:
-  sportio-live:
-    image: ghcr.io/sportio-live/sportio-live:latest
-    container_name: sportio-live
-    restart: unless-stopped
-    ports:
-      - "2323:2323"
-    environment:
-      - PORT=2323
-      - HOST=0.0.0.0
-      - ENCRYPTION_KEY=<paste the key you generated>
-      - ADMIN_USERNAME=<pick a username for the admin page>
-      - ADMIN_PASSWORD=<pick a password for the admin page>
-    volumes:
-      - ./data:/usr/src/app/data
-      - ./presets:/usr/src/app/presets
-```
-
-`docker compose up -d` pulls the image directly - no repo clone or `--build` needed. To update, `docker compose pull && docker compose up -d`.
-
-### Updating
-
-```
-git pull
-docker compose up -d --build
-```
-
-If `git pull` refuses with a conflict on `presets/presets.json`, it's because presets were created through the admin panel before this update - move the file aside so git can pull cleanly, then start the container; it recovers those presets into `data/` automatically on first boot:
-```
-mv presets/presets.json data/presets-legacy-backup.json
-git pull
-docker compose up -d --build
-```
-This is only ever needed once.
-
-### HTTPS
-
-Sportio Live doesn't handle TLS itself. Running it behind a reverse proxy (Nginx Proxy Manager, Caddy, Traefik) with a real certificate is strongly recommended, since IPTV credentials pass through the wizard and dashboard. If your proxy shares a Docker network with other containers, make sure Sportio Live joins that same network in `docker-compose.yml`.
 
 ---
 
