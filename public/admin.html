@@ -1040,6 +1040,19 @@
           : `<button type="button" onclick="deletePreset('${p.id}')" class="shrink-0 bg-[#c0392b] hover:bg-[#d8483a] text-white text-xs font-bold py-1.5 px-3 rounded-lg transition">
             <i class="fa-solid fa-trash"></i>
           </button>`;
+        // A preset already marked reviewed (every stock preset, on a fresh
+        // install) never passes through renderPendingPresetsList's missing-
+        // sources note, so surface the same warning here too - otherwise an
+        // admin running only stock presets has no signal anywhere that some
+        // of their EPG overrides are silently resolving to nothing.
+        const missingNote = (p.reviewed && p.missingSources.length > 0)
+          ? `<div class="mt-1.5 flex items-center gap-2 flex-wrap">
+              <p class="text-xs text-[#e6c88a]">
+                <i class="fa-solid fa-triangle-exclamation mr-1"></i>Needs ${p.missingSources.length} EPG source${p.missingSources.length === 1 ? '' : 's'} you don't have enabled: ${p.missingSources.map(epgShareSourceLabel).join(', ')}.
+              </p>
+              <button type="button" onclick="enableMissingSources('${p.id}')" class="shrink-0 bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-1 px-2.5 rounded-lg text-[10px] transition">Enable sources</button>
+            </div>`
+          : '';
         return `
         <div class="flex items-center gap-3 bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2">
           <div class="w-8 h-8 shrink-0 flex items-center justify-center bg-[#3b4d58] rounded-lg text-[#5aa8d1]">
@@ -1053,6 +1066,7 @@
               ${pendingBadge}
             </div>
             <div class="text-[10px] text-[#e6e6e6]/45">${p.selectedSports.length} league${p.selectedSports.length === 1 ? '' : 's'}, ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'}, ${overrideCount} override${overrideCount === 1 ? '' : 's'} - ${formatDate(p.createdAt)}</div>
+            ${missingNote}
           </div>
           ${renameBtn}
           ${deleteBtn}
@@ -1135,6 +1149,29 @@
         }
       } catch (err) {
         showAdminStatus('Network error while publishing the preset.', true);
+      }
+    }
+
+    // For a preset that's already reviewed/published (including every stock
+    // preset), just enable its missing EPGShare01 sources without touching
+    // review status - reuses the same backend action as the pending-review
+    // flow since markPresetReviewed is idempotent for an already-reviewed preset.
+    async function enableMissingSources(id) {
+      try {
+        const res = await fetch('/api/admin/presets/review', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...adminCreds, id, action: 'publish-and-enable' })
+        });
+        const data = await res.json();
+        if (data.success) {
+          await loadPresets();
+          showAdminStatus('EPG sources enabled for this preset.');
+        } else {
+          showAdminStatus(data.error || 'Failed to enable EPG sources.', true);
+        }
+      } catch (err) {
+        showAdminStatus('Network error while enabling EPG sources.', true);
       }
     }
 
