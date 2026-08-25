@@ -1500,13 +1500,10 @@
     // accordion (renderActiveProviderPanel only touches Category Search's
     // sports-config-container) - otherwise the categories fetchedCategories
     // just picked up wouldn't show there until some other panel re-render
-    // happened to trigger it. Also force-refreshes the channel list itself
-    // (bypassing the server's Xtream all-streams cache) - this is the
-    // button's whole purpose, and it should mean "pull my provider's real
-    // current lineup now", not just the category folder names.
+    // happened to trigger it.
     async function refreshCategoriesForChannelEpg() {
       await refreshCategories();
-      await loadChannelEpgChannels(true);
+      renderChannelEpgCategories();
     }
 
     // --- Edit Xtream panel: credentials are hidden by default and only
@@ -2876,7 +2873,7 @@
     // 'networks' - Network Matching specifically needs to reach channels
     // outside every selected category, since that's often exactly why a
     // channel needs a network mapping in the first place (spec §5/§6).
-    async function loadChannelEpgChannels(forceRefresh = false) {
+    async function loadChannelEpgChannels() {
       const statusEl = document.getElementById('channel-epg-status');
       const provider = activeUser && activeUser.providers[activeProviderIndex];
       channelEpgChannels = [];
@@ -2931,15 +2928,22 @@
             return;
           }
           const { url, username, password } = provider.xtream;
-          // scope: 'all' routes through the server's cached "every live
-          // stream on this account" fetch instead of assembling every
-          // category id here and hitting the uncached per-category path -
-          // this was the actual slow step when browsing "All categories"/
-          // "Network remaps", not just the background status refresh.
+          if (unscoped) {
+            // No "all categories" mode on /api/xtream/streams - fetch every
+            // category this account has at all and pass all of them, same
+            // effect without needing a new server route.
+            const catRes = await fetch('/api/xtream/categories', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ url, username, password })
+            });
+            const catData = await catRes.json();
+            categoryIds = catData.success ? catData.categories.map(c => String(c.category_id)) : categoryIds;
+          }
           const res = await fetch('/api/xtream/streams', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(unscoped ? { url, username, password, scope: 'all', forceRefresh } : { url, username, password, categoryIds })
+            body: JSON.stringify({ url, username, password, categoryIds })
           });
           const data = await res.json();
           if (data.success) {

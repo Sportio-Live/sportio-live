@@ -2500,21 +2500,16 @@ async function fetchXtreamLiveStreams(user, categoryIds = []) {
 // mapping in the first place - see spec §5's "All categories" filter), and
 // status resolution (below) needs the account's real current list either
 // way, not a scoped-down one.
-// Session-length cache, not just a short debounce - an every-category
-// live fetch is expensive enough (confirmed live: still slow for an
-// account with many categories even after parallelizing it) that
-// re-paying for it on every single visit to the unscoped picker/Network
-// Links interaction within one sitting defeats the point of having a
-// picker at all. 15 minutes comfortably covers one session of browsing/
-// mapping channels while still self-healing without ever needing a
-// restart. Keyed by account identity, not per-call, so every caller
-// (the picker's "All categories"/"Network remaps" filter, and Network
-// Links status resolution) shares one fetch instead of each paying for
-// its own. invalidateXtreamAllStreamsCache below is the manual escape
-// hatch - wired to "Refresh Categories" - for when a user knows their
-// provider's lineup just changed and doesn't want to wait out the TTL.
+// Short-lived cache, same TTL pattern as gamesCache above - an
+// every-category live fetch is expensive enough (confirmed live: still
+// slow for an account with many categories even after parallelizing it)
+// that repeating it on every single Network Links interaction (open the
+// panel, assign one channel, assign the next...) inside the same short
+// window is pure waste. Keyed by account identity, not per-call, so
+// back-to-back actions on the same provider reuse one fetch instead of
+// paying for it again immediately after it just ran.
 const xtreamAllStreamsCache = new Map(); // `${url}|${username}` -> { fetchedAt, streams }
-const XTREAM_ALL_STREAMS_CACHE_MS = 15 * 60 * 1000;
+const XTREAM_ALL_STREAMS_CACHE_MS = 60 * 1000;
 
 async function fetchAllXtreamLiveStreams(user) {
   const cacheKey = `${user.xtream.url}|${user.xtream.username}`;
@@ -2527,11 +2522,6 @@ async function fetchAllXtreamLiveStreams(user) {
   const streams = await fetchXtreamLiveStreams(user, categoryIds);
   xtreamAllStreamsCache.set(cacheKey, { fetchedAt: Date.now(), streams });
   return streams;
-}
-
-function invalidateXtreamAllStreamsCache(xtream) {
-  if (!xtream) return;
-  xtreamAllStreamsCache.delete(`${xtream.url}|${xtream.username}`);
 }
 
 // Resolves every saved Network Links slot for a user against that slot's
@@ -2910,30 +2900,14 @@ app.post('/api/m3u/channels', async (req, res) => {
 // pattern. The caller (Channel EPG picker) is expected to pass the same
 // selected-categories union /api/m3u/channels derives server-side itself.
 app.post('/api/xtream/streams', async (req, res) => {
-  const { url, username, password, categoryIds, scope, forceRefresh } = req.body;
+  const { url, username, password, categoryIds } = req.body;
   if (!url || !username || !password) return res.status(400).json({ error: 'Missing credentials' });
+  if (!Array.isArray(categoryIds) || categoryIds.length === 0) {
+    return res.json({ success: true, streams: [] });
+  }
 
   const pseudoUser = { xtream: { url, username, password } };
-
-  // scope: 'all' (Networks & EPG's "All categories"/"Network remaps"
-  // filter - network-links-spec.md §5/§6) goes through the cached
-  // fetchAllXtreamLiveStreams instead of the caller assembling every
-  // category id and hitting the uncached per-category path directly -
-  // this was the actual slow step users were waiting on when browsing
-  // the picker unscoped, not just the background status refresh.
-  // forceRefresh bypasses that cache - wired to the picker's own
-  // "Refresh Categories" button, so there's always a fast, explicit way
-  // to pull a provider's real current lineup without waiting out the TTL.
-  let streams;
-  if (scope === 'all') {
-    if (forceRefresh) invalidateXtreamAllStreamsCache(pseudoUser.xtream);
-    streams = await fetchAllXtreamLiveStreams(pseudoUser);
-  } else {
-    if (!Array.isArray(categoryIds) || categoryIds.length === 0) {
-      return res.json({ success: true, streams: [] });
-    }
-    streams = await fetchXtreamLiveStreams(pseudoUser, categoryIds);
-  }
+  const streams = await fetchXtreamLiveStreams(pseudoUser, categoryIds);
   return res.json({
     success: true,
     // category_id (single) and category_ids (some providers use an array
