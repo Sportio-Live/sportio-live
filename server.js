@@ -66,6 +66,14 @@ const XTREAM_ENCRYPTION_KEY = Buffer.from(
 // encrypted values apart from legacy plaintext data during migration.
 function encrypt(text) {
   if (text === undefined || text === null) return text;
+  // Already in our own stored format - left untouched rather than
+  // double-encrypted. This is what makes a failed decrypt (see decrypt()
+  // below) safe to save back out unchanged instead of destroying the
+  // original ciphertext - confirmed the hard way once already: a decrypt
+  // failure used to fall back to '', which then got happily re-encrypted
+  // and saved over the real value on the very next boot-time re-save,
+  // turning a recoverable "wrong key right now" into permanent data loss.
+  if (typeof text === 'string' && text.startsWith('enc:')) return text;
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', XTREAM_ENCRYPTION_KEY, iv);
   const encrypted = Buffer.concat([cipher.update(String(text), 'utf8'), cipher.final()]);
@@ -90,8 +98,14 @@ function decrypt(value) {
     const decrypted = Buffer.concat([decipher.update(encryptedData), decipher.final()]);
     return decrypted.toString('utf8');
   } catch (err) {
-    console.error('[Encryption] Failed to decrypt a stored value - wrong ENCRYPTION_KEY, or corrupted data:', err.message);
-    return '';
+    console.error('[Encryption] Failed to decrypt a stored value - wrong ENCRYPTION_KEY, or corrupted data. Leaving the original ciphertext untouched rather than risk losing it:', err.message);
+    // Return the still-encrypted original, not '' - encrypt() above passes
+    // an already-'enc:'-prefixed value straight through, so this round-
+    // trips as a true no-op on the next save instead of overwriting the
+    // real ciphertext with an encrypted empty string. The credential stays
+    // unusable until the right key is back (or the user re-enters it),
+    // but it's never destroyed.
+    return value;
   }
 }
 
@@ -527,24 +541,26 @@ function getAllPresets() {
 }
 
 // Gates a preset from reaching users (via /api/presets and
-// /api/presets/public) until an admin has actually looked at it - a preset
-// authored through the admin panel's own create flow (see
-// /api/admin/presets/create) already gets that look right there via the
-// missing-EPG-source prompt, but presets can also arrive by shipping an
+// /api/presets/public) until an admin has explicitly turned it on - a
+// preset authored through the admin panel's own create flow (see
+// /api/admin/presets/create) is turned on immediately since building it
+// already is that decision, but presets can also arrive by shipping an
 // updated presets.json in a code update, with no admin interaction at all.
 // Without a gate, a preset like that goes live for every account the
 // instant the update is deployed, EPG overrides included - and if those
 // overrides need an EPGShare01 source this admin hasn't enabled, they just
 // silently resolve to nothing.
 //
-// Keyed by preset id -> a content hash, not just a plain "seen it" flag, so
-// a later edit to an already-published preset (say, a future update adds
-// more EPG overrides to one that's already live) drops it back into
-// pending too - editing a live preset is exactly as capable of introducing
-// an unreviewed EPG dependency as adding a brand new one. This also means
-// there is deliberately no separate "pending" field to remember to set on
-// a preset when authoring one by hand - a preset becomes pending purely by
-// its id+content not already being in this file, so it can't be forgotten.
+// Keyed by preset id -> { hash, available }. hash is the preset's content
+// hash as of the last time `available` was set, not just a plain "seen it"
+// flag, so a later edit to an already-available preset (say, a future
+// update adds more EPG overrides to one that's already live) drops it back
+// to unavailable too - editing a live preset is exactly as capable of
+// introducing an unapproved EPG dependency as adding a brand new one. This
+// also means there is deliberately no separate "pending" field to remember
+// to set on a preset when authoring one by hand - a preset simply has no
+// entry (or a stale one) until an admin acts on it, so it can't be
+// forgotten.
 const REVIEWED_PRESETS_FILE = path.join(DATA_DIR, 'reviewed-presets.json');
 
 // Object order doesn't reflect anything meaningful (insertion order across
@@ -577,17 +593,6 @@ function hashPresetContent(preset) {
   return crypto.createHash('sha256').update(stableStringify(content)).digest('hex');
 }
 
-function loadReviewedPresets() {
-  if (!fs.existsSync(REVIEWED_PRESETS_FILE)) return null;
-  try {
-    const raw = JSON.parse(fs.readFileSync(REVIEWED_PRESETS_FILE, 'utf8'));
-    return (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
-  } catch (err) {
-    console.error('[Storage] Error loading reviewed-presets.json, treating as empty:', err.message);
-    return {};
-  }
-}
-
 function saveReviewedPresets(map) {
   try {
     fs.writeFileSync(REVIEWED_PRESETS_FILE, JSON.stringify(map, null, 2), 'utf8');
@@ -596,25 +601,45 @@ function saveReviewedPresets(map) {
   }
 }
 
+function loadReviewedPresets() {
+  if (!fs.existsSync(REVIEWED_PRESETS_FILE)) return {};
+  try {
+    const raw = JSON.parse(fs.readFileSync(REVIEWED_PRESETS_FILE, 'utf8'));
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+    // Pre-toggle installs stored a bare content hash per id, meaning "an
+    // admin has looked at this and it's live" under the old single-gate
+    // model - migrate those to { hash, available: true } so upgrading an
+    // existing deployment doesn't yank an already-live preset out from
+    // under its users. A brand new install has no file at all, so every
+    // preset in it simply has no entry below and starts unavailable until
+    // an admin explicitly turns it on.
+    const result = {};
+    let migrated = false;
+    for (const [id, value] of Object.entries(raw)) {
+      if (typeof value === 'string') {
+        result[id] = { hash: value, available: true };
+        migrated = true;
+      } else if (value && typeof value === 'object' && typeof value.hash === 'string') {
+        result[id] = { hash: value.hash, available: !!value.available };
+      }
+    }
+    if (migrated) saveReviewedPresets(result);
+    return result;
+  } catch (err) {
+    console.error('[Storage] Error loading reviewed-presets.json, treating as empty:', err.message);
+    return {};
+  }
+}
+
 let reviewedPresets = loadReviewedPresets();
-if (reviewedPresets === null) {
-  // No review file yet - either a fresh install, or an upgrade from before
-  // this gate existed. Either way, whatever's already sitting in
-  // presets.json predates the concept of review and may already be live
-  // for users, so it's grandfathered in as reviewed rather than yanked out
-  // from under them. Only presets added or edited from this point on need
-  // an actual look.
-  reviewedPresets = {};
-  getAllPresets().forEach(p => { reviewedPresets[p.id] = hashPresetContent(p); });
-  saveReviewedPresets(reviewedPresets);
+
+function isPresetAvailable(preset) {
+  const entry = reviewedPresets[preset.id];
+  return !!entry && entry.hash === hashPresetContent(preset) && entry.available === true;
 }
 
-function isPresetReviewed(preset) {
-  return reviewedPresets[preset.id] === hashPresetContent(preset);
-}
-
-function markPresetReviewed(preset) {
-  reviewedPresets = { ...reviewedPresets, [preset.id]: hashPresetContent(preset) };
+function setPresetAvailability(preset, available) {
+  reviewedPresets = { ...reviewedPresets, [preset.id]: { hash: hashPresetContent(preset), available } };
   saveReviewedPresets(reviewedPresets);
 }
 
@@ -1268,11 +1293,6 @@ function getLocalDateString(timeZone = 'America/New_York') {
     const day = String(now.getDate()).padStart(2, '0');
     return `${year}${month}${day}`;
   }
-}
-
-function getLocalDateDash(timeZone = 'America/New_York') {
-  const dateStr = getLocalDateString(timeZone);
-  return `${dateStr.slice(0, 4)}-${dateStr.slice(4, 6)}-${dateStr.slice(6, 8)}`;
 }
 
 function formatTeamTime(utcDateStr, timeZone) {
@@ -2546,7 +2566,15 @@ app.post('/api/m3u/channels', async (req, res) => {
     ? source.channels.filter(ch => ch.categories.some(c => categorySet.has(c)))
     : source.channels;
 
-  return res.json({ success: true, channels: channels.map(ch => ({ id: ch.id, name: ch.name, logo: ch.logo, categories: ch.categories })) });
+  return res.json({
+    success: true,
+    // streamUrl included because it's the channel's actual unique
+    // identity post-dedup-fix (see m3u.js/parseM3UPlaylist) - several
+    // rows can now legitimately share one `id`/tvg-id (distinct feeds of
+    // the same network), so the client needs streamUrl as the real
+    // per-row key rather than assuming `id` is unique.
+    channels: channels.map(ch => ({ id: ch.id, name: ch.name, logo: ch.logo, streamUrl: ch.streamUrl, categories: ch.categories }))
+  });
 });
 
 // Xtream's equivalent of /api/m3u/channels above - there's no cached
@@ -2631,11 +2659,11 @@ app.post('/api/presets', async (req, res) => {
   }
   clearFailedAttempts(ip);
 
-  // Unreviewed presets (brand new or edited since a shipped update, not yet
-  // looked at by this admin - see isPresetReviewed above) are withheld
-  // entirely rather than shown with a caveat, since an unreviewed preset
-  // may reference an EPG source this admin hasn't enabled yet.
-  return res.json({ success: true, presets: getAllPresets().filter(isPresetReviewed) });
+  // Unavailable presets (never turned on, or edited since a shipped update
+  // and dropped back to unavailable - see isPresetAvailable above) are
+  // withheld entirely rather than shown with a caveat, since one may
+  // reference an EPG source this admin hasn't enabled yet.
+  return res.json({ success: true, presets: getAllPresets().filter(isPresetAvailable) });
 });
 
 // Same read-only, account-agnostic preset list as /api/presets above, but
@@ -2645,7 +2673,7 @@ app.post('/api/presets', async (req, res) => {
 // there's nothing here worth gating behind auth; same reasoning as the
 // wizard's own pre-account /api/xtream/categories and /api/m3u/import.
 app.post('/api/presets/public', (req, res) => {
-  return res.json({ success: true, presets: getAllPresets().filter(isPresetReviewed) });
+  return res.json({ success: true, presets: getAllPresets().filter(isPresetAvailable) });
 });
 
 app.post('/api/user/register', async (req, res) => {
@@ -3110,13 +3138,24 @@ app.post('/api/admin/epgshare-settings/update', async (req, res) => {
   // enabled keep whatever's already cached; sources that got disabled are
   // simply left in cache until the next full recache (no urgency to evict
   // them early - they're just unused, not harmful).
+  //
+  // Awaited (not fire-and-forget) so a failure - dead link, malformed
+  // XML, timeout on a huge file - comes back in this response instead of
+  // only ever reaching a server log the admin isn't watching. Same
+  // {file, success, error} shape /api/admin/m3u-cache/recache already
+  // returns, so admin.html can render both with one code path.
+  let epgShareResults = [];
   if (newlyEnabled.length > 0) {
-    epgshare.refreshEnabledSources(newlyEnabled).catch(err => {
-      console.error('[EPGShare01] Initial fetch for newly-enabled sources failed:', err.message);
-    });
+    epgShareResults = await epgshare.refreshEnabledSources(newlyEnabled);
   }
 
-  return res.json({ success: true, settings: epgShareSettings });
+  return res.json({
+    success: true,
+    settings: epgShareSettings,
+    epgShareRefreshed: epgShareResults.filter(r => r.success).length,
+    epgShareFailed: epgShareResults.filter(r => !r.success).length,
+    epgShareResults
+  });
 });
 
 app.post('/api/admin/presets', async (req, res) => {
@@ -3135,12 +3174,12 @@ app.post('/api/admin/presets', async (req, res) => {
   clearFailedAttempts(ip);
 
   // Unlike the user-facing /api/presets, the admin's own list shows
-  // everything including unreviewed presets - reviewed/missingSources are
+  // everything including unavailable presets - available/missingSources are
   // computed per preset so admin.html can flag which ones still need a
   // look without a second round trip.
   return res.json({
     success: true,
-    presets: getAllPresets().map(p => ({ ...p, isStock: stockPresets.some(sp => sp.id === p.id), reviewed: isPresetReviewed(p), missingSources: computeMissingSourcesForPreset(p) }))
+    presets: getAllPresets().map(p => ({ ...p, isStock: stockPresets.some(sp => sp.id === p.id), available: isPresetAvailable(p), missingSources: computeMissingSourcesForPreset(p) }))
   });
 });
 
@@ -3192,12 +3231,14 @@ app.post('/api/admin/presets/create', async (req, res) => {
     return res.json({ success: false, needsConfirmation: true, missingSources });
   }
 
+  // Awaited so a fetch failure is reported back in this response rather
+  // than only ever reaching a server log - see the equivalent comment in
+  // /api/admin/epgshare-settings/update.
+  let epgShareResults = [];
   if (onMissingSources === 'enable' && missingSources.length > 0) {
     epgShareSettings = { enabledSources: [...new Set([...epgShareSettings.enabledSources, ...missingSources])] };
     saveEpgShareSettings(epgShareSettings);
-    epgshare.refreshEnabledSources(missingSources).catch(err => {
-      console.error('[EPGShare01] Initial fetch for newly-enabled sources failed:', err.message);
-    });
+    epgShareResults = await epgshare.refreshEnabledSources(missingSources);
   }
 
   const preset = {
@@ -3224,11 +3265,18 @@ app.post('/api/admin/presets/create', async (req, res) => {
   localPresets = [...localPresets, preset];
   saveLocalPresets(localPresets);
   // Created right here through this form, missing-source prompt included -
-  // that already is the review, so this doesn't also need to sit in the
-  // pending queue.
-  markPresetReviewed(preset);
+  // that already is the approval, so it goes straight to available rather
+  // than sitting greyed-out waiting for a second look.
+  setPresetAvailability(preset, true);
 
-  return res.json({ success: true, preset, epgShareSettings });
+  return res.json({
+    success: true,
+    preset,
+    epgShareSettings,
+    epgShareRefreshed: epgShareResults.filter(r => r.success).length,
+    epgShareFailed: epgShareResults.filter(r => !r.success).length,
+    epgShareResults
+  });
 });
 
 // Renames one of this instance's own local presets. Stock presets can only
@@ -3267,9 +3315,9 @@ app.post('/api/admin/presets/rename', async (req, res) => {
   preset.name = trimmedName;
   saveLocalPresets(localPresets);
   // The admin performing the rename has already seen the result, same
-  // reasoning as create - no need to also bounce it into the pending
-  // review queue just because the name change flipped its content hash.
-  markPresetReviewed(preset);
+  // reasoning as create - no need to also grey it back out just because
+  // the name change flipped its content hash.
+  setPresetAvailability(preset, true);
 
   return res.json({ success: true, preset });
 });
@@ -3289,7 +3337,7 @@ app.post('/api/admin/presets/review', async (req, res) => {
   }
   clearFailedAttempts(ip);
 
-  if (action !== 'publish' && action !== 'publish-and-enable') {
+  if (!['publish', 'publish-and-enable', 'unpublish'].includes(action)) {
     return res.status(400).json({ error: 'Invalid action.' });
   }
   const preset = getAllPresets().find(p => p.id === id);
@@ -3297,20 +3345,33 @@ app.post('/api/admin/presets/review', async (req, res) => {
     return res.status(404).json({ error: 'Preset not found.' });
   }
 
+  if (action === 'unpublish') {
+    setPresetAvailability(preset, false);
+    return res.json({ success: true, epgShareSettings });
+  }
+
+  // Awaited so a fetch failure is reported back in this response rather
+  // than only ever reaching a server log - see the equivalent comment in
+  // /api/admin/epgshare-settings/update.
+  let epgShareResults = [];
   if (action === 'publish-and-enable') {
     const missingSources = computeMissingSourcesForPreset(preset);
     if (missingSources.length > 0) {
       epgShareSettings = { enabledSources: [...new Set([...epgShareSettings.enabledSources, ...missingSources])] };
       saveEpgShareSettings(epgShareSettings);
-      epgshare.refreshEnabledSources(missingSources).catch(err => {
-        console.error('[EPGShare01] Initial fetch for newly-enabled sources failed:', err.message);
-      });
+      epgShareResults = await epgshare.refreshEnabledSources(missingSources);
     }
   }
 
-  markPresetReviewed(preset);
+  setPresetAvailability(preset, true);
 
-  return res.json({ success: true, epgShareSettings });
+  return res.json({
+    success: true,
+    epgShareSettings,
+    epgShareRefreshed: epgShareResults.filter(r => r.success).length,
+    epgShareFailed: epgShareResults.filter(r => !r.success).length,
+    epgShareResults
+  });
 });
 
 app.post('/api/admin/presets/delete', async (req, res) => {
@@ -3384,8 +3445,6 @@ app.get('/user/:uuid/manifest.json', (req, res) => {
   user.lastAccessedAt = new Date().toISOString();
   saveUserConfigs();
 
-  const targetDateStr = getLocalDateDash(user.timeZone);
-
   // A sport only appears as a catalog if at least one category folder has
   // been mapped to it in AT LEAST ONE provider - this keeps unconfigured
   // sports out of Nuvio while letting different providers each contribute
@@ -3421,7 +3480,7 @@ app.get('/user/:uuid/manifest.json', (req, res) => {
 
   const catalogs = orderedActiveSports.map(sport => ({
     type: 'sports',
-    id: `sb_${sport.toLowerCase()}_${targetDateStr}`,
+    id: `sb_${sport.toLowerCase()}`,
     name: `${getSportDisplayName(sport)} Live Games`
   }));
 
@@ -3446,10 +3505,9 @@ app.get('/user/:uuid/catalog/sports/:id.json', async (req, res) => {
   if (!user) return res.json({ metas: [] });
 
   const hostUrl = `${req.protocol}://${req.get('host')}`;
-  // Catalog ids are always constructed as sb_{sport}_{date} (see the
-  // manifest route), and the date portion uses dashes rather than
-  // underscores, so splitting on "_" and taking the second segment
-  // reliably extracts the sport for every league - no need to maintain a
+  // Catalog ids are always constructed as sb_{sport} (see the manifest
+  // route), so splitting on "_" and taking the second segment reliably
+  // extracts the sport for every league - no need to maintain a
   // hardcoded, easily-incomplete list of substring checks here, which is
   // exactly what caused several leagues to silently fall back to MLB
   // before this fix.

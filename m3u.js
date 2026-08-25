@@ -31,7 +31,14 @@ const axios = require('axios');
 // format confirmed during design against actual provider output.
 function parseM3UPlaylist(content) {
   const blocks = content.split(/(?=#EXTINF:)/);
-  const channelsById = new Map();
+  // Keyed on streamUrl, not tvg-id - tvg-id identifies a *network* for EPG
+  // purposes, not a unique stream. Providers routinely list multiple
+  // genuinely different feeds (different quality, different source server,
+  // backup feed) under one shared tvg-id; keying on it here used to
+  // silently discard every feed but the first-listed one (confirmed on a
+  // real 18k-channel playlist: 1,278 shared tvg-ids, 2,048 distinct stream
+  // URLs silently dropped).
+  const channelsByUrl = new Map();
 
   for (const block of blocks) {
     if (!block.startsWith('#EXTINF:')) continue;
@@ -54,15 +61,15 @@ function parseM3UPlaylist(content) {
     const streamUrl = urlMatch[1].trim();
     const group = groupMatch ? groupMatch[1] : '';
 
-    if (!channelsById.has(id)) {
-      channelsById.set(id, { id, name, logo, streamUrl, categories: new Set() });
+    if (!channelsByUrl.has(streamUrl)) {
+      channelsByUrl.set(streamUrl, { id, name, logo, streamUrl, categories: new Set() });
     }
     if (group) {
-      channelsById.get(id).categories.add(group);
+      channelsByUrl.get(streamUrl).categories.add(group);
     }
   }
 
-  const channels = [...channelsById.values()].map(ch => ({
+  const channels = [...channelsByUrl.values()].map(ch => ({
     ...ch,
     categories: [...ch.categories]
   }));

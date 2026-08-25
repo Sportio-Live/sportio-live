@@ -628,8 +628,16 @@
     let fetchedCategories = [];
 
     // Channel EPG state. channelEpgChannels is the active provider's own
-    // channel list (id/name/categoryIds), re-fetched each time the panel
-    // opens. epgShareSourcesCatalog is the admin-enabled EPGShare01
+    // channel list (id/key/name/categoryIds), re-fetched each time the
+    // panel opens. `id` is the provider-native channel id (tvg-id for M3U,
+    // stream_id for Xtream) - the correct join key for EPG overrides,
+    // since m3u.js's dedup fix means several rows can now legitimately
+    // share one tvg-id (distinct feeds of the same network - e.g. a
+    // 1080p/720p/backup trio all showing "ESPN"). `key` is what's
+    // actually unique per row and what all row-selection logic below uses
+    // instead - the channel's real stream URL for M3U, same as `id` for
+    // Xtream (already unique there, keyed by stream_id). epgShareSourcesCatalog
+    // is the admin-enabled EPGShare01
     // catalog, grouped by source file ([{file, channelIds}]) so the
     // editor can offer "search just this source" as well as "search
     // everything" - loaded once per page session (not per provider/
@@ -639,9 +647,9 @@
     // manual picker is currently scoped to - deliberately persists across
     // selecting different channels, since a user narrowing down to one
     // source is likely to want that same source for the next channel too.
-    // channelEpgExpandedCategories/channelEpgSelectedChannelId track the
-    // left accordion's open sections and which channel (if any) the
-    // right-hand editor is currently showing.
+    // channelEpgExpandedCategories/channelEpgSelectedChannelKey track the
+    // left accordion's open sections and which channel (if any, by its
+    // `key` - see above) the right-hand editor is currently showing.
     let channelEpgChannels = [];
     let epgShareSourcesCatalog = null;
     let channelEpgManualSourceFilter = '';
@@ -657,18 +665,20 @@
     let channelEpgSuggestSourceFilter = '';
     let channelEpgSuggestResults = null;
     let channelEpgExpandedCategories = new Set();
-    let channelEpgSelectedChannelId = null;
+    let channelEpgSelectedChannelKey = null;
     let channelEpgOnlyOverrides = false;
 
     // Multi-select (shift/ctrl-click) state for the bulk "use channel name
-    // as description" action. channelEpgSelectedChannelId (above) is still
-    // the single-select source of truth the existing per-channel editor
-    // reads - kept in sync below rather than replaced, so that editor needs
-    // no changes at all. channelEpgVisibleOrder is rebuilt on every
-    // renderChannelEpgCategories() call and is what a shift-click range is
-    // computed against - only currently-expanded/visible rows are
-    // range-selectable, same as most file managers.
-    let channelEpgSelectedChannelIds = new Set();
+    // as description" action. Keyed by `key` (see channelEpgChannels
+    // above), not `id` - several rows can now legitimately share one `id`.
+    // channelEpgSelectedChannelKey (above) is still the single-select
+    // source of truth the existing per-channel editor reads - kept in
+    // sync below rather than replaced, so that editor needs no changes
+    // beyond the id/key split itself. channelEpgVisibleOrder is rebuilt
+    // on every renderChannelEpgCategories() call and is what a shift-click
+    // range is computed against - only currently-expanded/visible rows
+    // are range-selectable, same as most file managers.
+    let channelEpgSelectedChannelKeys = new Set();
     let channelEpgSelectionAnchor = null;
     let channelEpgVisibleOrder = [];
 
@@ -2377,8 +2387,8 @@
         closeExportImportPanelSilently();
         document.getElementById('channel-epg-search').value = '';
         channelEpgExpandedCategories = new Set();
-        channelEpgSelectedChannelId = null;
-        channelEpgSelectedChannelIds = new Set();
+        channelEpgSelectedChannelKey = null;
+        channelEpgSelectedChannelKeys = new Set();
         channelEpgSelectionAnchor = null;
         channelEpgSuggestResults = null;
         channelEpgOnlyOverrides = false;
@@ -2822,12 +2832,15 @@
 
     // Fetches the active provider's own channel list, branching by
     // connectionType the same way refreshCategoriesForActiveProvider does,
-    // and normalizes both shapes into {id, name, categoryIds} - M3U
+    // and normalizes both shapes into {id, key, name, categoryIds} - M3U
     // channels already carry a categories array (a channel can be in more
     // than one group-title); Xtream streams carry a single category_id
     // (or, on some providers, a category_ids array) instead, so that's
     // wrapped into the same categoryIds shape here for the left
-    // accordion to group by uniformly regardless of source.
+    // accordion to group by uniformly regardless of source. `key` is the
+    // real per-row identity used for selection (see the state comment
+    // above) - the stream URL for M3U, since m3u.js's dedup fix means
+    // `id` (tvg-id) is no longer guaranteed unique per row.
     async function loadChannelEpgChannels() {
       const statusEl = document.getElementById('channel-epg-status');
       const provider = activeUser && activeUser.providers[activeProviderIndex];
@@ -2855,7 +2868,7 @@
           });
           const data = await res.json();
           if (data.success) {
-            channelEpgChannels = data.channels.map(ch => ({ id: ch.id, name: ch.name, categoryIds: (ch.categories || []).map(String) }));
+            channelEpgChannels = data.channels.map(ch => ({ id: ch.id, key: ch.streamUrl, name: ch.name, categoryIds: (ch.categories || []).map(String) }));
             statusEl.textContent = data.notReady
               ? 'M3U data is still loading in the background - try again shortly.'
               : `${channelEpgChannels.length} channel${channelEpgChannels.length === 1 ? '' : 's'}.`;
@@ -2893,9 +2906,12 @@
             // whichever happened to come first). stream_id is the one
             // field Xtream guarantees is present and unique per channel,
             // and must match the same field the server's stream-building
-            // route now uses for its override join key.
+            // route now uses for its override join key. Already unique,
+            // so `key` is just the same value here - no id/key split
+            // needed on the Xtream side the way M3U's dedup fix required.
             channelEpgChannels = data.streams.map(s => ({
               id: String(s.stream_id),
+              key: String(s.stream_id),
               name: s.name,
               // Always coerced to strings - provider.sportCategories (and
               // therefore the category ids the left accordion groups by)
@@ -2991,14 +3007,14 @@
         const isExpanded = isFiltering ? true : channelEpgExpandedCategories.has(catId);
 
         const channelsHtml = isExpanded ? matchingChannels.map(ch => {
-          channelEpgVisibleOrder.push(ch.id);
+          channelEpgVisibleOrder.push(ch.key);
           const overrideTarget = provider.epgOverrides && provider.epgOverrides[ch.id];
-          const isSelected = channelEpgSelectedChannelIds.has(ch.id);
+          const isSelected = channelEpgSelectedChannelKeys.has(ch.key);
           const statusHtml = overrideTarget
             ? `<span class="text-[10px] font-semibold text-[#5aa8d1]">&rarr; ${overrideTarget === EPG_OVERRIDE_SELF_NAME ? 'Channel name' : escapeHtml(overrideTarget)}</span>`
             : `<span class="text-[10px] text-[#e6e6e6]/45">Provider EPG</span>`;
           return `
-            <button type="button" onclick="selectChannelForEpgEdit('${escapeJsAttr(ch.id)}', event)" class="w-full text-left pl-7 pr-3 py-1.5 transition ${isSelected ? 'bg-[#3b8fc4]/20 border-l-2 border-[#3b8fc4]' : 'border-l-2 border-transparent hover:bg-[#3b4d58]'}">
+            <button type="button" onclick="selectChannelForEpgEdit('${escapeJsAttr(ch.key)}', event)" class="w-full text-left pl-7 pr-3 py-1.5 transition ${isSelected ? 'bg-[#3b8fc4]/20 border-l-2 border-[#3b8fc4]' : 'border-l-2 border-transparent hover:bg-[#3b4d58]'}">
               <div class="text-xs font-semibold truncate">${escapeHtml(ch.name)}</div>
               ${statusHtml}
             </button>
@@ -3052,41 +3068,49 @@
     // anchor that's since scrolled out of the visible set (category
     // collapsed, search changed) can't anchor a range, so that falls back
     // to a plain single-select rather than doing something surprising.
-    function selectChannelForEpgEdit(channelId, event) {
+    function selectChannelForEpgEdit(channelKey, event) {
       if (event && event.shiftKey && channelEpgSelectionAnchor) {
         const anchorIdx = channelEpgVisibleOrder.indexOf(channelEpgSelectionAnchor);
-        const clickedIdx = channelEpgVisibleOrder.indexOf(channelId);
+        const clickedIdx = channelEpgVisibleOrder.indexOf(channelKey);
         if (anchorIdx !== -1 && clickedIdx !== -1) {
           const [start, end] = anchorIdx < clickedIdx ? [anchorIdx, clickedIdx] : [clickedIdx, anchorIdx];
-          channelEpgSelectedChannelIds = new Set(channelEpgVisibleOrder.slice(start, end + 1));
+          channelEpgSelectedChannelKeys = new Set(channelEpgVisibleOrder.slice(start, end + 1));
         } else {
-          channelEpgSelectedChannelIds = new Set([channelId]);
-          channelEpgSelectionAnchor = channelId;
+          channelEpgSelectedChannelKeys = new Set([channelKey]);
+          channelEpgSelectionAnchor = channelKey;
         }
       } else if (event && (event.ctrlKey || event.metaKey)) {
-        if (channelEpgSelectedChannelIds.has(channelId)) {
-          channelEpgSelectedChannelIds.delete(channelId);
+        if (channelEpgSelectedChannelKeys.has(channelKey)) {
+          channelEpgSelectedChannelKeys.delete(channelKey);
         } else {
-          channelEpgSelectedChannelIds.add(channelId);
+          channelEpgSelectedChannelKeys.add(channelKey);
         }
-        channelEpgSelectionAnchor = channelId;
+        channelEpgSelectionAnchor = channelKey;
       } else {
-        channelEpgSelectedChannelIds = new Set([channelId]);
-        channelEpgSelectionAnchor = channelId;
+        channelEpgSelectedChannelKeys = new Set([channelKey]);
+        channelEpgSelectionAnchor = channelKey;
       }
 
-      channelEpgSelectedChannelId = channelEpgSelectedChannelIds.size === 1
-        ? [...channelEpgSelectedChannelIds][0]
+      channelEpgSelectedChannelKey = channelEpgSelectedChannelKeys.size === 1
+        ? [...channelEpgSelectedChannelKeys][0]
         : null;
       // Last channel's matches would be actively misleading here - source
       // choice stays, but the results themselves are always per-channel.
       channelEpgSuggestResults = null;
       renderChannelEpgCategories();
-      if (channelEpgSelectedChannelIds.size >= 2) {
+      if (channelEpgSelectedChannelKeys.size >= 2) {
         renderChannelEpgMultiEditor();
       } else {
         renderChannelEpgEditor();
       }
+    }
+
+    // Resolves a Set of selection keys back to their channel objects -
+    // needed wherever a bulk action has to look up each channel's real
+    // `id` for the EPG-override join, since the keys themselves are just
+    // row identity (streamUrl for M3U), not the override join key.
+    function resolveSelectedChannels() {
+      return [...channelEpgSelectedChannelKeys].map(key => channelEpgChannels.find(ch => ch.key === key)).filter(Boolean);
     }
 
     // Bulk action: either set every selected channel's override to the
@@ -3098,10 +3122,11 @@
     // offer on a selection with no overrides to clear.
     function renderChannelEpgMultiEditor() {
       const editor = document.getElementById('channel-epg-editor');
-      const count = channelEpgSelectedChannelIds.size;
+      const count = channelEpgSelectedChannelKeys.size;
       const provider = activeUser && activeUser.providers[activeProviderIndex];
       const overrides = (provider && provider.epgOverrides) || {};
-      const allOverridden = [...channelEpgSelectedChannelIds].every(id => overrides[id] !== undefined);
+      const selectedChannels = resolveSelectedChannels();
+      const allOverridden = selectedChannels.length > 0 && selectedChannels.every(ch => overrides[ch.id] !== undefined);
       const question = allOverridden ? 'Clear EPG overrides?' : 'Display channel names as descriptions?';
       const applyFn = allOverridden ? 'applyMultiEpgClear' : 'applyMultiEpgSelfName';
       editor.innerHTML = `
@@ -3132,9 +3157,9 @@
     }
 
     function cancelMultiEpgSelection() {
-      channelEpgSelectedChannelIds = new Set();
+      channelEpgSelectedChannelKeys = new Set();
       channelEpgSelectionAnchor = null;
-      channelEpgSelectedChannelId = null;
+      channelEpgSelectedChannelKey = null;
       renderChannelEpgCategories();
       renderChannelEpgEditor();
     }
@@ -3145,12 +3170,12 @@
       const provider = activeUser && activeUser.providers[activeProviderIndex];
       if (!provider) return;
       provider.epgOverrides = provider.epgOverrides || {};
-      channelEpgSelectedChannelIds.forEach(id => {
-        provider.epgOverrides[id] = EPG_OVERRIDE_SELF_NAME;
+      resolveSelectedChannels().forEach(ch => {
+        provider.epgOverrides[ch.id] = EPG_OVERRIDE_SELF_NAME;
       });
-      channelEpgSelectedChannelIds = new Set();
+      channelEpgSelectedChannelKeys = new Set();
       channelEpgSelectionAnchor = null;
-      channelEpgSelectedChannelId = null;
+      channelEpgSelectedChannelKey = null;
       renderChannelEpgCategories();
       renderChannelEpgEditor();
       markDashboardDirty();
@@ -3162,12 +3187,12 @@
       const provider = activeUser && activeUser.providers[activeProviderIndex];
       if (!provider) return;
       provider.epgOverrides = provider.epgOverrides || {};
-      channelEpgSelectedChannelIds.forEach(id => {
-        delete provider.epgOverrides[id];
+      resolveSelectedChannels().forEach(ch => {
+        delete provider.epgOverrides[ch.id];
       });
-      channelEpgSelectedChannelIds = new Set();
+      channelEpgSelectedChannelKeys = new Set();
       channelEpgSelectionAnchor = null;
-      channelEpgSelectedChannelId = null;
+      channelEpgSelectedChannelKey = null;
       renderChannelEpgCategories();
       renderChannelEpgEditor();
       markDashboardDirty();
@@ -3265,7 +3290,7 @@
     function renderChannelEpgEditor() {
       const editor = document.getElementById('channel-epg-editor');
       const provider = activeUser && activeUser.providers[activeProviderIndex];
-      const channel = channelEpgChannels.find(ch => ch.id === channelEpgSelectedChannelId);
+      const channel = channelEpgChannels.find(ch => ch.key === channelEpgSelectedChannelKey);
 
       if (!provider || !channel) {
         editor.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic">Select a channel on the left to edit its EPG source.</p>';
@@ -3353,7 +3378,7 @@
     }
 
     function searchChannelEpgSuggestions() {
-      const channel = channelEpgChannels.find(ch => ch.id === channelEpgSelectedChannelId);
+      const channel = channelEpgChannels.find(ch => ch.key === channelEpgSelectedChannelKey);
       const source = (epgShareSourcesCatalog || []).find(s => s.file === channelEpgSuggestSourceFilter);
       if (!channel || !source) return;
       channelEpgSuggestResults = getSuggestedEpgShareMatches(channel.name, source.channelIds);
@@ -3369,7 +3394,8 @@
       const listEl = document.getElementById('channel-epg-manual-list');
       if (!listEl) return;
       const provider = activeUser && activeUser.providers[activeProviderIndex];
-      const overrideTarget = provider && provider.epgOverrides && provider.epgOverrides[channelEpgSelectedChannelId];
+      const selectedChannel = channelEpgChannels.find(ch => ch.key === channelEpgSelectedChannelKey);
+      const overrideTarget = provider && provider.epgOverrides && selectedChannel && provider.epgOverrides[selectedChannel.id];
       const selectedSource = (epgShareSourcesCatalog || []).find(s => s.file === channelEpgManualSourceFilter);
       const catalog = selectedSource ? selectedSource.channelIds : getMergedEpgShareChannelIds();
       const term = document.getElementById('channel-epg-manual-search').value.trim().toLowerCase();
@@ -3396,9 +3422,10 @@
 
     function applyEpgShareOverrideToSelected(epgShareChannelId) {
       const provider = activeUser && activeUser.providers[activeProviderIndex];
-      if (!provider || !channelEpgSelectedChannelId) return;
+      const channel = channelEpgChannels.find(ch => ch.key === channelEpgSelectedChannelKey);
+      if (!provider || !channel) return;
       provider.epgOverrides = provider.epgOverrides || {};
-      provider.epgOverrides[channelEpgSelectedChannelId] = epgShareChannelId;
+      provider.epgOverrides[channel.id] = epgShareChannelId;
       renderChannelEpgCategories();
       renderChannelEpgEditor();
       markDashboardDirty();
@@ -3406,8 +3433,9 @@
 
     function clearSelectedChannelEpgOverride() {
       const provider = activeUser && activeUser.providers[activeProviderIndex];
-      if (!provider || !provider.epgOverrides || !channelEpgSelectedChannelId) return;
-      delete provider.epgOverrides[channelEpgSelectedChannelId];
+      const channel = channelEpgChannels.find(ch => ch.key === channelEpgSelectedChannelKey);
+      if (!provider || !provider.epgOverrides || !channel) return;
+      delete provider.epgOverrides[channel.id];
       renderChannelEpgCategories();
       renderChannelEpgEditor();
       markDashboardDirty();
