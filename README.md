@@ -66,7 +66,6 @@ Every update to `main` is published as a ready-to-run image - useful for platfor
          - ADMIN_PASSWORD=<pick a password for the admin page>
        volumes:
          - ./data:/usr/src/app/data
-         - ./presets:/usr/src/app/presets
    ```
 3. Pull and start it:
    ```bash
