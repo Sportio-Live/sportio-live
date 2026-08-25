@@ -46,7 +46,7 @@ Sportio Live is a self-hosted Nuvio/Stremio addon that turns your IPTV into a li
 
 Every update to `main` is published as a ready-to-run image - useful for platforms (Unraid, Synology, Portainer, TrueNAS, Kubernetes, etc.) that expect an image reference instead of building from source.
 
-1. Make a directory for it and `cd` in - `docker compose` will create `data/` and `presets/` here next to the compose file:
+1. Make a directory for it and `cd` in - `docker compose` will create `data/` here next to the compose file:
    ```bash
    mkdir sportio-live && cd sportio-live
    ```
@@ -66,8 +66,9 @@ Every update to `main` is published as a ready-to-run image - useful for platfor
          - ADMIN_PASSWORD=<pick a password for the admin page>
        volumes:
          - ./data:/usr/src/app/data
-         - ./presets:/usr/src/app/presets
    ```
+
+   > Don't add a `./presets:/usr/src/app/presets` mount here - stock presets ship baked into the image and are never written to at runtime, so an empty host folder would only hide them. Presets you create yourself in the admin panel are already persisted under `./data`.
 3. Pull and start it:
    ```bash
    docker compose up -d
