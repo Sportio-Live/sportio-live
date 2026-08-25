@@ -2449,47 +2449,27 @@ function buildCategoryNameLookup(categories) {
   };
 }
 
-// Runs `fn` over `items` with at most `limit` calls in flight at once -
-// fully sequential (limit=1) is safe but slow once there are more than a
-// handful of items (confirmed: Network Links status resolution for an
-// Xtream account with many categories was taking as long as tens of
-// seconds, one category at a time); fully unbounded Promise.all risks
-// tripping a provider's concurrent-connection cap (a real, documented
-// constraint for IPTV providers). A small bounded pool is the middle
-// ground - most of the speedup, without bursting an arbitrary number of
-// simultaneous requests at one server.
-async function mapWithConcurrency(items, limit, fn) {
-  const results = new Array(items.length);
-  let nextIndex = 0;
-  async function worker() {
-    while (nextIndex < items.length) {
-      const i = nextIndex++;
-      results[i] = await fn(items[i], i);
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return results;
-}
-
 async function fetchXtreamLiveStreams(user, categoryIds = []) {
   if (!categoryIds || categoryIds.length === 0) return [];
   const { url, username, password } = user.xtream;
   const baseUrl = url.replace(/\/+$/, '');
 
-  const perCategory = await mapWithConcurrency(categoryIds, 5, async (catId) => {
+  let allStreams = [];
+  for (const catId of categoryIds) {
     const apiUrl = `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_live_streams&category_id=${catId}`;
     try {
       const res = await axios.get(apiUrl, {
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
         timeout: 8000
       });
-      return Array.isArray(res.data) ? res.data : [];
+      if (Array.isArray(res.data)) {
+        allStreams = allStreams.concat(res.data);
+      }
     } catch (e) {
       console.error(`[Xtream] Failed to fetch category ${catId}:`, e.message);
-      return [];
     }
-  });
-  return perCategory.flat();
+  }
+  return allStreams;
 }
 
 // Fetches every live stream across every category on this Xtream account,
@@ -2517,7 +2497,7 @@ async function computeNetworkLinksStatus(user) {
   const networkLinks = user.networkLinks || {};
 
   const m3uChannelsByProviderId = new Map();
-  const xtreamProviderIdsNeeded = new Set();
+  const xtreamStreamsByProviderId = new Map();
 
   for (const slots of Object.values(networkLinks)) {
     for (const slot of slots) {
@@ -2528,24 +2508,12 @@ async function computeNetworkLinksStatus(user) {
         const source = provider.m3u?.playlistUrl ? m3u.getCachedM3USource(provider.m3u.playlistUrl) : null;
         m3uChannelsByProviderId.set(slot.providerId, source ? source.channels : []);
       }
-      if (slot.type === 'xtream' && provider.xtream) {
-        xtreamProviderIdsNeeded.add(slot.providerId);
+      if (slot.type === 'xtream' && !xtreamStreamsByProviderId.has(slot.providerId)) {
+        const streams = provider.xtream ? await fetchAllXtreamLiveStreams({ xtream: provider.xtream }) : [];
+        xtreamStreamsByProviderId.set(slot.providerId, streams);
       }
     }
   }
-
-  // Every distinct Xtream provider fetched in parallel, not one after
-  // another - each is already a real round trip (fetchAllXtreamLiveStreams
-  // itself fetches every category on the account), and different
-  // providers have no dependency on each other that would require
-  // serializing them. Confirmed this mattered live: with providers fetched
-  // sequentially, status resolution after a single assign/unassign could
-  // take as long as tens of seconds.
-  const xtreamStreamsByProviderId = new Map();
-  await Promise.all([...xtreamProviderIdsNeeded].map(async providerId => {
-    const streams = await fetchAllXtreamLiveStreams({ xtream: providerById.get(providerId).xtream });
-    xtreamStreamsByProviderId.set(providerId, streams);
-  }));
 
   const result = {};
   for (const [networkKey, slots] of Object.entries(networkLinks)) {

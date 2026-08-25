@@ -3036,15 +3036,9 @@
           body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password })
         });
         const data = await res.json();
-        // On failure, deliberately leave networksSummary as whatever it
-        // already was - this can be slow (it resolves live status for
-        // every saved slot, including a real round trip per Xtream
-        // provider) and a transient failure/timeout should read as
-        // "still showing the last known state", not "you have no
-        // networks", which is what wiping this to [] used to do.
-        if (data.success) networksSummary = data.networks;
+        networksSummary = data.success ? data.networks : [];
       } catch (err) {
-        // Same reasoning - a network error leaves prior state in place.
+        networksSummary = [];
       }
       renderNetworkSummaryStrip();
       renderChannelEpgCategories();
@@ -3424,22 +3418,14 @@
       channelEpgSelectedChannelKeys = new Set();
       channelEpgSelectionAnchor = null;
       channelEpgSelectedChannelKey = null;
+      await loadNetworksSummary();
+      renderChannelEpgEditor();
 
-      // Confirm and reflect the change immediately - the save already
-      // happened by this point. Refreshing live status (a real round trip
-      // per Xtream provider involved) can take a while and must never
-      // make the user wait just to see "it worked"; it runs in the
-      // background and corrects the optimistic 'ok' guess below whenever
-      // it finishes.
       const skipped = (data.skippedInvalid || 0) + (data.skippedCapped || 0);
       showStatus(
         `Mapped ${data.applied} channel${data.applied === 1 ? '' : 's'} to ${networkLabel}.` +
         (skipped > 0 ? ` ${skipped} skipped.` : '')
       );
-      applyOptimisticNetworkLinks(networkKey, data.networkLinks);
-      renderChannelEpgEditor();
-      renderNetworkSummaryStrip();
-      loadNetworksSummary().then(renderChannelEpgEditor);
     }
 
     // Single-channel network mapping (spec §5's single-click row action) -
@@ -3461,17 +3447,6 @@
       `;
     }
 
-    // Patches networksSummary in place from a save response's full
-    // networkLinks, optimistically marking freshly-assigned slots 'ok' -
-    // good enough for instant chip/tag/strip feedback. The background
-    // loadNetworksSummary() call each caller kicks off right after
-    // corrects this to the real live status shortly afterward (ok/healed/
-    // broken), so a wrong optimistic guess never lingers.
-    function applyOptimisticNetworkLinks(networkKey, networkLinks) {
-      const updatedSlots = (networkLinks[networkKey] || []).map(slot => ({ ...slot, status: 'ok' }));
-      networksSummary = networksSummary.map(n => n.key === networkKey ? { ...n, slots: updatedSlots } : n);
-    }
-
     async function toggleNetworkMappingForSelected(networkKey) {
       const provider = activeUser && activeUser.providers[activeProviderIndex];
       const channel = channelEpgChannels.find(ch => ch.key === channelEpgSelectedChannelKey);
@@ -3479,31 +3454,21 @@
       const mappedKeys = new Set((buildChannelNetworkMap().get(channel.key) || []).map(m => m.key));
       const action = mappedKeys.has(networkKey) ? 'unassign' : 'assign';
       const networkLabel = (networksSummary.find(n => n.key === networkKey) || {}).label || networkKey;
-      let data;
       try {
         const res = await fetch('/api/networks/slot', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password, networkKey, action, channel: buildNetworkChannelPayload(provider, channel) })
         });
-        data = await res.json();
+        const data = await res.json();
         if (!data.success) { showStatus(data.error || 'Failed to update network mapping.', true); return; }
       } catch (err) {
         showStatus('Network error while updating the network mapping.', true);
         return;
       }
-
-      // Confirm and reflect the change immediately - the save already
-      // happened. Live status resolution (a real round trip per Xtream
-      // provider involved) can take a while and must never make the user
-      // wait just to see the chip flip or the toast appear; it runs in
-      // the background and corrects the optimistic 'ok' guess above
-      // whenever it finishes.
-      showStatus(action === 'assign' ? `Mapped "${channel.name}" to ${networkLabel}.` : `Removed "${channel.name}" from ${networkLabel}.`);
-      applyOptimisticNetworkLinks(networkKey, data.networkLinks);
+      await loadNetworksSummary();
       renderChannelEpgEditor();
-      renderNetworkSummaryStrip();
-      loadNetworksSummary().then(renderChannelEpgEditor);
+      showStatus(action === 'assign' ? `Mapped "${channel.name}" to ${networkLabel}.` : `Removed "${channel.name}" from ${networkLabel}.`);
     }
 
     // --- Right panel: editor for the currently selected channel ---
