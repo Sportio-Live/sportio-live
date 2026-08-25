@@ -3143,13 +3143,24 @@ app.post('/api/admin/epgshare-settings/update', async (req, res) => {
   // enabled keep whatever's already cached; sources that got disabled are
   // simply left in cache until the next full recache (no urgency to evict
   // them early - they're just unused, not harmful).
+  //
+  // Awaited (not fire-and-forget) so a failure - dead link, malformed
+  // XML, timeout on a huge file - comes back in this response instead of
+  // only ever reaching a server log the admin isn't watching. Same
+  // {file, success, error} shape /api/admin/m3u-cache/recache already
+  // returns, so admin.html can render both with one code path.
+  let epgShareResults = [];
   if (newlyEnabled.length > 0) {
-    epgshare.refreshEnabledSources(newlyEnabled).catch(err => {
-      console.error('[EPGShare01] Initial fetch for newly-enabled sources failed:', err.message);
-    });
+    epgShareResults = await epgshare.refreshEnabledSources(newlyEnabled);
   }
 
-  return res.json({ success: true, settings: epgShareSettings });
+  return res.json({
+    success: true,
+    settings: epgShareSettings,
+    epgShareRefreshed: epgShareResults.filter(r => r.success).length,
+    epgShareFailed: epgShareResults.filter(r => !r.success).length,
+    epgShareResults
+  });
 });
 
 app.post('/api/admin/presets', async (req, res) => {
@@ -3225,12 +3236,14 @@ app.post('/api/admin/presets/create', async (req, res) => {
     return res.json({ success: false, needsConfirmation: true, missingSources });
   }
 
+  // Awaited so a fetch failure is reported back in this response rather
+  // than only ever reaching a server log - see the equivalent comment in
+  // /api/admin/epgshare-settings/update.
+  let epgShareResults = [];
   if (onMissingSources === 'enable' && missingSources.length > 0) {
     epgShareSettings = { enabledSources: [...new Set([...epgShareSettings.enabledSources, ...missingSources])] };
     saveEpgShareSettings(epgShareSettings);
-    epgshare.refreshEnabledSources(missingSources).catch(err => {
-      console.error('[EPGShare01] Initial fetch for newly-enabled sources failed:', err.message);
-    });
+    epgShareResults = await epgshare.refreshEnabledSources(missingSources);
   }
 
   const preset = {
@@ -3261,7 +3274,14 @@ app.post('/api/admin/presets/create', async (req, res) => {
   // than sitting greyed-out waiting for a second look.
   setPresetAvailability(preset, true);
 
-  return res.json({ success: true, preset, epgShareSettings });
+  return res.json({
+    success: true,
+    preset,
+    epgShareSettings,
+    epgShareRefreshed: epgShareResults.filter(r => r.success).length,
+    epgShareFailed: epgShareResults.filter(r => !r.success).length,
+    epgShareResults
+  });
 });
 
 // Renames one of this instance's own local presets. Stock presets can only
@@ -3335,20 +3355,28 @@ app.post('/api/admin/presets/review', async (req, res) => {
     return res.json({ success: true, epgShareSettings });
   }
 
+  // Awaited so a fetch failure is reported back in this response rather
+  // than only ever reaching a server log - see the equivalent comment in
+  // /api/admin/epgshare-settings/update.
+  let epgShareResults = [];
   if (action === 'publish-and-enable') {
     const missingSources = computeMissingSourcesForPreset(preset);
     if (missingSources.length > 0) {
       epgShareSettings = { enabledSources: [...new Set([...epgShareSettings.enabledSources, ...missingSources])] };
       saveEpgShareSettings(epgShareSettings);
-      epgshare.refreshEnabledSources(missingSources).catch(err => {
-        console.error('[EPGShare01] Initial fetch for newly-enabled sources failed:', err.message);
-      });
+      epgShareResults = await epgshare.refreshEnabledSources(missingSources);
     }
   }
 
   setPresetAvailability(preset, true);
 
-  return res.json({ success: true, epgShareSettings });
+  return res.json({
+    success: true,
+    epgShareSettings,
+    epgShareRefreshed: epgShareResults.filter(r => r.success).length,
+    epgShareFailed: epgShareResults.filter(r => !r.success).length,
+    epgShareResults
+  });
 });
 
 app.post('/api/admin/presets/delete', async (req, res) => {

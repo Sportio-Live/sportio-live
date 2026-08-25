@@ -453,19 +453,7 @@
         const data = await res.json();
         if (data.success) {
           const count = data.cachedSources;
-          let message = `EPG cache cleared and refreshed (${count} M3U source${count === 1 ? '' : 's'}).`;
-          if (data.epgShareRefreshed || data.epgShareFailed) {
-            message += ` ${data.epgShareRefreshed} EPGShare01 source${data.epgShareRefreshed === 1 ? '' : 's'} refreshed.`;
-            if (data.epgShareFailed) {
-              message += ` ${data.epgShareFailed} failed.`;
-              // Named per-source, not just a count - "2 failed" alone
-              // isn't diagnosable from the admin page itself.
-              const failures = (data.epgShareResults || []).filter(r => !r.success);
-              failures.forEach(f => {
-                message += `\n• ${epgShareSourceLabel(f.file)}: ${f.error}`;
-              });
-            }
-          }
+          const message = `EPG cache cleared and refreshed (${count} M3U source${count === 1 ? '' : 's'}).` + epgShareResultsNote(data);
           showAdminStatus(message, !!data.epgShareFailed);
         } else {
           showAdminStatus(data.error || 'Failed to refresh the EPG cache.', true);
@@ -526,6 +514,26 @@
     // what's actually saved/matched against.
     function epgShareSourceLabel(file) {
       return file.replace(/^epg_ripper_/, '').replace(/\.xml\.gz$/, '').replace(/_/g, ' ');
+    }
+
+    // Shared by every admin action that can trigger an immediate EPGShare01
+    // fetch (recache, EPG Editor save, preset create/publish) - the backend
+    // now awaits that fetch and reports {epgShareRefreshed, epgShareFailed,
+    // epgShareResults} instead of firing it off silently, so a failure (dead
+    // link, malformed XML, a huge file timing out) surfaces here rather than
+    // only ever reaching a server log the admin isn't watching. Failures are
+    // named per-source, not just counted, since "1 failed" alone isn't
+    // diagnosable from the admin page itself.
+    function epgShareResultsNote(data) {
+      if (!data.epgShareRefreshed && !data.epgShareFailed) return '';
+      let note = ` ${data.epgShareRefreshed} EPG source${data.epgShareRefreshed === 1 ? '' : 's'} fetched.`;
+      if (data.epgShareFailed) {
+        note += ` ${data.epgShareFailed} failed - it'll retry automatically on the next scheduled refresh, or recache now to retry immediately.`;
+        (data.epgShareResults || []).filter(r => !r.success).forEach(f => {
+          note += `\n• ${epgShareSourceLabel(f.file)}: ${f.error}`;
+        });
+      }
+      return note;
     }
 
     async function loadEpgShareCatalog(forceRefresh) {
@@ -630,6 +638,10 @@
           savedEl.textContent = 'Saved.';
           savedEl.classList.remove('hidden');
           setTimeout(() => savedEl.classList.add('hidden'), 3000);
+          // Only newly-enabled sources trigger a fetch (see the route's own
+          // comment) - nothing to report the rest of the time.
+          const note = epgShareResultsNote(data);
+          if (note) showAdminStatus(`Saved.${note}`, !!data.epgShareFailed);
         } else {
           showAdminStatus(data.error || 'Failed to save EPG source selection.', true);
         }
@@ -961,7 +973,7 @@
             renderEpgShareCatalog();
           }
           resetPresetForm();
-          showAdminStatus('Preset created.');
+          showAdminStatus(`Preset created.${epgShareResultsNote(data)}`, !!data.epgShareFailed);
         } else if (data.needsConfirmation) {
           showMissingSourcesPrompt(data.missingSources);
         } else {
@@ -1127,7 +1139,7 @@
             'publish': 'Preset made available to users.',
             'unpublish': 'Preset made unavailable to users.'
           };
-          showAdminStatus(messages[action] || 'Preset updated.');
+          showAdminStatus((messages[action] || 'Preset updated.') + epgShareResultsNote(data), !!data.epgShareFailed);
         } else {
           showAdminStatus(data.error || 'Failed to update preset.', true);
         }
