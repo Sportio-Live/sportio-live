@@ -298,7 +298,7 @@
         </button>
         <button id="channel-epg-btn" onclick="toggleChannelEpgPanel()" class="bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
           <i class="fa-solid fa-satellite-dish"></i>
-          Networks & EPG
+          EPG Overrides
         </button>
         <button id="export-import-btn" onclick="toggleExportImportPanel()" class="bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
           <i class="fa-solid fa-file-export"></i>
@@ -447,7 +447,7 @@
             <span id="channel-epg-provider-badge" class="hidden flex items-center gap-1.5 mb-1.5 bg-[#3b8fc4]/15 border border-[#3b8fc4]/40 text-[#5aa8d1] rounded-full px-2 py-0.5 text-[10px] font-bold">
               <i class="fa-solid fa-plug text-[9px]"></i><span></span>
             </span>
-            <p class="text-xs text-[#e6e6e6]/55 min-w-0">Pick a channel on the left to set its EPG source and/or map it to a real-world broadcast network. Use the filter to browse assigned categories, everything, or just what's already set.</p>
+            <p class="text-xs text-[#e6e6e6]/55 min-w-0">Pick a channel on the left, then choose an EPG source for it on the right. Only categories you've selected in Category Search are shown.</p>
           </div>
           <button onclick="refreshCategoriesForChannelEpg()" class="shrink-0 bg-[#c9992e] hover:bg-[#dba93e] text-[#1a1a1a] text-xs font-bold py-2 px-4 rounded-lg transition flex items-center">
             <i class="fa-solid fa-rotate mr-2"></i>Refresh Categories
@@ -456,12 +456,6 @@
 
         <div id="channel-epg-status" class="text-xs text-[#e6e6e6]/55 italic mb-2"></div>
 
-        <!-- Network summary strip (network-links-spec.md §5/§7) - one chip
-             per registry network with a compact ok/healed/broken roll-up.
-             Clicking a chip jumps to the "Network remaps" filter scoped to
-             that network. -->
-        <div id="network-summary-strip" class="flex flex-wrap gap-1.5 mb-3"></div>
-
         <div class="flex flex-col md:flex-row gap-3 mb-4">
           <!-- Left: category accordion -->
           <div class="md:w-1/2 flex flex-col bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg overflow-hidden">
@@ -469,14 +463,14 @@
               <i class="fa-solid fa-magnifying-glass absolute left-5 top-[1.15rem] text-xs text-[#e6e6e6]/55"></i>
               <input type="text" id="channel-epg-search" oninput="renderChannelEpgCategories()" placeholder="Search your channels..." class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg pl-8 pr-3 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none">
             </div>
-            <div class="px-2 py-2 border-b border-[#e6e6e6]/15 shrink-0">
-              <select id="channel-epg-filter" onchange="onChannelEpgFilterChange()" class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-2 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none">
-                <option value="assigned">Assigned categories</option>
-                <option value="all">All categories</option>
-                <option value="overrides">EPG overrides</option>
-                <option value="networks">Network remaps</option>
-              </select>
-            </div>
+            <label class="flex items-center gap-2 px-2 py-2 border-b border-[#e6e6e6]/15 shrink-0 cursor-pointer select-none">
+              <div class="relative shrink-0">
+                <input type="checkbox" id="channel-epg-only-overrides" onchange="toggleChannelEpgOnlyOverrides()" class="sr-only peer">
+                <div class="w-9 h-5 bg-[#56707d] rounded-full peer-checked:bg-[#3b8fc4] transition"></div>
+                <div class="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full transition peer-checked:translate-x-4"></div>
+              </div>
+              <span class="text-xs font-semibold text-[#e6e6e6]/75">Show only overrides</span>
+            </label>
             <div id="channel-epg-categories" class="overflow-y-auto max-h-[660px]"></div>
           </div>
 
@@ -634,15 +628,8 @@
     let fetchedCategories = [];
 
     // Channel EPG state. channelEpgChannels is the active provider's own
-    // channel list (id/key/name/categoryIds), re-fetched each time the
-    // panel opens. `id` is the provider-native channel id (tvg-id for M3U,
-    // stream_id for Xtream) - still the correct join key for EPG overrides
-    // and network mappings, since several rows can legitimately share one
-    // tvg-id (see network-links-spec.md §0). `key` is what's actually
-    // unique per row and what all row-selection logic below uses instead -
-    // the channel's real stream URL for M3U, same as `id` for Xtream
-    // (already unique there). epgShareSourcesCatalog is the admin-enabled
-    // EPGShare01
+    // channel list (id/name/categoryIds), re-fetched each time the panel
+    // opens. epgShareSourcesCatalog is the admin-enabled EPGShare01
     // catalog, grouped by source file ([{file, channelIds}]) so the
     // editor can offer "search just this source" as well as "search
     // everything" - loaded once per page session (not per provider/
@@ -652,9 +639,9 @@
     // manual picker is currently scoped to - deliberately persists across
     // selecting different channels, since a user narrowing down to one
     // source is likely to want that same source for the next channel too.
-    // channelEpgExpandedCategories/channelEpgSelectedChannelKey track the
-    // left accordion's open sections and which channel (if any, by its
-    // `key` - see above) the right-hand editor is currently showing.
+    // channelEpgExpandedCategories/channelEpgSelectedChannelId track the
+    // left accordion's open sections and which channel (if any) the
+    // right-hand editor is currently showing.
     let channelEpgChannels = [];
     let epgShareSourcesCatalog = null;
     let channelEpgManualSourceFilter = '';
@@ -670,35 +657,20 @@
     let channelEpgSuggestSourceFilter = '';
     let channelEpgSuggestResults = null;
     let channelEpgExpandedCategories = new Set();
-    let channelEpgSelectedChannelKey = null;
+    let channelEpgSelectedChannelId = null;
+    let channelEpgOnlyOverrides = false;
 
-    // Multi-select (shift/ctrl-click) state for bulk actions (EPG "use
-    // channel name as description", and network mapping). Keyed by `key`
-    // (see channelEpgChannels above), not `id` - several rows can now
-    // legitimately share one `id`. channelEpgSelectedChannelKey (above) is
-    // still the single-select source of truth the existing per-channel
-    // editor reads - kept in sync below rather than replaced, so that
-    // editor needs no changes beyond the id/key split itself.
-    // channelEpgVisibleOrder is rebuilt on every renderChannelEpgCategories()
-    // call and is what a shift-click range is computed against - only
-    // currently-expanded/visible rows are range-selectable, same as most
-    // file managers.
-    let channelEpgSelectedChannelKeys = new Set();
+    // Multi-select (shift/ctrl-click) state for the bulk "use channel name
+    // as description" action. channelEpgSelectedChannelId (above) is still
+    // the single-select source of truth the existing per-channel editor
+    // reads - kept in sync below rather than replaced, so that editor needs
+    // no changes at all. channelEpgVisibleOrder is rebuilt on every
+    // renderChannelEpgCategories() call and is what a shift-click range is
+    // computed against - only currently-expanded/visible rows are
+    // range-selectable, same as most file managers.
+    let channelEpgSelectedChannelIds = new Set();
     let channelEpgSelectionAnchor = null;
     let channelEpgVisibleOrder = [];
-
-    // Networks & EPG unified list (network-links-spec.md §5). filter is
-    // one of 'assigned' | 'all' | 'overrides' | 'networks' - 'assigned' is
-    // the original EPG-override picker's default scope, kept as the
-    // default here too so existing behavior doesn't shift for anyone who
-    // never touches Network Links. networkFilterScope, when set, further
-    // narrows the 'networks' filter to one specific network (set by
-    // clicking its summary chip). networksSummary is the last response
-    // from /api/networks/list - an array of {key, label, slots:[...]} -
-    // refreshed on panel open and after any assign/unassign/bulk action.
-    let channelEpgFilter = 'assigned';
-    let networkFilterScope = null;
-    let networksSummary = [];
 
     // Reserved sentinel for provider.epgOverrides values - every other
     // value in that map is a real EPGShare01 channel id (e.g.
@@ -2405,14 +2377,12 @@
         closeExportImportPanelSilently();
         document.getElementById('channel-epg-search').value = '';
         channelEpgExpandedCategories = new Set();
-        channelEpgSelectedChannelKey = null;
-        channelEpgSelectedChannelKeys = new Set();
+        channelEpgSelectedChannelId = null;
+        channelEpgSelectedChannelIds = new Set();
         channelEpgSelectionAnchor = null;
         channelEpgSuggestResults = null;
-        channelEpgFilter = 'assigned';
-        networkFilterScope = null;
-        loadNetworksSummary();
-        document.getElementById('channel-epg-filter').value = 'assigned';
+        channelEpgOnlyOverrides = false;
+        document.getElementById('channel-epg-only-overrides').checked = false;
         renderChannelEpgEditor();
         panel.classList.remove('hidden');
         loadChannelEpgChannels();
@@ -2852,27 +2822,18 @@
 
     // Fetches the active provider's own channel list, branching by
     // connectionType the same way refreshCategoriesForActiveProvider does,
-    // and normalizes both shapes into {id, key, name, streamUrl, group,
-    // categoryIds} - M3U channels already carry a categories array (a
-    // channel can be in more than one group-title); Xtream streams carry a
-    // single category_id (or, on some providers, a category_ids array)
-    // instead, so that's wrapped into the same categoryIds shape here for
-    // the left accordion to group by uniformly regardless of source.
-    // `group` is categories[0] - the same "first category is authoritative"
-    // convention getCandidateStreamsForGame already uses server-side, reused
-    // here for whichever group gets saved into a network-mapping slot
-    // (network-links-spec.md §3). Scoped to whatever categories the
-    // provider already has selected, UNLESS channelEpgFilter is 'all' or
-    // 'networks' - Network Matching specifically needs to reach channels
-    // outside every selected category, since that's often exactly why a
-    // channel needs a network mapping in the first place (spec §5/§6).
+    // and normalizes both shapes into {id, name, categoryIds} - M3U
+    // channels already carry a categories array (a channel can be in more
+    // than one group-title); Xtream streams carry a single category_id
+    // (or, on some providers, a category_ids array) instead, so that's
+    // wrapped into the same categoryIds shape here for the left
+    // accordion to group by uniformly regardless of source.
     async function loadChannelEpgChannels() {
       const statusEl = document.getElementById('channel-epg-status');
       const provider = activeUser && activeUser.providers[activeProviderIndex];
       channelEpgChannels = [];
       if (!provider) { renderChannelEpgCategories(); return; }
 
-      const unscoped = channelEpgFilter === 'all' || channelEpgFilter === 'networks';
       statusEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1.5"></i>Loading your channels...';
 
       try {
@@ -2882,7 +2843,7 @@
             renderChannelEpgCategories();
             return;
           }
-          if (!unscoped && getSelectedCategoryIds(provider).length === 0) {
+          if (getSelectedCategoryIds(provider).length === 0) {
             statusEl.textContent = 'Select some leagues for this provider first (Add/Remove Leagues), then choose their categories in Category Search.';
             renderChannelEpgCategories();
             return;
@@ -2890,18 +2851,11 @@
           const res = await fetch('/api/m3u/channels', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password, providerId: provider.id, scope: unscoped ? 'all' : undefined })
+            body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password, providerId: provider.id })
           });
           const data = await res.json();
           if (data.success) {
-            channelEpgChannels = data.channels.map(ch => ({
-              id: ch.id,
-              key: ch.streamUrl,
-              name: ch.name,
-              streamUrl: ch.streamUrl,
-              group: (ch.categories || [])[0] || '',
-              categoryIds: (ch.categories || []).map(String)
-            }));
+            channelEpgChannels = data.channels.map(ch => ({ id: ch.id, name: ch.name, categoryIds: (ch.categories || []).map(String) }));
             statusEl.textContent = data.notReady
               ? 'M3U data is still loading in the background - try again shortly.'
               : `${channelEpgChannels.length} channel${channelEpgChannels.length === 1 ? '' : 's'}.`;
@@ -2914,25 +2868,13 @@
             renderChannelEpgCategories();
             return;
           }
-          let categoryIds = getSelectedCategoryIds(provider);
-          if (!unscoped && categoryIds.length === 0) {
+          const categoryIds = getSelectedCategoryIds(provider);
+          if (categoryIds.length === 0) {
             statusEl.textContent = 'Select some leagues for this provider first (Add/Remove Leagues), then choose their categories in Category Search.';
             renderChannelEpgCategories();
             return;
           }
           const { url, username, password } = provider.xtream;
-          if (unscoped) {
-            // No "all categories" mode on /api/xtream/streams - fetch every
-            // category this account has at all and pass all of them, same
-            // effect without needing a new server route.
-            const catRes = await fetch('/api/xtream/categories', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ url, username, password })
-            });
-            const catData = await catRes.json();
-            categoryIds = catData.success ? catData.categories.map(c => String(c.category_id)) : categoryIds;
-          }
           const res = await fetch('/api/xtream/streams', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -2951,34 +2893,24 @@
             // whichever happened to come first). stream_id is the one
             // field Xtream guarantees is present and unique per channel,
             // and must match the same field the server's stream-building
-            // route now uses for its override join key. Already unique, so
-            // `key` is just the same value here - no id/key split needed
-            // on the Xtream side the way M3U's dedup fix required.
-            channelEpgChannels = data.streams.map(s => {
-              const id = String(s.stream_id);
-              const categoryIds = (s.category_ids && s.category_ids.length > 0
+            // route now uses for its override join key.
+            channelEpgChannels = data.streams.map(s => ({
+              id: String(s.stream_id),
+              name: s.name,
+              // Always coerced to strings - provider.sportCategories (and
+              // therefore the category ids the left accordion groups by)
+              // is always string-valued, since it's built from checkbox
+              // .value attributes in Category Search, but Xtream's own
+              // API can hand back category_ids as an array of raw numbers
+              // rather than strings. Left uncoerced, this silently
+              // produces zero matches for every category
+              // (`[5].includes('5')` is false) even though the data is
+              // otherwise completely correct.
+              categoryIds: (s.category_ids && s.category_ids.length > 0
                 ? s.category_ids
                 : (s.category_id != null ? [s.category_id] : [])
-              ).map(String);
-              const groupName = categoryIds.length > 0 ? getCategoryNameById(categoryIds[0]) : '';
-              return {
-                id,
-                key: id,
-                name: s.name,
-                streamId: id,
-                group: groupName,
-                // Always coerced to strings - provider.sportCategories (and
-                // therefore the category ids the left accordion groups by)
-                // is always string-valued, since it's built from checkbox
-                // .value attributes in Category Search, but Xtream's own
-                // API can hand back category_ids as an array of raw numbers
-                // rather than strings. Left uncoerced, this silently
-                // produces zero matches for every category
-                // (`[5].includes('5')` is false) even though the data is
-                // otherwise completely correct.
-                categoryIds
-              };
-            });
+              ).map(String)
+            }));
             statusEl.textContent = `${channelEpgChannels.length} channel${channelEpgChannels.length === 1 ? '' : 's'}.`;
           } else {
             statusEl.textContent = data.error || 'Failed to load channels.';
@@ -3011,90 +2943,9 @@
 
     // --- Left panel: category accordion ---
 
-    // Fires on the filter dropdown (Assigned categories / All categories /
-    // EPG overrides / Network remaps). 'all' and 'networks' need the
-    // unscoped channel list (see loadChannelEpgChannels), so this re-fetches
-    // rather than just re-rendering client-side. Switching away from
-    // 'networks' clears any chip-scoped single network, since that scoping
-    // only makes sense while the filter is active.
-    function onChannelEpgFilterChange() {
-      channelEpgFilter = document.getElementById('channel-epg-filter').value;
-      if (channelEpgFilter !== 'networks') networkFilterScope = null;
-      loadChannelEpgChannels().then(renderChannelEpgCategories);
-    }
-
-    // Fetches every registry network with this user's current slots/status
-    // (network-links-spec.md §5's network summary strip / §7's status
-    // colors), and renders the chip strip. Refreshed on panel open and
-    // after any assign/unassign/bulk-assign so the roll-up never goes stale.
-    async function loadNetworksSummary() {
-      if (!activeUser) return;
-      try {
-        const res = await fetch('/api/networks/list', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password })
-        });
-        const data = await res.json();
-        networksSummary = data.success ? data.networks : [];
-      } catch (err) {
-        networksSummary = [];
-      }
-      renderNetworkSummaryStrip();
+    function toggleChannelEpgOnlyOverrides() {
+      channelEpgOnlyOverrides = document.getElementById('channel-epg-only-overrides').checked;
       renderChannelEpgCategories();
-    }
-
-    function renderNetworkSummaryStrip() {
-      const strip = document.getElementById('network-summary-strip');
-      if (!strip) return;
-      if (networksSummary.length === 0) { strip.innerHTML = ''; return; }
-
-      strip.innerHTML = networksSummary.map(net => {
-        const slots = net.slots || [];
-        const ok = slots.filter(s => s.status === 'ok').length;
-        const healed = slots.filter(s => s.status === 'healed').length;
-        const broken = slots.filter(s => s.status === 'broken').length;
-        const summary = slots.length === 0
-          ? '<span class="text-[#e6e6e6]/45">Unmatched</span>'
-          : [
-              ok > 0 ? `<span class="text-[#7fbf7f]">${ok} ok</span>` : '',
-              healed > 0 ? `<span class="text-[#d8b04a]">${healed} healed</span>` : '',
-              broken > 0 ? `<span class="text-[#e56a6a]">${broken} broken</span>` : ''
-            ].filter(Boolean).join(', ');
-        const isScoped = channelEpgFilter === 'networks' && networkFilterScope === net.key;
-        return `
-          <button type="button" onclick="focusNetworkChip('${escapeJsAttr(net.key)}')" class="text-[10px] font-semibold rounded-full px-2.5 py-1 border transition ${isScoped ? 'bg-[#3b8fc4]/25 border-[#3b8fc4]' : 'bg-[#3b4d58] border-[#e6e6e6]/15 hover:border-[#3b8fc4]/50'}">
-            ${escapeHtml(net.label)}: ${summary}
-          </button>
-        `;
-      }).join('');
-    }
-
-    // Clicking a network chip jumps straight to the "Network remaps" filter,
-    // pre-scoped to that one network (spec §5).
-    function focusNetworkChip(networkKey) {
-      networkFilterScope = networkKey;
-      channelEpgFilter = 'networks';
-      const filterSelect = document.getElementById('channel-epg-filter');
-      if (filterSelect) filterSelect.value = 'networks';
-      loadChannelEpgChannels().then(renderChannelEpgCategories);
-      renderNetworkSummaryStrip();
-    }
-
-    // channelKey -> [{key, label, status}] - a channel's real identity for
-    // this purpose is the same value channelEpgChannels already uses as
-    // `key` (streamUrl for M3U, stream_id for Xtream), since that's exactly
-    // what a saved slot's `url`/`streamId` field stores too (spec §3).
-    function buildChannelNetworkMap() {
-      const map = new Map();
-      (networksSummary || []).forEach(net => {
-        (net.slots || []).forEach(slot => {
-          const channelKey = slot.type === 'm3u' ? slot.url : String(slot.streamId);
-          if (!map.has(channelKey)) map.set(channelKey, []);
-          map.get(channelKey).push({ key: net.key, label: net.label, status: slot.status });
-        });
-      });
-      return map;
     }
 
     function renderChannelEpgCategories() {
@@ -3103,20 +2954,7 @@
       if (!provider) { container.innerHTML = ''; return; }
 
       const term = document.getElementById('channel-epg-search').value.trim().toLowerCase();
-      const channelNetworkMap = buildChannelNetworkMap();
-
-      // 'assigned'/'overrides' stay scoped to whatever categories are
-      // already selected in Category Search, same as before this existed.
-      // 'all'/'networks' need every category any loaded channel actually
-      // belongs to, since loadChannelEpgChannels fetched the unscoped list
-      // for those two filters specifically (spec §5's "All categories" is
-      // necessary exactly because a channel needing a network match is
-      // often outside every selected category to begin with).
-      const unscoped = channelEpgFilter === 'all' || channelEpgFilter === 'networks';
-      const categoryIdSet = unscoped
-        ? new Set(channelEpgChannels.flatMap(ch => ch.categoryIds))
-        : new Set(getSelectedCategoryIds(provider));
-      const categoryIds = [...categoryIdSet]
+      const categoryIds = getSelectedCategoryIds(provider)
         .map(id => ({ id, name: getCategoryNameById(id) }))
         .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -3129,9 +2967,7 @@
         return;
       }
       if (categoryIds.length === 0) {
-        container.innerHTML = unscoped
-          ? '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No channels loaded yet.</p>'
-          : '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No categories selected yet - pick some in Category Search above.</p>';
+        container.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No categories selected yet - pick some in Category Search above.</p>';
         return;
       }
 
@@ -3143,41 +2979,28 @@
         const searchMatched = term
           ? channelsInCategory.filter(ch => ch.name.toLowerCase().includes(term) || ch.id.toLowerCase().includes(term))
           : channelsInCategory;
-        // Audit filters narrow further: 'overrides' to channels with an EPG
-        // override set, 'networks' to channels with any network mapping -
-        // optionally scoped to one specific network via a summary-chip click.
-        const matchingChannels = channelEpgFilter === 'overrides'
+        const matchingChannels = channelEpgOnlyOverrides
           ? searchMatched.filter(ch => provider.epgOverrides && provider.epgOverrides[ch.id])
-          : channelEpgFilter === 'networks'
-            ? searchMatched.filter(ch => {
-                const mapped = channelNetworkMap.get(ch.key) || [];
-                return networkFilterScope ? mapped.some(m => m.key === networkFilterScope) : mapped.length > 0;
-              })
-            : searchMatched;
-        // While searching or on an audit filter, only categories with at
-        // least one match show up at all, and always expanded - otherwise,
-        // respect whatever the user manually expanded/collapsed.
-        const isAuditFilter = channelEpgFilter === 'overrides' || channelEpgFilter === 'networks';
-        const isFiltering = term || isAuditFilter;
+          : searchMatched;
+        // While searching or filtering to overrides only, only categories
+        // with at least one match show up at all, and always expanded -
+        // otherwise, respect whatever the user manually expanded/collapsed.
+        const isFiltering = term || channelEpgOnlyOverrides;
         if (isFiltering && matchingChannels.length === 0) return '';
         anyCategoryRendered = true;
         const isExpanded = isFiltering ? true : channelEpgExpandedCategories.has(catId);
 
         const channelsHtml = isExpanded ? matchingChannels.map(ch => {
-          channelEpgVisibleOrder.push(ch.key);
+          channelEpgVisibleOrder.push(ch.id);
           const overrideTarget = provider.epgOverrides && provider.epgOverrides[ch.id];
-          const isSelected = channelEpgSelectedChannelKeys.has(ch.key);
-          const overrideHtml = overrideTarget
+          const isSelected = channelEpgSelectedChannelIds.has(ch.id);
+          const statusHtml = overrideTarget
             ? `<span class="text-[10px] font-semibold text-[#5aa8d1]">&rarr; ${overrideTarget === EPG_OVERRIDE_SELF_NAME ? 'Channel name' : escapeHtml(overrideTarget)}</span>`
             : `<span class="text-[10px] text-[#e6e6e6]/45">Provider EPG</span>`;
-          const networkTagsHtml = (channelNetworkMap.get(ch.key) || []).map(m => {
-            const dot = m.status === 'ok' ? '&#128994;' : m.status === 'healed' ? '&#128993;' : '&#128308;';
-            return `<span class="text-[9px] font-bold bg-[#2f3e47] rounded px-1 py-0.5 ml-1">${dot} ${escapeHtml(m.label)}</span>`;
-          }).join('');
           return `
-            <button type="button" onclick="selectChannelForEpgEdit('${escapeJsAttr(ch.key)}', event)" class="w-full text-left pl-7 pr-3 py-1.5 transition ${isSelected ? 'bg-[#3b8fc4]/20 border-l-2 border-[#3b8fc4]' : 'border-l-2 border-transparent hover:bg-[#3b4d58]'}">
+            <button type="button" onclick="selectChannelForEpgEdit('${escapeJsAttr(ch.id)}', event)" class="w-full text-left pl-7 pr-3 py-1.5 transition ${isSelected ? 'bg-[#3b8fc4]/20 border-l-2 border-[#3b8fc4]' : 'border-l-2 border-transparent hover:bg-[#3b4d58]'}">
               <div class="text-xs font-semibold truncate">${escapeHtml(ch.name)}</div>
-              <div class="flex items-center flex-wrap">${overrideHtml}${networkTagsHtml}</div>
+              ${statusHtml}
             </button>
           `;
         }).join('') : '';
@@ -3200,10 +3023,8 @@
         container.innerHTML = html;
       } else if (term) {
         container.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No channels match your search.</p>';
-      } else if (channelEpgFilter === 'overrides') {
+      } else if (channelEpgOnlyOverrides) {
         container.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No channels have an EPG override yet.</p>';
-      } else if (channelEpgFilter === 'networks') {
-        container.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic p-3">No channels are mapped to a network yet.</p>';
       } else {
         // Every selected category came back with zero matching channels -
         // distinct from "no categories selected" above. If this shows up
@@ -3231,94 +3052,70 @@
     // anchor that's since scrolled out of the visible set (category
     // collapsed, search changed) can't anchor a range, so that falls back
     // to a plain single-select rather than doing something surprising.
-    function selectChannelForEpgEdit(channelKey, event) {
+    function selectChannelForEpgEdit(channelId, event) {
       if (event && event.shiftKey && channelEpgSelectionAnchor) {
         const anchorIdx = channelEpgVisibleOrder.indexOf(channelEpgSelectionAnchor);
-        const clickedIdx = channelEpgVisibleOrder.indexOf(channelKey);
+        const clickedIdx = channelEpgVisibleOrder.indexOf(channelId);
         if (anchorIdx !== -1 && clickedIdx !== -1) {
           const [start, end] = anchorIdx < clickedIdx ? [anchorIdx, clickedIdx] : [clickedIdx, anchorIdx];
-          channelEpgSelectedChannelKeys = new Set(channelEpgVisibleOrder.slice(start, end + 1));
+          channelEpgSelectedChannelIds = new Set(channelEpgVisibleOrder.slice(start, end + 1));
         } else {
-          channelEpgSelectedChannelKeys = new Set([channelKey]);
-          channelEpgSelectionAnchor = channelKey;
+          channelEpgSelectedChannelIds = new Set([channelId]);
+          channelEpgSelectionAnchor = channelId;
         }
       } else if (event && (event.ctrlKey || event.metaKey)) {
-        if (channelEpgSelectedChannelKeys.has(channelKey)) {
-          channelEpgSelectedChannelKeys.delete(channelKey);
+        if (channelEpgSelectedChannelIds.has(channelId)) {
+          channelEpgSelectedChannelIds.delete(channelId);
         } else {
-          channelEpgSelectedChannelKeys.add(channelKey);
+          channelEpgSelectedChannelIds.add(channelId);
         }
-        channelEpgSelectionAnchor = channelKey;
+        channelEpgSelectionAnchor = channelId;
       } else {
-        channelEpgSelectedChannelKeys = new Set([channelKey]);
-        channelEpgSelectionAnchor = channelKey;
+        channelEpgSelectedChannelIds = new Set([channelId]);
+        channelEpgSelectionAnchor = channelId;
       }
 
-      channelEpgSelectedChannelKey = channelEpgSelectedChannelKeys.size === 1
-        ? [...channelEpgSelectedChannelKeys][0]
+      channelEpgSelectedChannelId = channelEpgSelectedChannelIds.size === 1
+        ? [...channelEpgSelectedChannelIds][0]
         : null;
       // Last channel's matches would be actively misleading here - source
       // choice stays, but the results themselves are always per-channel.
       channelEpgSuggestResults = null;
       renderChannelEpgCategories();
-      if (channelEpgSelectedChannelKeys.size >= 2) {
+      if (channelEpgSelectedChannelIds.size >= 2) {
         renderChannelEpgMultiEditor();
       } else {
         renderChannelEpgEditor();
       }
     }
 
-    // Resolves a Set of selection keys back to their channel objects -
-    // needed everywhere a bulk action has to look up each channel's real
-    // `id` (for the EPG-override join) or build a network-mapping payload,
-    // since the keys themselves are just row identity (spec §5).
-    function resolveSelectedChannels() {
-      return [...channelEpgSelectedChannelKeys].map(key => channelEpgChannels.find(ch => ch.key === key)).filter(Boolean);
-    }
-
-    // Bulk actions: EPG override (set every selected channel's override to
-    // the reserved "use this channel's own name" sentinel, or clear it -
-    // whichever is offered depends on whether the whole selection already
-    // has overrides applied) and network mapping (network-links-spec.md §5's
-    // "Apply network mapping" - deliberately NOT offered for EPG overrides
-    // themselves, since affiliate channels each need a different override
-    // target and there's no single value correct to apply uniformly).
+    // Bulk action: either set every selected channel's override to the
+    // reserved "use this channel's own name" sentinel, or clear every
+    // selected channel's override entirely - whichever is offered depends
+    // on whether the whole selection already has overrides applied, since
+    // "display channel names" is meaningless to offer on a selection that's
+    // already all set that way (or a mix), and "clear" is meaningless to
+    // offer on a selection with no overrides to clear.
     function renderChannelEpgMultiEditor() {
       const editor = document.getElementById('channel-epg-editor');
-      const count = channelEpgSelectedChannelKeys.size;
+      const count = channelEpgSelectedChannelIds.size;
       const provider = activeUser && activeUser.providers[activeProviderIndex];
       const overrides = (provider && provider.epgOverrides) || {};
-      const selectedChannels = resolveSelectedChannels();
-      const allOverridden = selectedChannels.length > 0 && selectedChannels.every(ch => overrides[ch.id] !== undefined);
+      const allOverridden = [...channelEpgSelectedChannelIds].every(id => overrides[id] !== undefined);
       const question = allOverridden ? 'Clear EPG overrides?' : 'Display channel names as descriptions?';
       const applyFn = allOverridden ? 'applyMultiEpgClear' : 'applyMultiEpgSelfName';
-      const networkOptionsHtml = networksSummary.map(net => `<option value="${escapeJsAttr(net.key)}">${escapeHtml(net.label)}</option>`).join('');
       editor.innerHTML = `
         <div class="flex flex-col items-center text-center gap-4 py-6">
           <p class="text-sm font-semibold">${count} channels selected</p>
-
-          <div class="w-full max-w-[240px]">
-            <p class="text-xs text-[#e6e6e6]/55 mb-2">Apply network mapping</p>
-            <div class="flex gap-2">
-              <select id="multi-network-select" class="flex-1 min-w-0 bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-2 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none">
-                <option value="">Choose a network...</option>
-                ${networkOptionsHtml}
-              </select>
-              <button type="button" onclick="applyMultiNetworkMapping()" class="shrink-0 bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold px-3 py-1.5 rounded-lg text-xs transition">Apply</button>
-            </div>
-          </div>
-
-          <div class="w-full max-w-[240px] pt-4 border-t border-[#e6e6e6]/15 flex flex-col items-center gap-3">
-            <p class="text-xs text-[#e6e6e6]/55">${question}</p>
-            <label class="relative inline-flex items-center cursor-pointer">
-              <input type="checkbox" id="multi-epg-name-toggle" onchange="updateMultiEpgApplyState()" class="sr-only peer">
-              <div class="w-9 h-5 bg-[#56707d] rounded-full peer-checked:bg-[#3b8fc4] transition"></div>
-              <div class="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full transition peer-checked:translate-x-4"></div>
-            </label>
-            <div class="flex gap-2">
-              <button type="button" onclick="cancelMultiEpgSelection()" class="bg-[#56707d] hover:bg-[#66818f] font-bold py-2 px-4 rounded-lg text-xs transition">Cancel</button>
-              <button type="button" id="multi-epg-apply-btn" onclick="${applyFn}()" disabled class="bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2 px-4 rounded-lg text-xs cursor-not-allowed transition">Apply</button>
-            </div>
+          <p class="text-xs text-[#e6e6e6]/55 max-w-[220px]">${question}</p>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" id="multi-epg-name-toggle" onchange="updateMultiEpgApplyState()" class="sr-only peer">
+            <div class="w-9 h-5 bg-[#56707d] rounded-full peer-checked:bg-[#3b8fc4] transition"></div>
+            <div class="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full transition peer-checked:translate-x-4"></div>
+          </label>
+          <div class="flex gap-2">
+            <button type="button" onclick="cancelMultiEpgSelection()" class="bg-[#56707d] hover:bg-[#66818f] font-bold py-2 px-4 rounded-lg text-xs transition">Cancel</button>
+            <button type="button" id="multi-epg-apply-btn" onclick="${applyFn}()" disabled class="bg-[#56707d] text-[#e6e6e6]/40 font-bold py-2 px-4 rounded-lg text-xs cursor-not-allowed transition">Apply</button>
           </div>
         </div>
       `;
@@ -3335,9 +3132,9 @@
     }
 
     function cancelMultiEpgSelection() {
-      channelEpgSelectedChannelKeys = new Set();
+      channelEpgSelectedChannelIds = new Set();
       channelEpgSelectionAnchor = null;
-      channelEpgSelectedChannelKey = null;
+      channelEpgSelectedChannelId = null;
       renderChannelEpgCategories();
       renderChannelEpgEditor();
     }
@@ -3348,12 +3145,12 @@
       const provider = activeUser && activeUser.providers[activeProviderIndex];
       if (!provider) return;
       provider.epgOverrides = provider.epgOverrides || {};
-      resolveSelectedChannels().forEach(ch => {
-        provider.epgOverrides[ch.id] = EPG_OVERRIDE_SELF_NAME;
+      channelEpgSelectedChannelIds.forEach(id => {
+        provider.epgOverrides[id] = EPG_OVERRIDE_SELF_NAME;
       });
-      channelEpgSelectedChannelKeys = new Set();
+      channelEpgSelectedChannelIds = new Set();
       channelEpgSelectionAnchor = null;
-      channelEpgSelectedChannelKey = null;
+      channelEpgSelectedChannelId = null;
       renderChannelEpgCategories();
       renderChannelEpgEditor();
       markDashboardDirty();
@@ -3365,100 +3162,15 @@
       const provider = activeUser && activeUser.providers[activeProviderIndex];
       if (!provider) return;
       provider.epgOverrides = provider.epgOverrides || {};
-      resolveSelectedChannels().forEach(ch => {
-        delete provider.epgOverrides[ch.id];
+      channelEpgSelectedChannelIds.forEach(id => {
+        delete provider.epgOverrides[id];
       });
-      channelEpgSelectedChannelKeys = new Set();
+      channelEpgSelectedChannelIds = new Set();
       channelEpgSelectionAnchor = null;
-      channelEpgSelectedChannelKey = null;
+      channelEpgSelectedChannelId = null;
       renderChannelEpgCategories();
       renderChannelEpgEditor();
       markDashboardDirty();
-    }
-
-    // Builds the channel-identity payload /api/networks/slot and
-    // /api/networks/bulk-assign expect (network-links-spec.md §3's slot
-    // shape, minus the network key itself and any status).
-    function buildNetworkChannelPayload(provider, ch) {
-      return provider.connectionType === 'm3u'
-        ? { type: 'm3u', providerId: provider.id, url: ch.streamUrl, tvgId: ch.id, name: ch.name, group: ch.group }
-        : { type: 'xtream', providerId: provider.id, streamId: ch.streamId, name: ch.name, group: ch.group };
-    }
-
-    // Network Links save immediately through their own dedicated API
-    // (spec §5) rather than being staged into activeUser/markDashboardDirty
-    // like sportCategories/epgOverrides - there's no larger provider-config
-    // payload these need to travel with, and treating "assign"/"unassign"
-    // as instant actions (like Refresh Categories elsewhere on this page)
-    // avoids retrofitting a second staged-diff shape into the save flow
-    // just for this one feature.
-    async function applyMultiNetworkMapping() {
-      const select = document.getElementById('multi-network-select');
-      const networkKey = select && select.value;
-      if (!networkKey) return;
-      const provider = activeUser && activeUser.providers[activeProviderIndex];
-      if (!provider) return;
-
-      const channels = resolveSelectedChannels().map(ch => buildNetworkChannelPayload(provider, ch));
-      try {
-        const res = await fetch('/api/networks/bulk-assign', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password, networkKey, channels })
-        });
-        const data = await res.json();
-        if (!data.success) { alert(data.error || 'Failed to apply network mapping.'); return; }
-      } catch (err) {
-        alert('Network error while applying the network mapping.');
-        return;
-      }
-
-      channelEpgSelectedChannelKeys = new Set();
-      channelEpgSelectionAnchor = null;
-      channelEpgSelectedChannelKey = null;
-      await loadNetworksSummary();
-      renderChannelEpgEditor();
-    }
-
-    // Single-channel network mapping (spec §5's single-click row action) -
-    // a toggle-able chip per registry network, since one channel can
-    // legitimately map to more than one network at once.
-    function renderNetworkMappingControl(channel) {
-      const provider = activeUser && activeUser.providers[activeProviderIndex];
-      if (!provider || networksSummary.length === 0) return '';
-      const mappedKeys = new Set((buildChannelNetworkMap().get(channel.key) || []).map(m => m.key));
-      const chipsHtml = networksSummary.map(net => {
-        const isOn = mappedKeys.has(net.key);
-        return `<button type="button" onclick="toggleNetworkMappingForSelected('${escapeJsAttr(net.key)}')" class="text-[10px] font-bold rounded-full px-2.5 py-1 border transition ${isOn ? 'bg-[#3b8fc4]/25 border-[#3b8fc4] text-[#5aa8d1]' : 'bg-[#3b4d58] border-[#e6e6e6]/15 hover:border-[#3b8fc4]/50'}">${escapeHtml(net.label)}</button>`;
-      }).join('');
-      return `
-        <div class="mb-4 pb-4 border-b border-[#e6e6e6]/15">
-          <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Network mapping</label>
-          <div class="flex flex-wrap gap-1.5">${chipsHtml}</div>
-        </div>
-      `;
-    }
-
-    async function toggleNetworkMappingForSelected(networkKey) {
-      const provider = activeUser && activeUser.providers[activeProviderIndex];
-      const channel = channelEpgChannels.find(ch => ch.key === channelEpgSelectedChannelKey);
-      if (!provider || !channel) return;
-      const mappedKeys = new Set((buildChannelNetworkMap().get(channel.key) || []).map(m => m.key));
-      const action = mappedKeys.has(networkKey) ? 'unassign' : 'assign';
-      try {
-        const res = await fetch('/api/networks/slot', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password, networkKey, action, channel: buildNetworkChannelPayload(provider, channel) })
-        });
-        const data = await res.json();
-        if (!data.success) { alert(data.error || 'Failed to update network mapping.'); return; }
-      } catch (err) {
-        alert('Network error while updating the network mapping.');
-        return;
-      }
-      await loadNetworksSummary();
-      renderChannelEpgEditor();
     }
 
     // --- Right panel: editor for the currently selected channel ---
@@ -3553,7 +3265,7 @@
     function renderChannelEpgEditor() {
       const editor = document.getElementById('channel-epg-editor');
       const provider = activeUser && activeUser.providers[activeProviderIndex];
-      const channel = channelEpgChannels.find(ch => ch.key === channelEpgSelectedChannelKey);
+      const channel = channelEpgChannels.find(ch => ch.id === channelEpgSelectedChannelId);
 
       if (!provider || !channel) {
         editor.innerHTML = '<p class="text-xs text-[#e6e6e6]/55 italic">Select a channel on the left to edit its EPG source.</p>';
@@ -3607,7 +3319,6 @@
           </div>
           ${currentHtml}
         </div>
-        ${renderNetworkMappingControl(channel)}
         <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Suggested matches</label>
         <div class="flex gap-2 mb-2">
           <select id="channel-epg-suggest-source" onchange="onChannelEpgSuggestSourceChange()" ${catalogLoading ? 'disabled' : ''} class="flex-1 min-w-0 bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none">
@@ -3642,7 +3353,7 @@
     }
 
     function searchChannelEpgSuggestions() {
-      const channel = channelEpgChannels.find(ch => ch.key === channelEpgSelectedChannelKey);
+      const channel = channelEpgChannels.find(ch => ch.id === channelEpgSelectedChannelId);
       const source = (epgShareSourcesCatalog || []).find(s => s.file === channelEpgSuggestSourceFilter);
       if (!channel || !source) return;
       channelEpgSuggestResults = getSuggestedEpgShareMatches(channel.name, source.channelIds);
@@ -3658,8 +3369,7 @@
       const listEl = document.getElementById('channel-epg-manual-list');
       if (!listEl) return;
       const provider = activeUser && activeUser.providers[activeProviderIndex];
-      const selectedChannel = channelEpgChannels.find(ch => ch.key === channelEpgSelectedChannelKey);
-      const overrideTarget = provider && provider.epgOverrides && selectedChannel && provider.epgOverrides[selectedChannel.id];
+      const overrideTarget = provider && provider.epgOverrides && provider.epgOverrides[channelEpgSelectedChannelId];
       const selectedSource = (epgShareSourcesCatalog || []).find(s => s.file === channelEpgManualSourceFilter);
       const catalog = selectedSource ? selectedSource.channelIds : getMergedEpgShareChannelIds();
       const term = document.getElementById('channel-epg-manual-search').value.trim().toLowerCase();
@@ -3686,10 +3396,9 @@
 
     function applyEpgShareOverrideToSelected(epgShareChannelId) {
       const provider = activeUser && activeUser.providers[activeProviderIndex];
-      const channel = channelEpgChannels.find(ch => ch.key === channelEpgSelectedChannelKey);
-      if (!provider || !channel) return;
+      if (!provider || !channelEpgSelectedChannelId) return;
       provider.epgOverrides = provider.epgOverrides || {};
-      provider.epgOverrides[channel.id] = epgShareChannelId;
+      provider.epgOverrides[channelEpgSelectedChannelId] = epgShareChannelId;
       renderChannelEpgCategories();
       renderChannelEpgEditor();
       markDashboardDirty();
@@ -3697,9 +3406,8 @@
 
     function clearSelectedChannelEpgOverride() {
       const provider = activeUser && activeUser.providers[activeProviderIndex];
-      const channel = channelEpgChannels.find(ch => ch.key === channelEpgSelectedChannelKey);
-      if (!provider || !provider.epgOverrides || !channel) return;
-      delete provider.epgOverrides[channel.id];
+      if (!provider || !provider.epgOverrides || !channelEpgSelectedChannelId) return;
+      delete provider.epgOverrides[channelEpgSelectedChannelId];
       renderChannelEpgCategories();
       renderChannelEpgEditor();
       markDashboardDirty();
