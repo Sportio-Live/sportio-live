@@ -1295,11 +1295,6 @@ function getLocalDateString(timeZone = 'America/New_York') {
   }
 }
 
-function getLocalDateDash(timeZone = 'America/New_York') {
-  const dateStr = getLocalDateString(timeZone);
-  return `${dateStr.slice(0, 4)}-${dateStr.slice(4, 6)}-${dateStr.slice(6, 8)}`;
-}
-
 function formatTeamTime(utcDateStr, timeZone) {
   try {
     const date = new Date(utcDateStr);
@@ -3450,8 +3445,6 @@ app.get('/user/:uuid/manifest.json', (req, res) => {
   user.lastAccessedAt = new Date().toISOString();
   saveUserConfigs();
 
-  const targetDateStr = getLocalDateDash(user.timeZone);
-
   // A sport only appears as a catalog if at least one category folder has
   // been mapped to it in AT LEAST ONE provider - this keeps unconfigured
   // sports out of Nuvio while letting different providers each contribute
@@ -3487,7 +3480,7 @@ app.get('/user/:uuid/manifest.json', (req, res) => {
 
   const catalogs = orderedActiveSports.map(sport => ({
     type: 'sports',
-    id: `sb_${sport.toLowerCase()}_${targetDateStr}`,
+    id: `sb_${sport.toLowerCase()}`,
     name: `${getSportDisplayName(sport)} Live Games`
   }));
 
@@ -3512,10 +3505,9 @@ app.get('/user/:uuid/catalog/sports/:id.json', async (req, res) => {
   if (!user) return res.json({ metas: [] });
 
   const hostUrl = `${req.protocol}://${req.get('host')}`;
-  // Catalog ids are always constructed as sb_{sport}_{date} (see the
-  // manifest route), and the date portion uses dashes rather than
-  // underscores, so splitting on "_" and taking the second segment
-  // reliably extracts the sport for every league - no need to maintain a
+  // Catalog ids are always constructed as sb_{sport} (see the manifest
+  // route), so splitting on "_" and taking the second segment reliably
+  // extracts the sport for every league - no need to maintain a
   // hardcoded, easily-incomplete list of substring checks here, which is
   // exactly what caused several leagues to silently fall back to MLB
   // before this fix.
