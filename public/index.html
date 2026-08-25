@@ -3399,17 +3399,19 @@
       const provider = activeUser && activeUser.providers[activeProviderIndex];
       if (!provider) return;
 
+      const networkLabel = (networksSummary.find(n => n.key === networkKey) || {}).label || networkKey;
       const channels = resolveSelectedChannels().map(ch => buildNetworkChannelPayload(provider, ch));
+      let data;
       try {
         const res = await fetch('/api/networks/bulk-assign', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password, networkKey, channels })
         });
-        const data = await res.json();
-        if (!data.success) { alert(data.error || 'Failed to apply network mapping.'); return; }
+        data = await res.json();
+        if (!data.success) { showStatus(data.error || 'Failed to apply network mapping.', true); return; }
       } catch (err) {
-        alert('Network error while applying the network mapping.');
+        showStatus('Network error while applying the network mapping.', true);
         return;
       }
 
@@ -3418,6 +3420,12 @@
       channelEpgSelectedChannelKey = null;
       await loadNetworksSummary();
       renderChannelEpgEditor();
+
+      const skipped = (data.skippedInvalid || 0) + (data.skippedCapped || 0);
+      showStatus(
+        `Mapped ${data.applied} channel${data.applied === 1 ? '' : 's'} to ${networkLabel}.` +
+        (skipped > 0 ? ` ${skipped} skipped.` : '')
+      );
     }
 
     // Single-channel network mapping (spec §5's single-click row action) -
@@ -3445,6 +3453,7 @@
       if (!provider || !channel) return;
       const mappedKeys = new Set((buildChannelNetworkMap().get(channel.key) || []).map(m => m.key));
       const action = mappedKeys.has(networkKey) ? 'unassign' : 'assign';
+      const networkLabel = (networksSummary.find(n => n.key === networkKey) || {}).label || networkKey;
       try {
         const res = await fetch('/api/networks/slot', {
           method: 'POST',
@@ -3452,13 +3461,14 @@
           body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password, networkKey, action, channel: buildNetworkChannelPayload(provider, channel) })
         });
         const data = await res.json();
-        if (!data.success) { alert(data.error || 'Failed to update network mapping.'); return; }
+        if (!data.success) { showStatus(data.error || 'Failed to update network mapping.', true); return; }
       } catch (err) {
-        alert('Network error while updating the network mapping.');
+        showStatus('Network error while updating the network mapping.', true);
         return;
       }
       await loadNetworksSummary();
       renderChannelEpgEditor();
+      showStatus(action === 'assign' ? `Mapped "${channel.name}" to ${networkLabel}.` : `Removed "${channel.name}" from ${networkLabel}.`);
     }
 
     // --- Right panel: editor for the currently selected channel ---
