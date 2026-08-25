@@ -66,6 +66,14 @@ const XTREAM_ENCRYPTION_KEY = Buffer.from(
 // encrypted values apart from legacy plaintext data during migration.
 function encrypt(text) {
   if (text === undefined || text === null) return text;
+  // Already in our own stored format - left untouched rather than
+  // double-encrypted. This is what makes a failed decrypt (see decrypt()
+  // below) safe to save back out unchanged instead of destroying the
+  // original ciphertext - confirmed the hard way once already: a decrypt
+  // failure used to fall back to '', which then got happily re-encrypted
+  // and saved over the real value on the very next boot-time re-save,
+  // turning a recoverable "wrong key right now" into permanent data loss.
+  if (typeof text === 'string' && text.startsWith('enc:')) return text;
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', XTREAM_ENCRYPTION_KEY, iv);
   const encrypted = Buffer.concat([cipher.update(String(text), 'utf8'), cipher.final()]);
@@ -90,8 +98,14 @@ function decrypt(value) {
     const decrypted = Buffer.concat([decipher.update(encryptedData), decipher.final()]);
     return decrypted.toString('utf8');
   } catch (err) {
-    console.error('[Encryption] Failed to decrypt a stored value - wrong ENCRYPTION_KEY, or corrupted data:', err.message);
-    return '';
+    console.error('[Encryption] Failed to decrypt a stored value - wrong ENCRYPTION_KEY, or corrupted data. Leaving the original ciphertext untouched rather than risk losing it:', err.message);
+    // Return the still-encrypted original, not '' - encrypt() above passes
+    // an already-'enc:'-prefixed value straight through, so this round-
+    // trips as a true no-op on the next save instead of overwriting the
+    // real ciphertext with an encrypted empty string. The credential stays
+    // unusable until the right key is back (or the user re-enters it),
+    // but it's never destroyed.
+    return value;
   }
 }
 
@@ -2546,7 +2560,15 @@ app.post('/api/m3u/channels', async (req, res) => {
     ? source.channels.filter(ch => ch.categories.some(c => categorySet.has(c)))
     : source.channels;
 
-  return res.json({ success: true, channels: channels.map(ch => ({ id: ch.id, name: ch.name, logo: ch.logo, categories: ch.categories })) });
+  return res.json({
+    success: true,
+    // streamUrl included because it's the channel's actual unique
+    // identity post-dedup-fix (see m3u.js/parseM3UPlaylist) - several
+    // rows can now legitimately share one `id`/tvg-id (distinct feeds of
+    // the same network), so the client needs streamUrl as the real
+    // per-row key rather than assuming `id` is unique.
+    channels: channels.map(ch => ({ id: ch.id, name: ch.name, logo: ch.logo, streamUrl: ch.streamUrl, categories: ch.categories }))
+  });
 });
 
 // Xtream's equivalent of /api/m3u/channels above - there's no cached
