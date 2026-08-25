@@ -699,12 +699,6 @@
     let channelEpgFilter = 'assigned';
     let networkFilterScope = null;
     let networksSummary = [];
-    // Distinguishes "still loading" from "loaded, and there's genuinely
-    // nothing here yet" - resolving live status (a real round trip per
-    // Xtream provider involved) can take a while on an account with many
-    // categories, and without this an in-progress first load looked
-    // identical to the strip/dropdown being empty.
-    let networksSummaryLoaded = false;
 
     // Reserved sentinel for provider.epgOverrides values - every other
     // value in that map is a real EPGShare01 channel id (e.g.
@@ -2417,7 +2411,6 @@
         channelEpgSuggestResults = null;
         channelEpgFilter = 'assigned';
         networkFilterScope = null;
-        networksSummaryLoaded = false;
         loadNetworksSummary();
         document.getElementById('channel-epg-filter').value = 'assigned';
         renderChannelEpgEditor();
@@ -3053,27 +3046,13 @@
       } catch (err) {
         // Same reasoning - a network error leaves prior state in place.
       }
-      networksSummaryLoaded = true;
       renderNetworkSummaryStrip();
       renderChannelEpgCategories();
-      // Also refresh whichever editor panel is currently showing - without
-      // this, a channel selected before this (possibly slow) load finished
-      // would keep showing "Loading networks..." forever, since nothing
-      // else re-renders the editor once this resolves.
-      if (channelEpgSelectedChannelKeys.size >= 2) {
-        renderChannelEpgMultiEditor();
-      } else {
-        renderChannelEpgEditor();
-      }
     }
 
     function renderNetworkSummaryStrip() {
       const strip = document.getElementById('network-summary-strip');
       if (!strip) return;
-      if (!networksSummaryLoaded) {
-        strip.innerHTML = '<span class="text-[10px] text-[#e6e6e6]/45 italic"><i class="fa-solid fa-spinner fa-spin mr-1"></i>Loading network status...</span>';
-        return;
-      }
       if (networksSummary.length === 0) { strip.innerHTML = ''; return; }
 
       strip.innerHTML = networksSummary.map(net => {
@@ -3319,7 +3298,6 @@
       const allOverridden = selectedChannels.length > 0 && selectedChannels.every(ch => overrides[ch.id] !== undefined);
       const question = allOverridden ? 'Clear EPG overrides?' : 'Display channel names as descriptions?';
       const applyFn = allOverridden ? 'applyMultiEpgClear' : 'applyMultiEpgSelfName';
-      const networksReady = networksSummaryLoaded && networksSummary.length > 0;
       const networkOptionsHtml = networksSummary.map(net => `<option value="${escapeJsAttr(net.key)}">${escapeHtml(net.label)}</option>`).join('');
       editor.innerHTML = `
         <div class="flex flex-col items-center text-center gap-4 py-6">
@@ -3328,8 +3306,8 @@
           <div class="w-full max-w-[240px]">
             <p class="text-xs text-[#e6e6e6]/55 mb-2">Apply network mapping</p>
             <div class="flex gap-2">
-              <select id="multi-network-select" ${networksReady ? '' : 'disabled'} class="flex-1 min-w-0 bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-2 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none disabled:opacity-50">
-                <option value="">${networksReady ? 'Choose a network...' : 'Loading networks...'}</option>
+              <select id="multi-network-select" class="flex-1 min-w-0 bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-2 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none">
+                <option value="">Choose a network...</option>
                 ${networkOptionsHtml}
               </select>
               <button type="button" onclick="applyMultiNetworkMapping()" class="shrink-0 bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold px-3 py-1.5 rounded-lg text-xs transition">Apply</button>
@@ -3469,16 +3447,7 @@
     // legitimately map to more than one network at once.
     function renderNetworkMappingControl(channel) {
       const provider = activeUser && activeUser.providers[activeProviderIndex];
-      if (!provider) return '';
-      if (!networksSummaryLoaded) {
-        return `
-          <div class="mb-4 pb-4 border-b border-[#e6e6e6]/15">
-            <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Network mapping</label>
-            <p class="text-xs text-[#e6e6e6]/45 italic"><i class="fa-solid fa-spinner fa-spin mr-1"></i>Loading networks...</p>
-          </div>
-        `;
-      }
-      if (networksSummary.length === 0) return '';
+      if (!provider || networksSummary.length === 0) return '';
       const mappedKeys = new Set((buildChannelNetworkMap().get(channel.key) || []).map(m => m.key));
       const chipsHtml = networksSummary.map(net => {
         const isOn = mappedKeys.has(net.key);

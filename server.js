@@ -2500,28 +2500,10 @@ async function fetchXtreamLiveStreams(user, categoryIds = []) {
 // mapping in the first place - see spec §5's "All categories" filter), and
 // status resolution (below) needs the account's real current list either
 // way, not a scoped-down one.
-// Short-lived cache, same TTL pattern as gamesCache above - an
-// every-category live fetch is expensive enough (confirmed live: still
-// slow for an account with many categories even after parallelizing it)
-// that repeating it on every single Network Links interaction (open the
-// panel, assign one channel, assign the next...) inside the same short
-// window is pure waste. Keyed by account identity, not per-call, so
-// back-to-back actions on the same provider reuse one fetch instead of
-// paying for it again immediately after it just ran.
-const xtreamAllStreamsCache = new Map(); // `${url}|${username}` -> { fetchedAt, streams }
-const XTREAM_ALL_STREAMS_CACHE_MS = 60 * 1000;
-
 async function fetchAllXtreamLiveStreams(user) {
-  const cacheKey = `${user.xtream.url}|${user.xtream.username}`;
-  const cached = xtreamAllStreamsCache.get(cacheKey);
-  if (cached && (Date.now() - cached.fetchedAt) < XTREAM_ALL_STREAMS_CACHE_MS) {
-    return cached.streams;
-  }
   const categories = await fetchXtreamCategories(user);
   const categoryIds = categories.map(c => c.category_id).filter(id => id !== undefined && id !== null);
-  const streams = await fetchXtreamLiveStreams(user, categoryIds);
-  xtreamAllStreamsCache.set(cacheKey, { fetchedAt: Date.now(), streams });
-  return streams;
+  return fetchXtreamLiveStreams(user, categoryIds);
 }
 
 // Resolves every saved Network Links slot for a user against that slot's
