@@ -31,7 +31,13 @@ const axios = require('axios');
 // format confirmed during design against actual provider output.
 function parseM3UPlaylist(content) {
   const blocks = content.split(/(?=#EXTINF:)/);
-  const channelsById = new Map();
+  // Keyed on streamUrl, not tvg-id - tvg-id identifies a *network* for EPG
+  // purposes, not a unique stream. Providers routinely list multiple
+  // genuinely different feeds (different quality, different source server,
+  // backup feed) under one shared tvg-id; keying on it here used to
+  // silently discard every feed but the first-listed one. See
+  // network-links-spec.md §0 for the confirmed real-world impact.
+  const channelsByUrl = new Map();
 
   for (const block of blocks) {
     if (!block.startsWith('#EXTINF:')) continue;
@@ -54,15 +60,15 @@ function parseM3UPlaylist(content) {
     const streamUrl = urlMatch[1].trim();
     const group = groupMatch ? groupMatch[1] : '';
 
-    if (!channelsById.has(id)) {
-      channelsById.set(id, { id, name, logo, streamUrl, categories: new Set() });
+    if (!channelsByUrl.has(streamUrl)) {
+      channelsByUrl.set(streamUrl, { id, name, logo, streamUrl, categories: new Set() });
     }
     if (group) {
-      channelsById.get(id).categories.add(group);
+      channelsByUrl.get(streamUrl).categories.add(group);
     }
   }
 
-  const channels = [...channelsById.values()].map(ch => ({
+  const channels = [...channelsByUrl.values()].map(ch => ({
     ...ch,
     categories: [...ch.categories]
   }));
@@ -169,8 +175,19 @@ function extractRealDate(title, fallbackStartTs, assumedYear) {
 function getCandidateStreamsForGame(source, configuredCategoryIds, gameTimestampSec) {
   const categorySet = new Set(configuredCategoryIds);
   const relevantChannels = source.channels.filter(ch => ch.categories.some(c => categorySet.has(c)));
+  return getCandidateStreamsForChannels(source, relevantChannels, gameTimestampSec);
+}
 
-  return relevantChannels.map(ch => {
+// Same candidate-building logic as getCandidateStreamsForGame, but over an
+// explicit channel list rather than a category filter - used by Network
+// Links' match-time resolution (network-links-spec.md §8), where the
+// relevant channels are whichever ones a user's saved slots resolved to,
+// not a category selection. Keeping this as the shared implementation
+// (getCandidateStreamsForGame is just this plus a category filter) means
+// there's exactly one place the "closest programme to game time" logic
+// lives, not two copies to keep in sync.
+function getCandidateStreamsForChannels(source, channels, gameTimestampSec) {
+  return channels.map(ch => {
     const programmes = source.programmesByChannel.get(ch.id) || [];
     let bestTitle = '';
     let bestStartTimestamp = null;
@@ -408,6 +425,7 @@ module.exports = {
   extractRealDate,
   parseXmltvTimestamp,
   getCandidateStreamsForGame,
+  getCandidateStreamsForChannels,
   fetchAndParseM3USource,
   refreshM3USource,
   getCachedM3USource,

@@ -9,6 +9,8 @@ const crypto = require('crypto');
 const zlib = require('zlib');
 const m3u = require('./m3u.js');
 const epgshare = require('./epgshare01.js');
+const networksRegistry = require('./networks-registry.js');
+const networkLinksLib = require('./network-links.js');
 
 // Without these, Node's default behavior for an unhandled promise rejection
 // (Node 15+) is to crash the entire process - and Docker's restart policy
@@ -66,6 +68,14 @@ const XTREAM_ENCRYPTION_KEY = Buffer.from(
 // encrypted values apart from legacy plaintext data during migration.
 function encrypt(text) {
   if (text === undefined || text === null) return text;
+  // Already in our own stored format - left untouched rather than
+  // double-encrypted. This is what makes a failed decrypt (see decrypt()
+  // below) safe to save back out unchanged instead of destroying the
+  // original ciphertext - confirmed the hard way once already: a decrypt
+  // failure used to fall back to '', which then got happily re-encrypted
+  // and saved over the real value on the very next boot-time re-save,
+  // turning a recoverable "wrong key right now" into permanent data loss.
+  if (typeof text === 'string' && text.startsWith('enc:')) return text;
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', XTREAM_ENCRYPTION_KEY, iv);
   const encrypted = Buffer.concat([cipher.update(String(text), 'utf8'), cipher.final()]);
@@ -90,8 +100,14 @@ function decrypt(value) {
     const decrypted = Buffer.concat([decipher.update(encryptedData), decipher.final()]);
     return decrypted.toString('utf8');
   } catch (err) {
-    console.error('[Encryption] Failed to decrypt a stored value - wrong ENCRYPTION_KEY, or corrupted data:', err.message);
-    return '';
+    console.error('[Encryption] Failed to decrypt a stored value - wrong ENCRYPTION_KEY, or corrupted data. Leaving the original ciphertext untouched rather than risk losing it:', err.message);
+    // Return the still-encrypted original, not '' - encrypt() above passes
+    // an already-'enc:'-prefixed value straight through, so this round-
+    // trips as a true no-op on the next save instead of overwriting the
+    // real ciphertext with an encrypted empty string. The credential stays
+    // unusable until the right key is back (or the user re-enters it),
+    // but it's never destroyed.
+    return value;
   }
 }
 
@@ -150,6 +166,8 @@ const DATA_FILE = path.join(DATA_DIR, 'users.json');
 const M3U_SETTINGS_FILE = path.join(DATA_DIR, 'm3u-settings.json');
 const EPGSHARE_SETTINGS_FILE = path.join(DATA_DIR, 'epgshare-settings.json');
 const ADMIN_CONFIG_FILE = path.join(DATA_DIR, 'admin-config.json');
+const DISCOVERED_NETWORKS_FILE = path.join(DATA_DIR, 'discovered-networks.json');
+networksRegistry.initDiscoveredNetworksStore(DISCOVERED_NETWORKS_FILE);
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -272,6 +290,44 @@ function migrateUserToProviders(user) {
   };
 }
 
+// Network Links (network-links-spec.md §3) - per user, per network, an
+// ordered list of slots. Not a product limit - purely an abuse guard
+// against a malformed or hand-crafted request, since a UI-only limit is
+// trivially bypassed by a direct API call. Shared by load-time
+// sanitization below and the save-slot API route (§5), so it's actually
+// enforced server-side rather than trusted to the client.
+const NETWORK_LINK_SLOT_CAP = 150;
+
+function isValidNetworkLinkSlot(slot) {
+  if (!slot || typeof slot !== 'object') return false;
+  if (typeof slot.name !== 'string' || typeof slot.group !== 'string') return false;
+  if (slot.type === 'm3u') {
+    return typeof slot.providerId === 'string' && typeof slot.url === 'string' && typeof slot.tvgId === 'string';
+  }
+  if (slot.type === 'xtream') {
+    return typeof slot.providerId === 'string' && typeof slot.streamId === 'string';
+  }
+  return false;
+}
+
+// Re-validated on every load, same "bad entries silently dropped rather
+// than crash or reach a client" posture as presets.json (see
+// isValidStoredPreset) - users.json can in principle be hand-edited too.
+// Also doubles as the safe default for users who predate this field
+// entirely: sanitizeNetworkLinks(undefined) returns {}, so every user
+// ends up with a valid networkLinks object after load regardless of
+// whether their stored record ever had one.
+function sanitizeNetworkLinks(raw) {
+  if (!raw || typeof raw !== 'object') return {};
+  const out = {};
+  for (const [networkKey, slots] of Object.entries(raw)) {
+    if (typeof networkKey !== 'string' || !Array.isArray(slots)) continue;
+    const validSlots = slots.filter(isValidNetworkLinkSlot).slice(0, NETWORK_LINK_SLOT_CAP);
+    if (validSlots.length > 0) out[networkKey] = validSlots;
+  }
+  return out;
+}
+
 let userConfigs = {};
 if (fs.existsSync(DATA_FILE)) {
   try {
@@ -285,7 +341,8 @@ if (fs.existsSync(DATA_FILE)) {
       const decrypted = Array.isArray(user.providers)
         ? { ...user, providers: user.providers.map(p => ({ ...p, xtream: decryptXtreamFromStorage(p.xtream), m3u: decryptM3uFromStorage(p.m3u) })) }
         : { ...user, xtream: decryptXtreamFromStorage(user.xtream), m3u: decryptM3uFromStorage(user.m3u) };
-      userConfigs[uuid] = migrateUserToProviders(decrypted);
+      const migrated = migrateUserToProviders(decrypted);
+      userConfigs[uuid] = { ...migrated, networkLinks: sanitizeNetworkLinks(migrated.networkLinks) };
     }
   } catch (err) {
     console.error('[Storage] Error loading users.json:', err.message);
@@ -1984,6 +2041,13 @@ async function fetchTodayGames(sport, hostUrl, userTimeZone = 'America/New_York'
       const broadcastNames = [...new Set(
         (competition.broadcasts || []).flatMap(b => b.names || [])
       )];
+      // Network Links match-time resolution (network-links-spec.md §8) -
+      // which registry network(s), if any, are airing this specific game.
+      // Computed here (not lazily in the stream route) since `competition`
+      // is already in scope - this call is also what grows the national
+      // registry (networks-registry.js records any new national sighting
+      // as a side effect), for every game the app fetches anyway.
+      const networkKeys = [...networksRegistry.resolveNetworkKeysForCompetition(competition)];
 
       const gameUtcDate = event.date || '';
       const artParams = new URLSearchParams({
@@ -2074,6 +2138,7 @@ async function fetchTodayGames(sport, hostUrl, userTimeZone = 'America/New_York'
         homeAbbr,
         awayAbbr,
         broadcastNames,
+        networkKeys,
         poster,
         background,
         logo,
@@ -2141,6 +2206,9 @@ async function fetchTodayUFCEvents(hostUrl, userTimeZone = 'America/New_York') {
       const competition = (mainCompetitionId && event.competitions?.find(c => c.id === mainCompetitionId))
         || event.competitions?.[0];
       if (!competition) return null;
+      // See fetchTodayGames' identical call above for why this is here
+      // (network-links-spec.md §8) - also what grows the national registry.
+      const networkKeys = [...networksRegistry.resolveNetworkKeysForCompetition(competition)];
 
       const [competitorA, competitorB] = competition.competitors || [];
       if (!competitorA || !competitorB) return null;
@@ -2179,6 +2247,7 @@ async function fetchTodayUFCEvents(hostUrl, userTimeZone = 'America/New_York') {
         homeAbbr: '',
         awayAbbr: '',
         broadcastNames,
+        networkKeys,
         poster,
         background,
         logo,
@@ -2403,6 +2472,218 @@ async function fetchXtreamLiveStreams(user, categoryIds = []) {
   return allStreams;
 }
 
+// Fetches every live stream across every category on this Xtream account,
+// not just a caller-chosen subset - fetchXtreamLiveStreams above requires
+// categoryIds up front and has no "all" mode of its own. Network Links
+// needs this because a saved slot's channel may not sit in any currently-
+// selected category (that's often exactly why it needed a manual network
+// mapping in the first place - see spec §5's "All categories" filter), and
+// status resolution (below) needs the account's real current list either
+// way, not a scoped-down one.
+async function fetchAllXtreamLiveStreams(user) {
+  const categories = await fetchXtreamCategories(user);
+  const categoryIds = categories.map(c => c.category_id).filter(id => id !== undefined && id !== null);
+  return fetchXtreamLiveStreams(user, categoryIds);
+}
+
+// Resolves every saved Network Links slot for a user against that slot's
+// own provider's current channel list (network-links-spec.md §4), and
+// returns networkLinks with a `status` added to each slot. Fetches each
+// distinct provider's channel/stream list exactly once regardless of how
+// many slots reference it, since an Xtream fetch is a real network round
+// trip - not something to repeat per slot.
+async function computeNetworkLinksStatus(user) {
+  const providerById = new Map((user.providers || []).map(p => [p.id, p]));
+  const networkLinks = user.networkLinks || {};
+
+  const m3uChannelsByProviderId = new Map();
+  const xtreamStreamsByProviderId = new Map();
+
+  for (const slots of Object.values(networkLinks)) {
+    for (const slot of slots) {
+      const provider = providerById.get(slot.providerId);
+      if (!provider) continue; // orphaned provider reference - resolves to broken below, nothing to fetch
+
+      if (slot.type === 'm3u' && !m3uChannelsByProviderId.has(slot.providerId)) {
+        const source = provider.m3u?.playlistUrl ? m3u.getCachedM3USource(provider.m3u.playlistUrl) : null;
+        m3uChannelsByProviderId.set(slot.providerId, source ? source.channels : []);
+      }
+      if (slot.type === 'xtream' && !xtreamStreamsByProviderId.has(slot.providerId)) {
+        const streams = provider.xtream ? await fetchAllXtreamLiveStreams({ xtream: provider.xtream }) : [];
+        xtreamStreamsByProviderId.set(slot.providerId, streams);
+      }
+    }
+  }
+
+  const result = {};
+  for (const [networkKey, slots] of Object.entries(networkLinks)) {
+    result[networkKey] = slots.map(slot => {
+      if (!providerById.has(slot.providerId)) return { ...slot, status: 'broken' };
+      const resolution = networkLinksLib.resolveSlot(slot, {
+        channels: m3uChannelsByProviderId.get(slot.providerId),
+        xtreamStreams: xtreamStreamsByProviderId.get(slot.providerId)
+      });
+      return { ...slot, status: resolution.status };
+    });
+  }
+  return result;
+}
+
+// Builds the slot object Network Links actually stores (spec §3) from a
+// channel identity the client sent, and validates it the same way loaded
+// storage is validated - a request-supplied shape gets no more trust than
+// a hand-edited file would.
+function buildNetworkLinkSlot(channel) {
+  if (!channel || typeof channel !== 'object') return null;
+  const base = {
+    type: channel.type,
+    providerId: channel.providerId,
+    name: channel.name,
+    group: channel.group
+  };
+  const slot = channel.type === 'm3u'
+    ? { ...base, url: channel.url, tvgId: channel.tvgId }
+    : { ...base, streamId: channel.streamId };
+  return isValidNetworkLinkSlot(slot) ? slot : null;
+}
+
+// Same identity a slot is keyed on for dedup/removal purposes: an M3U slot
+// by its stream URL (the thing that's actually unique per real feed, see
+// m3u.js's dedup fix), an Xtream slot by its stream_id (already unique).
+function sameNetworkLinkChannel(a, b) {
+  if (a.type !== b.type || a.providerId !== b.providerId) return false;
+  return a.type === 'm3u' ? a.url === b.url : String(a.streamId) === String(b.streamId);
+}
+
+// Lists every registry network (spec §2's fixed affiliates + whatever's
+// been auto-discovered) with this user's current slots and their live
+// status - feeds the network summary strip and per-channel status tags
+// (§5/§7). Every registry network is included even with zero slots, so
+// the UI can render an "Unmatched" chip for it.
+app.post('/api/networks/list', async (req, res) => {
+  const { uuid, password } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  const user = userConfigs[uuid];
+  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid UUID or password.' });
+  }
+  clearFailedAttempts(ip);
+
+  const statusedLinks = await computeNetworkLinksStatus(user);
+  const networks = networksRegistry.getAllNetworks().map(n => ({
+    key: n.key,
+    label: n.label,
+    slots: statusedLinks[n.key] || []
+  }));
+
+  return res.json({ success: true, networks });
+});
+
+// Assigns or unassigns one channel to/from one network (spec §5's
+// single-click network-mapping dropdown). Idempotent in both directions -
+// assigning an already-assigned channel, or unassigning one that isn't,
+// both succeed as no-ops rather than erroring.
+app.post('/api/networks/slot', async (req, res) => {
+  const { uuid, password, networkKey, action, channel } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  const user = userConfigs[uuid];
+  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid UUID or password.' });
+  }
+  clearFailedAttempts(ip);
+
+  if (action !== 'assign' && action !== 'unassign') {
+    return res.status(400).json({ error: 'action must be "assign" or "unassign".' });
+  }
+  if (!networksRegistry.getAllNetworks().some(n => n.key === networkKey)) {
+    return res.status(400).json({ error: 'Unknown network.' });
+  }
+
+  user.networkLinks = user.networkLinks || {};
+  const existing = user.networkLinks[networkKey] || [];
+
+  if (action === 'unassign') {
+    const filtered = existing.filter(slot => !sameNetworkLinkChannel(slot, channel || {}));
+    if (filtered.length > 0) user.networkLinks[networkKey] = filtered;
+    else delete user.networkLinks[networkKey];
+  } else {
+    const slot = buildNetworkLinkSlot(channel);
+    if (!slot) return res.status(400).json({ error: 'Invalid channel.' });
+    const alreadyPresent = existing.some(s => sameNetworkLinkChannel(s, slot));
+    if (!alreadyPresent) {
+      if (existing.length >= NETWORK_LINK_SLOT_CAP) {
+        return res.status(400).json({ error: `This network already has the maximum of ${NETWORK_LINK_SLOT_CAP} channels.` });
+      }
+      user.networkLinks[networkKey] = [...existing, slot];
+    }
+  }
+
+  saveUserConfigs();
+  return res.json({ success: true, networkLinks: user.networkLinks });
+});
+
+// Bulk version of /api/networks/slot's assign path - spec §5's bulk-select
+// "Apply network mapping" action. One save for the whole batch rather than
+// one round trip per channel, since a user might select hundreds of
+// affiliates (e.g. searching "FOX" across a large playlist) in one go.
+app.post('/api/networks/bulk-assign', async (req, res) => {
+  const { uuid, password, networkKey, channels } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  const user = userConfigs[uuid];
+  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid UUID or password.' });
+  }
+  clearFailedAttempts(ip);
+
+  if (!networksRegistry.getAllNetworks().some(n => n.key === networkKey)) {
+    return res.status(400).json({ error: 'Unknown network.' });
+  }
+  if (!Array.isArray(channels)) {
+    return res.status(400).json({ error: 'channels must be an array.' });
+  }
+
+  user.networkLinks = user.networkLinks || {};
+  let existing = user.networkLinks[networkKey] || [];
+  let applied = 0;
+  let skippedInvalid = 0;
+  let skippedCapped = 0;
+
+  for (const channel of channels) {
+    const slot = buildNetworkLinkSlot(channel);
+    if (!slot) { skippedInvalid++; continue; }
+    if (existing.some(s => sameNetworkLinkChannel(s, slot))) continue; // already assigned, not a failure
+    if (existing.length >= NETWORK_LINK_SLOT_CAP) { skippedCapped++; continue; }
+    existing = [...existing, slot];
+    applied++;
+  }
+
+  if (existing.length > 0) user.networkLinks[networkKey] = existing;
+  saveUserConfigs();
+
+  return res.json({ success: true, applied, skippedInvalid, skippedCapped, networkLinks: user.networkLinks });
+});
+
 app.post('/api/xtream/categories', async (req, res) => {
   const { url, username, password } = req.body;
   if (!url || !username || !password) return res.status(400).json({ error: 'Missing credentials' });
@@ -2507,16 +2788,26 @@ app.post('/api/m3u/categories', async (req, res) => {
 });
 
 // Companion to /api/m3u/categories above, same auth/lookup pattern - but
-// returns individual channels (id/name/logo/categories) rather than just
-// the category folder list, for the Channel EPG picker to browse and
-// search. Scoped to whatever categories the provider already has selected
-// across all its sports (GLOBAL included) - a full unscoped channel list
-// could be thousands of entries from categories this account doesn't even
-// use, and none of that is relevant to an EPG override for THIS account.
-// Falls back to every channel only when nothing's been selected yet
-// (a brand-new provider, so there's nothing to scope down to).
+// returns individual channels (id/name/logo/streamUrl/categories) rather
+// than just the category folder list, for the unified Networks & EPG
+// picker (network-links-spec.md §5/§6) to browse and search. Scoped to
+// whatever categories the provider already has selected across all its
+// sports (GLOBAL included) by default - a full unscoped channel list
+// could be thousands of entries. Pass `scope: 'all'` to bypass that and
+// get every channel regardless of category - needed for Network Matching
+// specifically, since a channel needing a network mapping is often one
+// that sits outside every selected category to begin with (that's the
+// whole reason it needs one). Falls back to every channel when nothing's
+// been selected yet either way (a brand-new provider, so there's nothing
+// to scope down to).
+//
+// streamUrl is included because it's the channel's actual unique identity
+// post-dedup-fix (see m3u.js/parseM3UPlaylist) - the client needs it both
+// as a stable row key (several rows can now legitimately share one `id`/
+// tvg-id - see spec §0) and as the value saved into a network-mapping
+// slot's own `url` field (spec §3).
 app.post('/api/m3u/channels', async (req, res) => {
-  const { uuid, password, providerId } = req.body;
+  const { uuid, password, providerId, scope } = req.body;
   const ip = req.ip;
 
   if (isRateLimited(ip)) {
@@ -2542,11 +2833,14 @@ app.post('/api/m3u/channels', async (req, res) => {
   }
 
   const categorySet = new Set(Object.values(provider.sportCategories || {}).flat());
-  const channels = categorySet.size > 0
-    ? source.channels.filter(ch => ch.categories.some(c => categorySet.has(c)))
-    : source.channels;
+  const channels = (scope === 'all' || categorySet.size === 0)
+    ? source.channels
+    : source.channels.filter(ch => ch.categories.some(c => categorySet.has(c)));
 
-  return res.json({ success: true, channels: channels.map(ch => ({ id: ch.id, name: ch.name, logo: ch.logo, categories: ch.categories })) });
+  return res.json({
+    success: true,
+    channels: channels.map(ch => ({ id: ch.id, name: ch.name, logo: ch.logo, streamUrl: ch.streamUrl, categories: ch.categories }))
+  });
 });
 
 // Xtream's equivalent of /api/m3u/channels above - there's no cached
@@ -2683,6 +2977,12 @@ app.post('/api/user/register', async (req, res) => {
     }],
     timeZone: timeZone || 'America/New_York',
     sportOrder,
+    // Network Links (network-links-spec.md §3) - per user, not per
+    // provider, since one network's slot list can span multiple providers.
+    // Existing users predating this field rely on the same `|| {}` default
+    // every read path uses rather than a migration step - see
+    // isValidNetworkLinkSlot/sanitizeNetworkLinks below.
+    networkLinks: {},
     createdAt: new Date().toISOString()
   };
   saveUserConfigs();
@@ -3613,7 +3913,14 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
     })
     .filter(({ configuredCategoryIds }) => configuredCategoryIds.length > 0);
 
-  if (contributingProviders.length === 0) return res.json({ streams: [] });
+  // Not "contributingProviders.length === 0" alone - a user can have zero
+  // categories configured for this sport on every provider and still have
+  // Network Links slots that are relevant to it (network-links-spec.md
+  // §8's whole point is reaching channels a category search wouldn't).
+  // sanitizeNetworkLinks never persists an empty slot list under a key, so
+  // "any keys at all" reliably means "at least one real slot somewhere".
+  const hasAnyNetworkLinks = Object.keys(user.networkLinks || {}).length > 0;
+  if (contributingProviders.length === 0 && !hasAnyNetworkLinks) return res.json({ streams: [] });
 
   const userTz = user.timeZone || 'America/New_York';
   const games = await fetchGamesForSport(upperSport, hostUrl, userTz);
@@ -3725,12 +4032,109 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
   // contributes nothing rather than aborting the whole request - a healthy
   // provider's streams must never be lost just because a different one on
   // the same account is down.
-  const candidateStreams = perProviderResults.flatMap(result => {
+  const categoryMatchedStreams = perProviderResults.flatMap(result => {
     if (result.status === 'rejected') {
       console.error('[Stream] A provider failed to produce candidate streams:', result.reason?.message || result.reason);
       return [];
     }
     return result.value;
+  });
+
+  // Network Links (network-links-spec.md §8): merged in as an ADDITIONAL
+  // candidate source, never a replacement or a prepend - every candidate
+  // below still goes through the exact same tier verification as
+  // category-sourced ones further down (all four tiers require some form
+  // of team-name confirmation; there's no free floor for a network match
+  // on its own). A provider contributes here independently of whether it's
+  // one of the category-configured `contributingProviders` above - a
+  // saved Network Links slot is valid even on a provider with zero
+  // categories selected for this sport, since reaching channels a
+  // category search wouldn't is the entire point of the feature.
+  const networkKeys = game.networkKeys || [];
+  const networkMatchedResults = networkKeys.length === 0 ? [] : await Promise.allSettled(
+    (user.providers || []).map(async provider => {
+      const slots = networkKeys
+        .flatMap(key => (user.networkLinks || {})[key] || [])
+        .filter(slot => slot.providerId === provider.id);
+      if (slots.length === 0) return [];
+
+      if (provider.connectionType === 'm3u') {
+        if (!provider.m3u || !provider.m3u.playlistUrl) return [];
+        const m3uSource = m3u.getCachedM3USource(provider.m3u.playlistUrl);
+        if (!m3uSource) return [];
+        // Orphaned-provider slots (spec §0) never reach here at all - the
+        // providerId filter above already excludes them, since a
+        // disconnected provider no longer appears in user.providers.
+        // resolveM3uSlot's own 'broken' status (spec §4) covers the
+        // remaining case: a provider that's still connected, but this
+        // particular channel is no longer findable in its current
+        // playlist by any signal in the fallback chain.
+        const resolvedChannels = slots
+          .map(slot => networkLinksLib.resolveM3uSlot(slot, m3uSource.channels))
+          .filter(r => r.status !== 'broken')
+          .map(r => r.channel);
+        if (resolvedChannels.length === 0) return [];
+        const streams = applyChannelEpgOverrides(
+          m3u.getCandidateStreamsForChannels(m3uSource, resolvedChannels, gameTimestamp),
+          provider
+        );
+        return showProviderLabel ? streams.map(s => ({ ...s, providerLabel: provider.label })) : streams;
+      }
+
+      if (!provider.xtream || !provider.xtream.url) return [];
+      const pseudoUser = { xtream: provider.xtream };
+      // Unlike the category-scoped Xtream fetch above, this can't be
+      // scoped to configuredCategoryIds - a network-matched channel is
+      // often outside every selected category to begin with (spec §5/§6),
+      // so every category on the account needs to be checked. Only paid
+      // for when this provider actually has a relevant slot (the early
+      // return above), not on every stream request.
+      const allXtreamStreams = await fetchAllXtreamLiveStreams(pseudoUser);
+      const resolvedStreams = slots
+        .map(slot => networkLinksLib.resolveXtreamSlot(slot, allXtreamStreams))
+        .filter(r => r.status !== 'broken')
+        .map(r => r.stream);
+      if (resolvedStreams.length === 0) return [];
+      const categories = await fetchXtreamCategories(pseudoUser);
+      const getCategoryName = buildCategoryNameLookup(categories);
+      const epgByStreamId = await fetchEpgForStreams(pseudoUser, resolvedStreams);
+      const xtreamCandidates = resolvedStreams.map(s => {
+        const epg = epgByStreamId[s.stream_id] || { text: '', startTimestamp: null };
+        return {
+          name: s.name,
+          description: epg.text,
+          startTimestamp: epg.startTimestamp,
+          streamUrl: `${provider.xtream.url.replace(/\/+$/, '')}/live/${encodeURIComponent(provider.xtream.username)}/${encodeURIComponent(provider.xtream.password)}/${s.stream_id}.m3u8`,
+          categoryLabel: getCategoryName(s),
+          channelId: String(s.stream_id),
+          ...(showProviderLabel ? { providerLabel: provider.label } : {})
+        };
+      });
+      return applyChannelEpgOverrides(xtreamCandidates, provider);
+    })
+  );
+
+  const networkMatchedStreams = networkMatchedResults.flatMap(result => {
+    if (result.status === 'rejected') {
+      console.error('[Stream] A provider failed to produce network-matched candidate streams:', result.reason?.message || result.reason);
+      return [];
+    }
+    return result.value;
+  });
+
+  // Deduped by streamUrl - a channel that's both in a selected category
+  // AND network-matched (the exact scenario the dedup requirement in spec
+  // §8 calls out) must not appear twice in the final tiered output.
+  // streamUrl is the right identity for this on both sides: it's already
+  // M3U's real per-stream identity (see m3u.js's dedup fix), and the
+  // Xtream branch's constructed streamUrl embeds stream_id uniquely too -
+  // so one dedup pass by streamUrl covers both sources without branching
+  // by type. First occurrence wins, same convention used elsewhere.
+  const seenStreamUrls = new Set();
+  const candidateStreams = [...categoryMatchedStreams, ...networkMatchedStreams].filter(s => {
+    if (seenStreamUrls.has(s.streamUrl)) return false;
+    seenStreamUrls.add(s.streamUrl);
+    return true;
   });
 
   const homeKw = (game.homeTeam || '').toLowerCase().split(' ').filter(w => w.length > 2);
