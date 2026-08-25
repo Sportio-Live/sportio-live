@@ -541,24 +541,26 @@ function getAllPresets() {
 }
 
 // Gates a preset from reaching users (via /api/presets and
-// /api/presets/public) until an admin has actually looked at it - a preset
-// authored through the admin panel's own create flow (see
-// /api/admin/presets/create) already gets that look right there via the
-// missing-EPG-source prompt, but presets can also arrive by shipping an
+// /api/presets/public) until an admin has explicitly turned it on - a
+// preset authored through the admin panel's own create flow (see
+// /api/admin/presets/create) is turned on immediately since building it
+// already is that decision, but presets can also arrive by shipping an
 // updated presets.json in a code update, with no admin interaction at all.
 // Without a gate, a preset like that goes live for every account the
 // instant the update is deployed, EPG overrides included - and if those
 // overrides need an EPGShare01 source this admin hasn't enabled, they just
 // silently resolve to nothing.
 //
-// Keyed by preset id -> a content hash, not just a plain "seen it" flag, so
-// a later edit to an already-published preset (say, a future update adds
-// more EPG overrides to one that's already live) drops it back into
-// pending too - editing a live preset is exactly as capable of introducing
-// an unreviewed EPG dependency as adding a brand new one. This also means
-// there is deliberately no separate "pending" field to remember to set on
-// a preset when authoring one by hand - a preset becomes pending purely by
-// its id+content not already being in this file, so it can't be forgotten.
+// Keyed by preset id -> { hash, available }. hash is the preset's content
+// hash as of the last time `available` was set, not just a plain "seen it"
+// flag, so a later edit to an already-available preset (say, a future
+// update adds more EPG overrides to one that's already live) drops it back
+// to unavailable too - editing a live preset is exactly as capable of
+// introducing an unapproved EPG dependency as adding a brand new one. This
+// also means there is deliberately no separate "pending" field to remember
+// to set on a preset when authoring one by hand - a preset simply has no
+// entry (or a stale one) until an admin acts on it, so it can't be
+// forgotten.
 const REVIEWED_PRESETS_FILE = path.join(DATA_DIR, 'reviewed-presets.json');
 
 // Object order doesn't reflect anything meaningful (insertion order across
@@ -591,17 +593,6 @@ function hashPresetContent(preset) {
   return crypto.createHash('sha256').update(stableStringify(content)).digest('hex');
 }
 
-function loadReviewedPresets() {
-  if (!fs.existsSync(REVIEWED_PRESETS_FILE)) return null;
-  try {
-    const raw = JSON.parse(fs.readFileSync(REVIEWED_PRESETS_FILE, 'utf8'));
-    return (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
-  } catch (err) {
-    console.error('[Storage] Error loading reviewed-presets.json, treating as empty:', err.message);
-    return {};
-  }
-}
-
 function saveReviewedPresets(map) {
   try {
     fs.writeFileSync(REVIEWED_PRESETS_FILE, JSON.stringify(map, null, 2), 'utf8');
@@ -610,25 +601,45 @@ function saveReviewedPresets(map) {
   }
 }
 
+function loadReviewedPresets() {
+  if (!fs.existsSync(REVIEWED_PRESETS_FILE)) return {};
+  try {
+    const raw = JSON.parse(fs.readFileSync(REVIEWED_PRESETS_FILE, 'utf8'));
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+    // Pre-toggle installs stored a bare content hash per id, meaning "an
+    // admin has looked at this and it's live" under the old single-gate
+    // model - migrate those to { hash, available: true } so upgrading an
+    // existing deployment doesn't yank an already-live preset out from
+    // under its users. A brand new install has no file at all, so every
+    // preset in it simply has no entry below and starts unavailable until
+    // an admin explicitly turns it on.
+    const result = {};
+    let migrated = false;
+    for (const [id, value] of Object.entries(raw)) {
+      if (typeof value === 'string') {
+        result[id] = { hash: value, available: true };
+        migrated = true;
+      } else if (value && typeof value === 'object' && typeof value.hash === 'string') {
+        result[id] = { hash: value.hash, available: !!value.available };
+      }
+    }
+    if (migrated) saveReviewedPresets(result);
+    return result;
+  } catch (err) {
+    console.error('[Storage] Error loading reviewed-presets.json, treating as empty:', err.message);
+    return {};
+  }
+}
+
 let reviewedPresets = loadReviewedPresets();
-if (reviewedPresets === null) {
-  // No review file yet - either a fresh install, or an upgrade from before
-  // this gate existed. Either way, whatever's already sitting in
-  // presets.json predates the concept of review and may already be live
-  // for users, so it's grandfathered in as reviewed rather than yanked out
-  // from under them. Only presets added or edited from this point on need
-  // an actual look.
-  reviewedPresets = {};
-  getAllPresets().forEach(p => { reviewedPresets[p.id] = hashPresetContent(p); });
-  saveReviewedPresets(reviewedPresets);
+
+function isPresetAvailable(preset) {
+  const entry = reviewedPresets[preset.id];
+  return !!entry && entry.hash === hashPresetContent(preset) && entry.available === true;
 }
 
-function isPresetReviewed(preset) {
-  return reviewedPresets[preset.id] === hashPresetContent(preset);
-}
-
-function markPresetReviewed(preset) {
-  reviewedPresets = { ...reviewedPresets, [preset.id]: hashPresetContent(preset) };
+function setPresetAvailability(preset, available) {
+  reviewedPresets = { ...reviewedPresets, [preset.id]: { hash: hashPresetContent(preset), available } };
   saveReviewedPresets(reviewedPresets);
 }
 
@@ -2653,11 +2664,11 @@ app.post('/api/presets', async (req, res) => {
   }
   clearFailedAttempts(ip);
 
-  // Unreviewed presets (brand new or edited since a shipped update, not yet
-  // looked at by this admin - see isPresetReviewed above) are withheld
-  // entirely rather than shown with a caveat, since an unreviewed preset
-  // may reference an EPG source this admin hasn't enabled yet.
-  return res.json({ success: true, presets: getAllPresets().filter(isPresetReviewed) });
+  // Unavailable presets (never turned on, or edited since a shipped update
+  // and dropped back to unavailable - see isPresetAvailable above) are
+  // withheld entirely rather than shown with a caveat, since one may
+  // reference an EPG source this admin hasn't enabled yet.
+  return res.json({ success: true, presets: getAllPresets().filter(isPresetAvailable) });
 });
 
 // Same read-only, account-agnostic preset list as /api/presets above, but
@@ -2667,7 +2678,7 @@ app.post('/api/presets', async (req, res) => {
 // there's nothing here worth gating behind auth; same reasoning as the
 // wizard's own pre-account /api/xtream/categories and /api/m3u/import.
 app.post('/api/presets/public', (req, res) => {
-  return res.json({ success: true, presets: getAllPresets().filter(isPresetReviewed) });
+  return res.json({ success: true, presets: getAllPresets().filter(isPresetAvailable) });
 });
 
 app.post('/api/user/register', async (req, res) => {
@@ -3157,12 +3168,12 @@ app.post('/api/admin/presets', async (req, res) => {
   clearFailedAttempts(ip);
 
   // Unlike the user-facing /api/presets, the admin's own list shows
-  // everything including unreviewed presets - reviewed/missingSources are
+  // everything including unavailable presets - available/missingSources are
   // computed per preset so admin.html can flag which ones still need a
   // look without a second round trip.
   return res.json({
     success: true,
-    presets: getAllPresets().map(p => ({ ...p, isStock: stockPresets.some(sp => sp.id === p.id), reviewed: isPresetReviewed(p), missingSources: computeMissingSourcesForPreset(p) }))
+    presets: getAllPresets().map(p => ({ ...p, isStock: stockPresets.some(sp => sp.id === p.id), available: isPresetAvailable(p), missingSources: computeMissingSourcesForPreset(p) }))
   });
 });
 
@@ -3246,9 +3257,9 @@ app.post('/api/admin/presets/create', async (req, res) => {
   localPresets = [...localPresets, preset];
   saveLocalPresets(localPresets);
   // Created right here through this form, missing-source prompt included -
-  // that already is the review, so this doesn't also need to sit in the
-  // pending queue.
-  markPresetReviewed(preset);
+  // that already is the approval, so it goes straight to available rather
+  // than sitting greyed-out waiting for a second look.
+  setPresetAvailability(preset, true);
 
   return res.json({ success: true, preset, epgShareSettings });
 });
@@ -3289,9 +3300,9 @@ app.post('/api/admin/presets/rename', async (req, res) => {
   preset.name = trimmedName;
   saveLocalPresets(localPresets);
   // The admin performing the rename has already seen the result, same
-  // reasoning as create - no need to also bounce it into the pending
-  // review queue just because the name change flipped its content hash.
-  markPresetReviewed(preset);
+  // reasoning as create - no need to also grey it back out just because
+  // the name change flipped its content hash.
+  setPresetAvailability(preset, true);
 
   return res.json({ success: true, preset });
 });
@@ -3311,12 +3322,17 @@ app.post('/api/admin/presets/review', async (req, res) => {
   }
   clearFailedAttempts(ip);
 
-  if (action !== 'publish' && action !== 'publish-and-enable') {
+  if (!['publish', 'publish-and-enable', 'unpublish'].includes(action)) {
     return res.status(400).json({ error: 'Invalid action.' });
   }
   const preset = getAllPresets().find(p => p.id === id);
   if (!preset) {
     return res.status(404).json({ error: 'Preset not found.' });
+  }
+
+  if (action === 'unpublish') {
+    setPresetAvailability(preset, false);
+    return res.json({ success: true, epgShareSettings });
   }
 
   if (action === 'publish-and-enable') {
@@ -3330,7 +3346,7 @@ app.post('/api/admin/presets/review', async (req, res) => {
     }
   }
 
-  markPresetReviewed(preset);
+  setPresetAvailability(preset, true);
 
   return res.json({ success: true, epgShareSettings });
 });

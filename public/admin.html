@@ -131,18 +131,6 @@
         <div id="section-body-presets" class="px-4 pb-4">
         <p class="text-xs text-[#e6e6e6]/55 mb-4">Import a user's exported settings file (from their dashboard's Sources &gt; Export/Import panel), give it a name and an icon, and save it as a preset. An export never contains credentials, so nothing sensitive ends up here.</p>
 
-        <!-- Presets added or edited by a code update (rather than through
-             the form below) land here first and are withheld from users
-             until reviewed - see isPresetReviewed in server.js. Hidden
-             entirely when there's nothing pending. -->
-        <div id="pending-presets-section" class="hidden bg-[#3a2f1f]/50 border border-[#c9992e]/40 rounded-lg p-4 mb-4">
-          <h3 id="pending-presets-heading" class="text-xs font-bold text-[#e6c88a] mb-1 flex items-center gap-2">
-            <i class="fa-solid fa-triangle-exclamation"></i><span></span>
-          </h3>
-          <p class="text-xs text-[#e6e6e6]/55 mb-3">These were added or changed by an update and aren't visible to users yet - review each one below.</p>
-          <div id="pending-presets-list" class="space-y-2"></div>
-        </div>
-
         <div class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-4 mb-4 max-w-md">
           <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Settings file</label>
           <input type="file" id="preset-file-input" accept="application/json" class="hidden" onchange="handlePresetFileSelected(event)">
@@ -183,6 +171,7 @@
           </div>
         </div>
 
+        <p class="text-[10px] text-[#e6e6e6]/45 mb-2">A preset added or changed by a code update (built-in ones included) starts off and greyed out below until you switch it on - that's also when you'll be asked about any EPG sources it needs.</p>
         <div id="presets-empty" class="text-xs text-[#e6e6e6]/55 italic">No presets yet.</div>
         <div id="presets-list" class="space-y-2"></div>
         </div>
@@ -855,7 +844,6 @@
         if (data.success) {
           presets = data.presets;
           renderPresetsList();
-          renderPendingPresetsList();
         }
       } catch (err) {
         console.error('Failed to load presets:', err.message);
@@ -961,8 +949,13 @@
         });
         const data = await res.json();
         if (data.success) {
-          presets = [...presets, data.preset];
-          renderPresetsList();
+          // Refetch rather than splice data.preset in locally - the admin
+          // list response computes available/missingSources per preset
+          // (see /api/admin/presets in server.js) and a hand-spliced object
+          // wouldn't carry those, which would render as greyed-out/off
+          // until the next reload despite the server having just marked it
+          // available.
+          await loadPresets();
           if (data.epgShareSettings) {
             epgShareEnabledSet = new Set(data.epgShareSettings.enabledSources);
             renderEpgShareCatalog();
@@ -1008,6 +1001,12 @@
       updateCreatePresetButtonState();
     }
 
+    // Id of the preset currently showing its inline "this needs EPG sources
+    // you don't have enabled" choice - set when the toggle below is flipped
+    // on for a preset with missingSources, cleared on cancel or once the
+    // choice is made. Only one at a time, so a plain id is enough.
+    let presetAvailabilityPrompt = null;
+
     function renderPresetsList() {
       const list = document.getElementById('presets-list');
       const empty = document.getElementById('presets-empty');
@@ -1018,9 +1017,6 @@
         const badge = p.connectionType === 'm3u'
           ? '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#3b8fc4]/20 text-[#5aa8d1]">M3U</span>'
           : '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#4a9d52]/20 text-[#a8e0ac]">Xtream</span>';
-        const pendingBadge = p.reviewed
-          ? ''
-          : '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#c9992e]/20 text-[#e6c88a]">Pending Review</span>';
         // Stock presets ship with the repo and can only be removed by
         // editing presets/presets.json and shipping an update (see
         // /api/admin/presets/delete) - no delete button here for those.
@@ -1040,77 +1036,35 @@
           : `<button type="button" onclick="deletePreset('${p.id}')" class="shrink-0 bg-[#c0392b] hover:bg-[#d8483a] text-white text-xs font-bold py-1.5 px-3 rounded-lg transition">
             <i class="fa-solid fa-trash"></i>
           </button>`;
-        // A preset already marked reviewed (every stock preset, on a fresh
-        // install) never passes through renderPendingPresetsList's missing-
-        // sources note, so surface the same warning here too - otherwise an
-        // admin running only stock presets has no signal anywhere that some
-        // of their EPG overrides are silently resolving to nothing.
-        const missingNote = (p.reviewed && p.missingSources.length > 0)
-          ? `<div class="mt-1.5 flex items-center gap-2 flex-wrap">
-              <p class="text-xs text-[#e6c88a]">
-                <i class="fa-solid fa-triangle-exclamation mr-1"></i>Needs ${p.missingSources.length} EPG source${p.missingSources.length === 1 ? '' : 's'} you don't have enabled: ${p.missingSources.map(epgShareSourceLabel).join(', ')}.
-              </p>
-              <button type="button" onclick="enableMissingSources('${p.id}')" class="shrink-0 bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-1 px-2.5 rounded-lg text-[10px] transition">Enable sources</button>
+        // Shown regardless of on/off state, so an admin can see what a
+        // preset needs before ever switching it on, not just at the moment
+        // they do.
+        const missingNote = p.missingSources.length > 0
+          ? `<p class="text-[10px] text-[#e6c88a] mt-1"><i class="fa-solid fa-triangle-exclamation mr-1"></i>Needs ${p.missingSources.length} EPG source${p.missingSources.length === 1 ? '' : 's'} you don't have enabled: ${p.missingSources.map(epgShareSourceLabel).join(', ')}.</p>`
+          : '';
+        const toggle = `<button type="button" onclick="onTogglePresetAvailability('${p.id}')"
+            title="${p.available ? 'Available to users - click to make unavailable' : 'Not available to users - click to make available'}"
+            class="relative shrink-0 w-9 h-5 rounded-full transition ${p.available ? 'bg-[#4a9d52]' : 'bg-[#56707d]/60'}">
+            <span class="absolute top-0.5 ${p.available ? 'left-[18px]' : 'left-0.5'} w-4 h-4 bg-white rounded-full transition"></span>
+          </button>`;
+        // The choice of whether to also enable this preset's missing EPG
+        // sources is only offered at the moment of switching it on (see
+        // onTogglePresetAvailability) - it's not a separate persistent
+        // control, so it renders inline here only while presetAvailabilityPrompt
+        // points at this preset.
+        const enablePrompt = presetAvailabilityPrompt === p.id
+          ? `<div class="mt-2 bg-[#3a2f1f]/50 border border-[#c9992e]/40 rounded-lg p-3">
+              <p class="text-xs text-[#e6c88a] mb-2">This preset needs ${p.missingSources.length} EPG source${p.missingSources.length === 1 ? '' : 's'} you don't have enabled: ${p.missingSources.map(epgShareSourceLabel).join(', ')}. Enable them now, or make it available without them (those overrides won't do anything until you enable the source later).</p>
+              <div class="flex flex-wrap gap-2">
+                <button type="button" onclick="reviewPreset('${p.id}', 'publish-and-enable')" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-1.5 px-3 rounded-lg text-xs transition">Enable sources and make available</button>
+                <button type="button" onclick="reviewPreset('${p.id}', 'publish')" class="bg-[#56707d] hover:bg-[#66818f] font-bold py-1.5 px-3 rounded-lg text-xs transition">Make available anyway</button>
+                <button type="button" onclick="cancelPresetAvailabilityPrompt()" class="text-[#e6e6e6]/55 hover:text-[#e6e6e6] font-bold py-1.5 px-3 rounded-lg text-xs transition">Cancel</button>
+              </div>
             </div>`
           : '';
         return `
-        <div class="flex items-center gap-3 bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2">
-          <div class="w-8 h-8 shrink-0 flex items-center justify-center bg-[#3b4d58] rounded-lg text-[#5aa8d1]">
-            <i class="fa-solid fa-${p.icon}"></i>
-          </div>
-          <div class="min-w-0 flex-1">
-            <div class="flex items-center gap-2">
-              <span class="text-xs font-semibold truncate">${escapeHtml(p.name)}</span>
-              ${badge}
-              ${stockBadge}
-              ${pendingBadge}
-            </div>
-            <div class="text-[10px] text-[#e6e6e6]/45">${p.selectedSports.length} league${p.selectedSports.length === 1 ? '' : 's'}, ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'}, ${overrideCount} override${overrideCount === 1 ? '' : 's'} - ${formatDate(p.createdAt)}</div>
-            ${missingNote}
-          </div>
-          ${renameBtn}
-          ${deleteBtn}
-        </div>
-      `;
-      }).join('');
-    }
-
-    // Presets whose stored content hash doesn't match what this admin last
-    // reviewed - either brand new (added by a code update rather than
-    // through the form above) or edited since the last review (see
-    // isPresetReviewed/hashPresetContent in server.js). Withheld from users
-    // entirely (see /api/presets, /api/presets/public) until acted on here.
-    function renderPendingPresetsList() {
-      const pending = presets.filter(p => !p.reviewed);
-      const section = document.getElementById('pending-presets-section');
-      section.classList.toggle('hidden', pending.length === 0);
-      if (pending.length === 0) return;
-
-      document.getElementById('pending-presets-heading').querySelector('span').textContent =
-        `${pending.length} preset${pending.length === 1 ? '' : 's'} awaiting review`;
-
-      document.getElementById('pending-presets-list').innerHTML = pending.map(p => {
-        const categoryCount = Object.values(p.sportCategories).reduce((sum, arr) => sum + arr.length, 0);
-        const overrideCount = Object.keys(p.epgOverrides).length;
-        const badge = p.connectionType === 'm3u'
-          ? '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#3b8fc4]/20 text-[#5aa8d1]">M3U</span>'
-          : '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#4a9d52]/20 text-[#a8e0ac]">Xtream</span>';
-        const missingNote = p.missingSources.length > 0
-          ? `<p class="text-xs text-[#e6c88a] mb-2">Needs ${p.missingSources.length} EPG source${p.missingSources.length === 1 ? '' : 's'} you don't have enabled: ${p.missingSources.map(epgShareSourceLabel).join(', ')}.</p>`
-          : '';
-        const enableBtn = p.missingSources.length > 0
-          ? `<button type="button" onclick="reviewPreset('${p.id}', 'publish-and-enable')" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-1.5 px-3 rounded-lg text-xs transition">Enable sources and publish</button>`
-          : '';
-        // A stock preset can land here too (a shipped update added or
-        // edited one - see hashPresetContent/isPresetReviewed in server.js),
-        // but /api/admin/presets/delete always rejects removing a stock
-        // preset, so don't show a button that can only ever fail for one.
-        const deleteBtn = p.isStock
-          ? ''
-          : `<button type="button" onclick="deletePreset('${p.id}')" class="text-[#e6e6e6]/55 hover:text-[#e6e6e6] font-bold py-1.5 px-3 rounded-lg text-xs transition">Delete</button>`;
-        return `
-        <div class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3">
-          <div class="flex items-center gap-3 mb-2">
+        <div class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 ${p.available ? '' : 'opacity-60'}">
+          <div class="flex items-center gap-3">
             <div class="w-8 h-8 shrink-0 flex items-center justify-center bg-[#3b4d58] rounded-lg text-[#5aa8d1]">
               <i class="fa-solid fa-${p.icon}"></i>
             </div>
@@ -1118,19 +1072,43 @@
               <div class="flex items-center gap-2">
                 <span class="text-xs font-semibold truncate">${escapeHtml(p.name)}</span>
                 ${badge}
+                ${stockBadge}
               </div>
-              <div class="text-[10px] text-[#e6e6e6]/45">${p.selectedSports.length} league${p.selectedSports.length === 1 ? '' : 's'}, ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'}, ${overrideCount} override${overrideCount === 1 ? '' : 's'}</div>
+              <div class="text-[10px] text-[#e6e6e6]/45">${p.selectedSports.length} league${p.selectedSports.length === 1 ? '' : 's'}, ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'}, ${overrideCount} override${overrideCount === 1 ? '' : 's'} - ${formatDate(p.createdAt)}</div>
+              ${missingNote}
             </div>
-          </div>
-          ${missingNote}
-          <div class="flex flex-wrap gap-2">
-            ${enableBtn}
-            <button type="button" onclick="reviewPreset('${p.id}', 'publish')" class="bg-[#56707d] hover:bg-[#66818f] font-bold py-1.5 px-3 rounded-lg text-xs transition">${p.missingSources.length > 0 ? 'Publish anyway' : 'Publish'}</button>
+            ${toggle}
+            ${renameBtn}
             ${deleteBtn}
           </div>
+          ${enablePrompt}
         </div>
       `;
       }).join('');
+    }
+
+    function cancelPresetAvailabilityPrompt() {
+      presetAvailabilityPrompt = null;
+      renderPresetsList();
+    }
+
+    function onTogglePresetAvailability(id) {
+      const preset = presets.find(p => p.id === id);
+      if (!preset) return;
+      if (preset.available) {
+        // Turning an available preset off doesn't touch EPG sources, so
+        // there's nothing to ask - just hide it from users again.
+        reviewPreset(id, 'unpublish');
+        return;
+      }
+      if (preset.missingSources.length > 0) {
+        // Turning on a preset that needs sources this admin hasn't enabled -
+        // ask right here rather than silently shipping dead overrides.
+        presetAvailabilityPrompt = id;
+        renderPresetsList();
+        return;
+      }
+      reviewPreset(id, 'publish');
     }
 
     async function reviewPreset(id, action) {
@@ -1142,36 +1120,19 @@
         });
         const data = await res.json();
         if (data.success) {
+          presetAvailabilityPrompt = null;
           await loadPresets();
-          showAdminStatus(action === 'publish-and-enable' ? 'Sources enabled and preset published.' : 'Preset published.');
+          const messages = {
+            'publish-and-enable': 'Sources enabled and preset made available.',
+            'publish': 'Preset made available to users.',
+            'unpublish': 'Preset made unavailable to users.'
+          };
+          showAdminStatus(messages[action] || 'Preset updated.');
         } else {
-          showAdminStatus(data.error || 'Failed to publish preset.', true);
+          showAdminStatus(data.error || 'Failed to update preset.', true);
         }
       } catch (err) {
-        showAdminStatus('Network error while publishing the preset.', true);
-      }
-    }
-
-    // For a preset that's already reviewed/published (including every stock
-    // preset), just enable its missing EPGShare01 sources without touching
-    // review status - reuses the same backend action as the pending-review
-    // flow since markPresetReviewed is idempotent for an already-reviewed preset.
-    async function enableMissingSources(id) {
-      try {
-        const res = await fetch('/api/admin/presets/review', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...adminCreds, id, action: 'publish-and-enable' })
-        });
-        const data = await res.json();
-        if (data.success) {
-          await loadPresets();
-          showAdminStatus('EPG sources enabled for this preset.');
-        } else {
-          showAdminStatus(data.error || 'Failed to enable EPG sources.', true);
-        }
-      } catch (err) {
-        showAdminStatus('Network error while enabling EPG sources.', true);
+        showAdminStatus('Network error while updating the preset.', true);
       }
     }
 
@@ -1192,7 +1153,6 @@
         if (data.success) {
           presets = presets.map(p => p.id === id ? { ...p, name: data.preset.name } : p);
           renderPresetsList();
-          renderPendingPresetsList();
           showAdminStatus('Preset renamed.');
         } else {
           showAdminStatus(data.error || 'Failed to rename preset.', true);
@@ -1218,7 +1178,6 @@
         if (data.success) {
           presets = presets.filter(p => p.id !== id);
           renderPresetsList();
-          renderPendingPresetsList();
           showAdminStatus('Preset deleted.');
         } else {
           showAdminStatus(data.error || 'Failed to delete preset.', true);
