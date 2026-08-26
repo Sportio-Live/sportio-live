@@ -3554,6 +3554,7 @@
       provider.selectedSports = [...getVisibleSports(provider)];
       const idx = provider.selectedSports.indexOf(sport);
       if (idx !== -1) provider.selectedSports.splice(idx, 1);
+      if (provider.sportCategories) delete provider.sportCategories[sport];
       renderActiveProviderPanel();
       markDashboardDirty();
     }
