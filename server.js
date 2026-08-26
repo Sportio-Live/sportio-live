@@ -2746,7 +2746,6 @@ app.post('/api/user/login', async (req, res) => {
     providers: user.providers || [],
     timeZone: user.timeZone || 'America/New_York',
     sportOrder: user.sportOrder || [],
-    hiddenFromHomeSports: user.hiddenFromHomeSports || [],
     nameFormat: user.nameFormat || DEFAULT_NAME_FORMAT,
     titleFormat: user.titleFormat || DEFAULT_TITLE_FORMAT,
     manifestUrl: `/user/${uuid}/manifest.json`
@@ -2754,7 +2753,7 @@ app.post('/api/user/login', async (req, res) => {
 });
 
 app.post('/api/user/update', async (req, res) => {
-  const { uuid, password, providers, timeZone, sportOrder, hiddenFromHomeSports, nameFormat, titleFormat } = req.body;
+  const { uuid, password, providers, timeZone, sportOrder, nameFormat, titleFormat } = req.body;
   const ip = req.ip;
 
   if (isRateLimited(ip)) {
@@ -2783,11 +2782,6 @@ app.post('/api/user/update', async (req, res) => {
   }
   if (timeZone) user.timeZone = timeZone;
   if (sportOrder !== undefined) user.sportOrder = sportOrder;
-  if (hiddenFromHomeSports !== undefined) {
-    user.hiddenFromHomeSports = Array.isArray(hiddenFromHomeSports)
-      ? hiddenFromHomeSports.filter(s => typeof s === 'string')
-      : [];
-  }
   // Blank/whitespace-only is treated as "go back to default" rather than
   // saved literally - an empty template would otherwise render every
   // stream's name/title as a blank string, which is never actually what
@@ -3484,26 +3478,11 @@ app.get('/user/:uuid/manifest.json', (req, res) => {
     return idxA - idxB;
   });
 
-  // A catalog with a required "extra" parameter and no usable default can't
-  // be auto-fetched, so Stremio/Nuvio leave it off the Home board - but it's
-  // still a completely normal catalog everywhere else (Discover prompts the
-  // user for the required value, same as any addon's genre-filtered
-  // catalog). The genre value itself is never read by the catalog route
-  // below; it exists purely to make the parameter "required" for this
-  // purpose. This is the same technique AIOMetadata uses for its own
-  // per-catalog "show in home" toggle.
-  const hiddenFromHome = new Set(user.hiddenFromHomeSports || []);
-  const catalogs = orderedActiveSports.map(sport => {
-    const catalog = {
-      type: 'sports',
-      id: `sb_${sport.toLowerCase()}`,
-      name: `${getSportDisplayName(sport)} Live Games`
-    };
-    if (hiddenFromHome.has(sport)) {
-      catalog.extra = [{ name: 'genre', options: ['Live Games', 'Live Games'], isRequired: true }];
-    }
-    return catalog;
-  });
+  const catalogs = orderedActiveSports.map(sport => ({
+    type: 'sports',
+    id: `sb_${sport.toLowerCase()}`,
+    name: `${getSportDisplayName(sport)} Live Games`
+  }));
 
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -3521,12 +3500,7 @@ app.get('/user/:uuid/manifest.json', (req, res) => {
   });
 });
 
-// Catalogs hidden from Home (see the manifest route above) declare a
-// required "genre" extra, which means Stremio/Nuvio request them as
-// .../sb_nfl/genre=Live%20Games.json instead of .../sb_nfl.json once opened
-// from Discover. The extra segment's value is never inspected - every
-// sport's catalog is unfiltered regardless of how it was reached.
-app.get(['/user/:uuid/catalog/sports/:id.json', '/user/:uuid/catalog/sports/:id/:extra.json'], async (req, res) => {
+app.get('/user/:uuid/catalog/sports/:id.json', async (req, res) => {
   const user = userConfigs[req.params.uuid];
   if (!user) return res.json({ metas: [] });
 
