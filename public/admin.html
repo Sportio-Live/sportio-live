@@ -79,6 +79,21 @@
       </div>
 
       <div class="glass rounded-xl mb-4 overflow-hidden">
+        <div class="flex items-center justify-between gap-3 p-4 cursor-pointer select-none" onclick="toggleSection('artcache')">
+          <div class="flex items-center gap-2">
+            <i id="section-chevron-artcache" class="fa-solid fa-chevron-down text-xs text-[#e6e6e6]/55 transition-transform"></i>
+            <h2 class="text-sm font-bold">Poster &amp; Background Art</h2>
+          </div>
+          <button onclick="event.stopPropagation(); recacheLogoCache()" id="logo-recache-btn" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2 px-3 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed">
+            <i class="fa-solid fa-rotate"></i> Recache Art Now
+          </button>
+        </div>
+        <div id="section-body-artcache" class="px-4 pb-4">
+        <p class="text-xs text-[#e6e6e6]/55">Team and fighter logos used on posters/backgrounds are fetched once and kept cached (refreshed automatically once a week) rather than re-fetched on every request. Use this if a logo just changed and you don't want to wait for the next automatic refresh - it re-fetches everything currently cached, in place.</p>
+        </div>
+      </div>
+
+      <div class="glass rounded-xl mb-4 overflow-hidden">
         <div class="flex items-center justify-between gap-3 p-4 cursor-pointer select-none" onclick="toggleSection('epgshare')">
           <div class="flex items-center gap-2">
             <i id="section-chevron-epgshare" class="fa-solid fa-chevron-down text-xs text-[#e6e6e6]/55 transition-transform"></i>
@@ -460,6 +475,35 @@
         }
       } catch (err) {
         showAdminStatus('Network error while refreshing the EPG cache.', true);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+      }
+    }
+
+    async function recacheLogoCache() {
+      const btn = document.getElementById('logo-recache-btn');
+      const originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Recaching...';
+
+      try {
+        const res = await fetch('/api/admin/logo-cache/recache', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(adminCreds)
+        });
+        const data = await res.json();
+        if (data.success) {
+          const message = data.total === 0
+            ? 'Nothing to recache yet - no posters/backgrounds have been requested since this server started.'
+            : `Art cache refreshed: ${data.refreshed} of ${data.total} image(s) updated${data.failed ? `, ${data.failed} failed (kept the previous copy)` : ''}.`;
+          showAdminStatus(message, !!data.failed);
+        } else {
+          showAdminStatus(data.error || 'Failed to refresh the art cache.', true);
+        }
+      } catch (err) {
+        showAdminStatus('Network error while refreshing the art cache.', true);
       } finally {
         btn.disabled = false;
         btn.innerHTML = originalHtml;

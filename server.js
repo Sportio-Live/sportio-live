@@ -982,20 +982,51 @@ function getSportDisplayName(sportKey) {
   return SPORT_DISPLAY_NAMES[upper] || upper;
 }
 
+const IMAGE_FETCH_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+  'Referer': 'https://www.espn.com/'
+};
+
+// Team/fighter/league logo bytes, keyed by the exact URL fetched - shared by
+// every getBase64Image* variant below, so a logo requested via one (say, the
+// poster route) is already warm for another (the landscape route pulling the
+// identical URL for the same matchup). Deliberately caches the raw PNG bytes,
+// not the base64 string - each caller derives its own base64/dimensions/
+// content-bounds from the same shared buffer, and raw bytes are ~25% smaller
+// to hold in memory than the base64 text would be. Only successful fetches
+// are ever stored - a failed fetch (dead URL, timeout) just isn't cached, so
+// it's retried plainly on the next request exactly like today, rather than
+// risking a transient failure getting "cached" as permanently missing.
+// Team/league logos essentially never change, so there's no per-read
+// expiry here - see refreshLogoCache below for how staleness is actually
+// bounded (a weekly re-fetch of everything already in this cache).
+const imageBytesCache = new Map(); // url -> { buffer, contentType }
+
+async function fetchImageBytesUncached(url) {
+  const response = await axios.get(url, {
+    responseType: 'arraybuffer',
+    headers: IMAGE_FETCH_HEADERS,
+    timeout: 5000
+  });
+  const entry = {
+    buffer: Buffer.from(response.data, 'binary'),
+    contentType: response.headers['content-type'] || 'image/png'
+  };
+  imageBytesCache.set(url, entry);
+  return entry;
+}
+
+async function fetchImageBytes(url) {
+  const cached = imageBytesCache.get(url);
+  if (cached) return cached;
+  return fetchImageBytesUncached(url);
+}
+
 async function getBase64Image(url) {
   try {
-    const response = await axios.get(url, {
-      responseType: 'arraybuffer',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-        'Referer': 'https://www.espn.com/'
-      },
-      timeout: 5000
-    });
-    const contentType = response.headers['content-type'] || 'image/png';
-    const base64 = Buffer.from(response.data, 'binary').toString('base64');
-    return `data:${contentType};base64,${base64}`;
+    const { buffer, contentType } = await fetchImageBytes(url);
+    return `data:${contentType};base64,${buffer.toString('base64')}`;
   } catch (err) {
     console.error(`[ImageLoader] Failed to fetch image: ${url}. Error: ${err.message}`);
     return null;
@@ -1032,17 +1063,7 @@ function getPngDimensions(buffer) {
 // rather than relying on the SVG renderer to infer them implicitly.
 async function getBase64ImageWithDimensions(url) {
   try {
-    const response = await axios.get(url, {
-      responseType: 'arraybuffer',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-        'Referer': 'https://www.espn.com/'
-      },
-      timeout: 5000
-    });
-    const contentType = response.headers['content-type'] || 'image/png';
-    const buffer = Buffer.from(response.data, 'binary');
+    const { buffer, contentType } = await fetchImageBytes(url);
     const dimensions = getPngDimensions(buffer);
     if (!dimensions) return null;
     const base64 = buffer.toString('base64');
@@ -1152,17 +1173,7 @@ function getPngContentBounds(buffer) {
 // visible artwork, not the padded canvas ESPN serves it on.
 async function getBase64ImageWithContentBounds(url) {
   try {
-    const response = await axios.get(url, {
-      responseType: 'arraybuffer',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-        'Referer': 'https://www.espn.com/'
-      },
-      timeout: 5000
-    });
-    const contentType = response.headers['content-type'] || 'image/png';
-    const buffer = Buffer.from(response.data, 'binary');
+    const { buffer, contentType } = await fetchImageBytes(url);
     const dimensions = getPngDimensions(buffer);
     if (!dimensions) return null;
     const contentBounds = getPngContentBounds(buffer);
@@ -1177,6 +1188,68 @@ async function getBase64ImageWithContentBounds(url) {
     console.error(`[ImageLoader] Failed to fetch image with content bounds: ${url}. Error: ${err.message}`);
     return null;
   }
+}
+
+// Bounds staleness on the cache above: rather than expiring entries on read
+// (which would silently re-introduce the original per-request ESPN round
+// trip the moment an entry aged out), everything already cached gets
+// re-fetched together on a fixed weekly cadence - a rebrand or updated logo
+// shows up within a week, same idea as the admin-configurable M3U/EPGShare01
+// refresh schedulers elsewhere in this file, just on a fixed interval rather
+// than an admin-configured one (nothing here needs per-deployment tuning).
+// A handful of concurrent requests at a time, not all at once - mirrors
+// epgshare01.js's mapWithConcurrency, reimplemented locally to keep this
+// cache self-contained in server.js rather than reaching into that module
+// for an unrelated helper. A failed refresh leaves the existing cached copy
+// in place untouched (fetchImageBytesUncached only overwrites the cache
+// entry after a successful response) - a week-stale logo is still far
+// better than none.
+const LOGO_CACHE_REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+const LOGO_CACHE_REFRESH_CONCURRENCY = 8;
+
+// Returns { refreshed, failed, total } rather than just logging - the
+// scheduled weekly call below only logs it, but the admin panel's manual
+// "Recache Now" button (see /api/admin/logo-cache/recache) reports these
+// same counts back to whoever clicked it, so both callers share one source
+// of truth for what actually happened instead of the admin route
+// re-deriving it separately.
+async function refreshLogoCache() {
+  const urls = [...imageBytesCache.keys()];
+  if (urls.length === 0) return { refreshed: 0, failed: 0, total: 0 };
+
+  let nextIndex = 0;
+  let refreshed = 0;
+  let failed = 0;
+  async function worker() {
+    while (nextIndex < urls.length) {
+      const url = urls[nextIndex++];
+      try {
+        await fetchImageBytesUncached(url);
+        refreshed++;
+      } catch (err) {
+        failed++;
+        console.error(`[LogoCache] Failed to refresh ${url}, keeping the previously cached copy:`, err.message);
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(LOGO_CACHE_REFRESH_CONCURRENCY, urls.length) }, worker));
+  console.log(`[LogoCache] Refresh complete: ${refreshed} updated, ${failed} failed (kept stale copy), ${urls.length} total.`);
+  return { refreshed, failed, total: urls.length };
+}
+
+let logoCacheSchedulerHandle = null;
+
+// Not run immediately on startup, unlike the M3U/EPGShare01 schedulers -
+// those exist to populate a cache that's otherwise empty until their first
+// run. This cache instead fills itself via normal cache-aside as real poster/
+// landscape requests come in, so an immediate run at boot would just find
+// nothing yet to refresh. The first real refresh naturally happens once a
+// week's worth of logos have accumulated.
+function startLogoCacheScheduler() {
+  logoCacheSchedulerHandle = setTimeout(async function runAndReschedule() {
+    await refreshLogoCache();
+    logoCacheSchedulerHandle = setTimeout(runAndReschedule, LOGO_CACHE_REFRESH_INTERVAL_MS);
+  }, LOGO_CACHE_REFRESH_INTERVAL_MS);
 }
 
 function escapeXml(str) {
@@ -3053,6 +3126,34 @@ app.post('/api/admin/m3u-cache/recache', async (req, res) => {
   });
 });
 
+// Manual counterpart to the weekly logoCache refresh (see
+// startLogoCacheScheduler) - force re-fetches every team/fighter/league
+// image currently cached, same as the scheduled run. Deliberately does NOT
+// clear the cache first, unlike the M3U/EPGShare01 recache above: those
+// re-derive their full source list independently (from userConfigs /
+// epgShareSettings), so clearing first is safe, but the logo cache's key
+// set is the ONLY record of which teams/fighters are worth refreshing at
+// all - clearing it here would just throw that list away and report "0
+// refreshed" instead of actually recaching anything.
+app.post('/api/admin/logo-cache/recache', async (req, res) => {
+  const { username, password } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  const { refreshed, failed, total } = await refreshLogoCache();
+  return res.json({ success: true, refreshed, failed, total });
+});
+
 // Lists every EPGShare01 source file available to enable, with its
 // compressed and (exact, via gzip's ISIZE trailer - see epgshare01.js)
 // decompressed size, for the admin picker's column view. This is just
@@ -4006,3 +4107,4 @@ function startEpgShareScheduler() {
 }
 
 startEpgShareScheduler();
+startLogoCacheScheduler();
