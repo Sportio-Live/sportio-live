@@ -961,6 +961,22 @@ function getTeamLogoBucket(sportKey) {
   return TEAM_LOGO_BUCKET_OVERRIDES[sportKey] || ESPN_LEAGUES[sportKey] || 'mlb';
 }
 
+// The scoreboard-first/standard-fallback/provided-URL-last candidate chain
+// shared by the poster route, the landscape route, and the proactive daily
+// art warm-up below - factored out so all three stay in exact agreement
+// about which URL a given team's logo actually resolves to (see the poster
+// route for why three candidates: AFL in particular has no /scoreboard/
+// variant and keys its "standard" logo by abbreviation rather than numeric
+// id, so only the provided URL - ESPN's own scoreboard data - ever
+// succeeds for it).
+function buildTeamLogoCandidates(sportKey, teamId, abbr, providedUrl) {
+  const league = getTeamLogoBucket(sportKey);
+  const lowerAbbr = (abbr || '').toLowerCase();
+  const scoreboardUrl = lowerAbbr ? `https://a.espncdn.com/i/teamlogos/${league}/500/scoreboard/${lowerAbbr}.png` : '';
+  const standardUrl = `https://a.espncdn.com/i/teamlogos/${league}/500/${teamId}.png`;
+  return [scoreboardUrl, standardUrl, providedUrl || ''];
+}
+
 // Friendly names for sports whose internal key isn't already a clean label.
 // Anything not listed here just displays as its own key (e.g. NBA, MLB).
 const SPORT_DISPLAY_NAMES = {
@@ -999,8 +1015,9 @@ const IMAGE_FETCH_HEADERS = {
 // it's retried plainly on the next request exactly like today, rather than
 // risking a transient failure getting "cached" as permanently missing.
 // Team/league logos essentially never change, so there's no per-read
-// expiry here - see refreshLogoCache below for how staleness is actually
-// bounded (a weekly re-fetch of everything already in this cache).
+// expiry here - see warmTodaysArt below for how staleness is actually
+// bounded (a daily, live-schedule-driven re-fetch of every team/fighter
+// playing that day, not just whatever happens to already be in this cache).
 const imageBytesCache = new Map(); // url -> { buffer, contentType }
 
 async function fetchImageBytesUncached(url) {
@@ -1190,66 +1207,106 @@ async function getBase64ImageWithContentBounds(url) {
   }
 }
 
-// Bounds staleness on the cache above: rather than expiring entries on read
-// (which would silently re-introduce the original per-request ESPN round
-// trip the moment an entry aged out), everything already cached gets
-// re-fetched together on a fixed weekly cadence - a rebrand or updated logo
-// shows up within a week, same idea as the admin-configurable M3U/EPGShare01
-// refresh schedulers elsewhere in this file, just on a fixed interval rather
-// than an admin-configured one (nothing here needs per-deployment tuning).
-// A handful of concurrent requests at a time, not all at once - mirrors
-// epgshare01.js's mapWithConcurrency, reimplemented locally to keep this
-// cache self-contained in server.js rather than reaching into that module
-// for an unrelated helper. A failed refresh leaves the existing cached copy
-// in place untouched (fetchImageBytesUncached only overwrites the cache
-// entry after a successful response) - a week-stale logo is still far
-// better than none.
-const LOGO_CACHE_REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
-const LOGO_CACHE_REFRESH_CONCURRENCY = 8;
+// Proactively warms today's team/fighter art BEFORE any client asks for it,
+// rather than relying only on cache-aside to fill things in the first time
+// someone's poster/background request happens to need a given team. Pulls
+// a live schedule per league (not fetchGamesForSport's 60s cache - a stale
+// schedule would just mean warming against yesterday's games) and force-
+// refetches every candidate URL involved (fetchImageBytesUncached, not the
+// cache-aside getBase64Image), so a logo that changed mid-season gets
+// picked up daily too, not just a team's first-ever appearance. hostUrl is
+// only used by fetchTodayGames/fetchTodayUFCEvents to build the poster/
+// background URL *strings* on each game object - this never reads those
+// fields, so any placeholder value works.
+const WARM_PLACEHOLDER_HOST = 'https://localhost';
+const ART_WARMUP_CONCURRENCY = 8;
 
-// Returns { refreshed, failed, total } rather than just logging - the
-// scheduled weekly call below only logs it, but the admin panel's manual
-// "Recache Now" button (see /api/admin/logo-cache/recache) reports these
-// same counts back to whoever clicked it, so both callers share one source
-// of truth for what actually happened instead of the admin route
-// re-deriving it separately.
-async function refreshLogoCache() {
-  const urls = [...imageBytesCache.keys()];
-  if (urls.length === 0) return { refreshed: 0, failed: 0, total: 0 };
-
-  let nextIndex = 0;
-  let refreshed = 0;
-  let failed = 0;
-  async function worker() {
-    while (nextIndex < urls.length) {
-      const url = urls[nextIndex++];
-      try {
-        await fetchImageBytesUncached(url);
-        refreshed++;
-      } catch (err) {
-        failed++;
-        console.error(`[LogoCache] Failed to refresh ${url}, keeping the previously cached copy:`, err.message);
-      }
+// Same shape as getBase64ImageWithFallback (try each URL, stop at the first
+// success) but force-refetching instead of reading the cache - used only by
+// the warm-up below, which specifically wants a fresh copy even for a URL
+// it already has cached.
+async function forceFetchWithFallback(urls) {
+  for (const url of urls) {
+    if (!url) continue;
+    try {
+      await fetchImageBytesUncached(url);
+      return true;
+    } catch (err) {
+      // Try the next candidate - a normal, expected outcome for most
+      // sports' scoreboard-variant guess (see buildTeamLogoCandidates).
     }
   }
-  await Promise.all(Array.from({ length: Math.min(LOGO_CACHE_REFRESH_CONCURRENCY, urls.length) }, worker));
-  console.log(`[LogoCache] Refresh complete: ${refreshed} updated, ${failed} failed (kept stale copy), ${urls.length} total.`);
-  return { refreshed, failed, total: urls.length };
+  return false;
 }
 
-let logoCacheSchedulerHandle = null;
+// One candidate-URL-list per logo/photo this game needs - each entry is
+// exactly what forceFetchWithFallback expects. Team sports get one
+// fallback chain per side (home/away); UFC has no such chain (each headshot/
+// flag is a single direct URL), so those are wrapped as one-URL lists to
+// keep the warm loop below uniform across every sport.
+function collectArtUrlsForGame(sportKey, game) {
+  if (sportKey === 'UFC') {
+    const urls = [
+      `https://a.espncdn.com/i/headshots/mma/players/stance/left/${game.fighterAId}.png`,
+      `https://a.espncdn.com/i/headshots/mma/players/stance/right/${game.fighterBId}.png`,
+      `https://a.espncdn.com/i/headshots/mma/players/full/${game.fighterAId}.png`,
+      `https://a.espncdn.com/i/headshots/mma/players/full/${game.fighterBId}.png`
+    ];
+    if (game.fighterAFlagUrl) urls.push(game.fighterAFlagUrl);
+    if (game.fighterBFlagUrl) urls.push(game.fighterBFlagUrl);
+    return urls.map(url => [url]);
+  }
+  return [
+    buildTeamLogoCandidates(sportKey, game.homeId, game.homeAbbr, game.homeLogoUrl),
+    buildTeamLogoCandidates(sportKey, game.awayId, game.awayAbbr, game.awayLogoUrl)
+  ];
+}
 
-// Not run immediately on startup, unlike the M3U/EPGShare01 schedulers -
-// those exist to populate a cache that's otherwise empty until their first
-// run. This cache instead fills itself via normal cache-aside as real poster/
-// landscape requests come in, so an immediate run at boot would just find
-// nothing yet to refresh. The first real refresh naturally happens once a
-// week's worth of logos have accumulated.
-function startLogoCacheScheduler() {
-  logoCacheSchedulerHandle = setTimeout(async function runAndReschedule() {
-    await refreshLogoCache();
-    logoCacheSchedulerHandle = setTimeout(runAndReschedule, LOGO_CACHE_REFRESH_INTERVAL_MS);
-  }, LOGO_CACHE_REFRESH_INTERVAL_MS);
+async function warmTodaysArt() {
+  const sportKeys = Object.keys(ESPN_ENDPOINTS);
+  const candidateLists = [];
+  let gamesChecked = 0;
+
+  for (const sportKey of sportKeys) {
+    const games = sportKey === 'UFC'
+      ? await fetchTodayUFCEvents(WARM_PLACEHOLDER_HOST)
+      : await fetchTodayGames(sportKey, WARM_PLACEHOLDER_HOST);
+    gamesChecked += games.length;
+    for (const game of games) {
+      candidateLists.push(...collectArtUrlsForGame(sportKey, game));
+    }
+  }
+
+  let nextIndex = 0;
+  let warmed = 0;
+  let failed = 0;
+  async function worker() {
+    while (nextIndex < candidateLists.length) {
+      const urls = candidateLists[nextIndex++];
+      if (await forceFetchWithFallback(urls)) warmed++; else failed++;
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(ART_WARMUP_CONCURRENCY, candidateLists.length) }, worker));
+
+  const result = { sportsChecked: sportKeys.length, gamesChecked, teamsWarmed: warmed, teamsFailed: failed };
+  console.log(`[ArtWarmup] Checked ${result.sportsChecked} leagues, ${result.gamesChecked} game(s) today: ${warmed} warmed, ${failed} failed.`);
+  return result;
+}
+
+let artWarmupSchedulerHandle = null;
+const ART_WARMUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+// Runs immediately on startup, unlike the old design this replaced - the
+// whole point is to get ahead of the first real request each day, not just
+// top off a cache that's already been filled reactively, so a fresh deploy
+// (or a server restart at 3am) needs this to run right away rather than
+// waiting up to a full day for its first pass.
+function startArtWarmupScheduler() {
+  async function runAndReschedule() {
+    await warmTodaysArt().catch(err => console.error('[ArtWarmup] Unexpected failure:', err.message));
+    artWarmupSchedulerHandle = setTimeout(runAndReschedule, ART_WARMUP_INTERVAL_MS);
+  }
+  runAndReschedule();
 }
 
 function escapeXml(str) {
@@ -1586,7 +1643,6 @@ app.get('/poster/:sport/:homeId/:awayId.svg', async (req, res) => {
   const homeName = req.query.home || 'Home';
   const awayName = req.query.away || 'Away';
   const sportKey = sport.toUpperCase();
-  const league = getTeamLogoBucket(sportKey);
   const theme = SPORT_THEMES[sportKey] || SPORT_THEMES.MLB;
 
   // Using each team's primary color - alternate color was tried and
@@ -1601,26 +1657,12 @@ app.get('/poster/:sport/:homeId/:awayId.svg', async (req, res) => {
   const homeAbbr = (req.query.homeAbbr || '').toLowerCase();
   const awayAbbr = (req.query.awayAbbr || '').toLowerCase();
 
-  // Scoreboard-optimized logo first, full standard logo as fallback if the
-  // scoreboard variant isn't available. Both are guessed from the sport's
-  // usual CDN pattern (bucket/500/{id}.png), which most sports follow -
-  // but not all (confirmed live: AFL keys its logos by lowercase
-  // abbreviation, not numeric team id, and has no /scoreboard/ variant at
-  // all, so both guesses above 404 for it). homeLogoUrl/awayLogoUrl - the
-  // exact URL ESPN's own scoreboard data already gave for this team,
-  // passed through from fetchTodayGames - is the last resort for exactly
-  // that case, so a sport with a non-standard CDN layout still gets its
-  // real logo instead of falling all the way back to buildLogoFallback.
-  const homeScoreboardUrl = homeAbbr ? `https://a.espncdn.com/i/teamlogos/${league}/500/scoreboard/${homeAbbr}.png` : '';
-  const awayScoreboardUrl = awayAbbr ? `https://a.espncdn.com/i/teamlogos/${league}/500/scoreboard/${awayAbbr}.png` : '';
-  const homeStandardUrl = `https://a.espncdn.com/i/teamlogos/${league}/500/${homeId}.png`;
-  const awayStandardUrl = `https://a.espncdn.com/i/teamlogos/${league}/500/${awayId}.png`;
-  const homeLogoUrlParam = req.query.homeLogoUrl || '';
-  const awayLogoUrlParam = req.query.awayLogoUrl || '';
-
+  // See buildTeamLogoCandidates for the scoreboard/standard/provided-URL
+  // fallback chain this resolves against (AFL in particular only ever
+  // succeeds on the third, provided-URL candidate).
   const [homeLogoData, awayLogoData] = await Promise.all([
-    getBase64ImageWithFallback([homeScoreboardUrl, homeStandardUrl, homeLogoUrlParam]),
-    getBase64ImageWithFallback([awayScoreboardUrl, awayStandardUrl, awayLogoUrlParam])
+    getBase64ImageWithFallback(buildTeamLogoCandidates(sportKey, homeId, homeAbbr, req.query.homeLogoUrl)),
+    getBase64ImageWithFallback(buildTeamLogoCandidates(sportKey, awayId, awayAbbr, req.query.awayLogoUrl))
   ]);
 
   const template = getPosterTemplateInline();
@@ -1862,7 +1904,6 @@ app.get('/landscape/:sport/:homeId/:awayId.svg', async (req, res) => {
  try {
   const { sport, homeId, awayId } = req.params;
   const sportKey = sport.toUpperCase();
-  const league = getTeamLogoBucket(sportKey);
   const theme = SPORT_THEMES[sportKey] || SPORT_THEMES.MLB;
 
   const homeName = req.query.home || 'Home';
@@ -1872,20 +1913,11 @@ app.get('/landscape/:sport/:homeId/:awayId.svg', async (req, res) => {
   const homeAbbr = (req.query.homeAbbr || '').toLowerCase();
   const awayAbbr = (req.query.awayAbbr || '').toLowerCase();
 
-  // Same scoreboard-first, standard-logo-fallback pattern as the poster,
-  // plus the same homeLogoUrl/awayLogoUrl last resort for sports whose CDN
-  // layout doesn't match either guessed pattern (see the poster route for
-  // why - confirmed live against AFL).
-  const homeScoreboardUrl = homeAbbr ? `https://a.espncdn.com/i/teamlogos/${league}/500/scoreboard/${homeAbbr}.png` : '';
-  const awayScoreboardUrl = awayAbbr ? `https://a.espncdn.com/i/teamlogos/${league}/500/scoreboard/${awayAbbr}.png` : '';
-  const homeStandardUrl = `https://a.espncdn.com/i/teamlogos/${league}/500/${homeId}.png`;
-  const awayStandardUrl = `https://a.espncdn.com/i/teamlogos/${league}/500/${awayId}.png`;
-  const homeLogoUrlParam = req.query.homeLogoUrl || '';
-  const awayLogoUrlParam = req.query.awayLogoUrl || '';
-
+  // Same scoreboard/standard/provided-URL fallback chain as the poster
+  // route - see buildTeamLogoCandidates.
   const [homeLogoData, awayLogoData] = await Promise.all([
-    getBase64ImageWithFallback([homeScoreboardUrl, homeStandardUrl, homeLogoUrlParam]),
-    getBase64ImageWithFallback([awayScoreboardUrl, awayStandardUrl, awayLogoUrlParam])
+    getBase64ImageWithFallback(buildTeamLogoCandidates(sportKey, homeId, homeAbbr, req.query.homeLogoUrl)),
+    getBase64ImageWithFallback(buildTeamLogoCandidates(sportKey, awayId, awayAbbr, req.query.awayLogoUrl))
   ]);
 
   const overlayInline = getBackgroundOverlayInline();
@@ -2166,6 +2198,14 @@ async function fetchTodayGames(sport, hostUrl, userTimeZone = 'America/New_York'
         awayNick,
         homeAbbr,
         awayAbbr,
+        // Raw ids and ESPN-provided logo URLs, not just the fully-built
+        // poster/background URLs above - needed by the daily art warm-up
+        // (see warmTodaysArt) to resolve each team's logo candidate chain
+        // (buildTeamLogoCandidates) itself, the same way those routes do.
+        homeId,
+        awayId,
+        homeLogoUrl,
+        awayLogoUrl,
         broadcastNames,
         poster,
         background,
@@ -2271,6 +2311,13 @@ async function fetchTodayUFCEvents(hostUrl, userTimeZone = 'America/New_York') {
         awayNick: fighterBName,
         homeAbbr: '',
         awayAbbr: '',
+        // Needed by the daily art warm-up (warmTodaysArt) to fetch each
+        // fighter's stance/full headshots and flag art itself, the same
+        // URLs the poster/landscape UFC routes already build from these.
+        fighterAId,
+        fighterBId,
+        fighterAFlagUrl,
+        fighterBFlagUrl,
         broadcastNames,
         poster,
         background,
@@ -3126,15 +3173,13 @@ app.post('/api/admin/m3u-cache/recache', async (req, res) => {
   });
 });
 
-// Manual counterpart to the weekly logoCache refresh (see
-// startLogoCacheScheduler) - force re-fetches every team/fighter/league
-// image currently cached, same as the scheduled run. Deliberately does NOT
-// clear the cache first, unlike the M3U/EPGShare01 recache above: those
-// re-derive their full source list independently (from userConfigs /
-// epgShareSettings), so clearing first is safe, but the logo cache's key
-// set is the ONLY record of which teams/fighters are worth refreshing at
-// all - clearing it here would just throw that list away and report "0
-// refreshed" instead of actually recaching anything.
+// Manual counterpart to the daily art warm-up (see startArtWarmupScheduler)
+// - runs the exact same warmTodaysArt() the automatic daily job runs,
+// on demand. Deliberately re-pulls a LIVE schedule per league rather than
+// just re-fetching whatever's already cached: that means a manual click
+// here also picks up anything that changed in the schedule itself (a
+// postponement, a weather delay) in addition to any logo that changed,
+// not just logo freshness alone.
 app.post('/api/admin/logo-cache/recache', async (req, res) => {
   const { username, password } = req.body;
   const ip = req.ip;
@@ -3150,8 +3195,8 @@ app.post('/api/admin/logo-cache/recache', async (req, res) => {
   }
   clearFailedAttempts(ip);
 
-  const { refreshed, failed, total } = await refreshLogoCache();
-  return res.json({ success: true, refreshed, failed, total });
+  const { sportsChecked, gamesChecked, teamsWarmed, teamsFailed } = await warmTodaysArt();
+  return res.json({ success: true, sportsChecked, gamesChecked, teamsWarmed, teamsFailed });
 });
 
 // Lists every EPGShare01 source file available to enable, with its
@@ -4107,4 +4152,4 @@ function startEpgShareScheduler() {
 }
 
 startEpgShareScheduler();
-startLogoCacheScheduler();
+startArtWarmupScheduler();
