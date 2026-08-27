@@ -89,7 +89,7 @@
           </button>
         </div>
         <div id="section-body-artcache" class="px-4 pb-4">
-        <p class="text-xs text-[#e6e6e6]/55">Every day, this server pulls today's schedule for each league and fetches/caches every team's and fighter's art ahead of time, so posters and backgrounds load instantly instead of fetching from ESPN the first time someone views them. Use this button to run that same check right now - it re-pulls each league's live schedule (so a postponement or delay shows up immediately too) and refreshes today's art, including any logo that changed.</p>
+        <p class="text-xs text-[#e6e6e6]/55">Every day, this server pulls today's schedule for each league, fetches every team's/fighter's logo ahead of time, and builds the actual finished poster/background pictures in advance - so nothing has to be fetched from ESPN or assembled the first time someone views it. Use this button to run that same check right now - it re-pulls each league's live schedule (so a postponement or delay shows up immediately too) and rebuilds today's pictures, including any logo that changed.</p>
         </div>
       </div>
 
@@ -495,10 +495,11 @@
         });
         const data = await res.json();
         if (data.success) {
+          const failed = (data.teamsFailed || 0) + (data.imagesFailed || 0);
           const message = data.gamesChecked === 0
             ? `Checked ${data.sportsChecked} league(s) - no games scheduled today, nothing to warm.`
-            : `Checked ${data.sportsChecked} league(s), ${data.gamesChecked} game(s) today: ${data.teamsWarmed} art file(s) refreshed${data.teamsFailed ? `, ${data.teamsFailed} failed (kept the previous copy)` : ''}.`;
-          showAdminStatus(message, !!data.teamsFailed);
+            : `Checked ${data.sportsChecked} league(s), ${data.gamesChecked} game(s) today: ${data.teamsWarmed} logo(s) refreshed, ${data.imagesRendered} finished picture(s) pre-built${failed ? `, ${failed} failed (kept the previous copy)` : ''}.`;
+          showAdminStatus(message, !!failed);
         } else {
           showAdminStatus(data.error || 'Failed to refresh the art cache.', true);
         }

@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const zlib = require('zlib');
+const sharp = require('sharp');
 const m3u = require('./m3u.js');
 const epgshare = require('./epgshare01.js');
 
@@ -745,9 +746,11 @@ const ESPN_LEAGUES = {
 
 // The "Upcoming Schedule" placeholder's background image, one per sport
 // (several sports share the same graphic, e.g. NBA and NCAAMB both use
-// basketball.svg). These are served directly as raw SVG bytes rather than
-// base64-embedded into a wrapping SVG, since there's no compositing
-// needed here - just static art.
+// basketball.svg). The source art is static SVG with no per-request
+// compositing needed, but it's still rendered to JPEG once (see
+// getScheduleBackgroundBuffer) and cached, same format as every other art
+// route in this app - a client that has trouble with this app's SVG output
+// shouldn't have to special-case this one static image as an exception.
 const SCHEDULE_BACKGROUND_FILES = {
   MLB: 'baseball.svg',
   NBA: 'basketball.svg',
@@ -769,16 +772,17 @@ const SCHEDULE_BACKGROUND_FILES = {
   IPL: 'cricket.svg'
 };
 
-const scheduleBackgroundCache = {};
-function getScheduleBackgroundBuffer(sportKey) {
+const scheduleBackgroundCache = {}; // filename -> rendered JPEG Buffer
+async function getScheduleBackgroundBuffer(sportKey) {
   const filename = SCHEDULE_BACKGROUND_FILES[sportKey];
   if (!filename) return null;
   if (scheduleBackgroundCache[filename]) return scheduleBackgroundCache[filename];
   try {
     const filePath = path.join(__dirname, 'assets', 'background', 'schedule', filename);
-    const buffer = fs.readFileSync(filePath);
-    scheduleBackgroundCache[filename] = buffer;
-    return buffer;
+    const svg = fs.readFileSync(filePath);
+    const jpeg = await renderSvgToImage(svg, 'jpeg');
+    scheduleBackgroundCache[filename] = jpeg;
+    return jpeg;
   } catch (err) {
     console.error(`[Schedule Background] Failed to load ${filename}:`, err.message);
     return null;
@@ -1262,34 +1266,120 @@ function collectArtUrlsForGame(sportKey, game) {
   ];
 }
 
+// Runs `fn` over `items` with at most `limit` in flight at once, counting
+// how many resolved truthy vs falsy - shared by both the raw-logo-byte pass
+// and the final-image-render pass below, which otherwise duplicated the
+// same worker-pool bookkeeping.
+async function runWithConcurrency(items, limit, fn) {
+  let nextIndex = 0;
+  let ok = 0;
+  let bad = 0;
+  async function worker() {
+    while (nextIndex < items.length) {
+      const item = items[nextIndex++];
+      if (await fn(item)) ok++; else bad++;
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return { ok, bad };
+}
+
+// Every real account's own configured timezone (falling back to America/
+// New_York if there are no accounts yet, or none have set one) - the
+// render pass below pre-renders art for each of these specifically, since
+// the displayed game time (and therefore the finished image's pixels) is
+// baked in per-viewer-timezone. A brand-new visitor whose timezone isn't
+// among these yet still gets cache-aside on their very first request - see
+// serveCachedRenderIfPresent in each art route - just not pre-warmed ahead
+// of time, the same tradeoff this whole design already makes for a
+// brand-new team no one's asked about yet.
+function getConfiguredTimeZones() {
+  const zones = new Set(Object.values(userConfigs).map(u => u.timeZone).filter(Boolean));
+  return zones.size > 0 ? [...zones] : ['America/New_York'];
+}
+
+function pathAndQueryFromUrl(fullUrl) {
+  const parsed = new URL(fullUrl);
+  return parsed.pathname + parsed.search;
+}
+
+// Pre-renders one finished poster/background/logo by making a real request
+// to this same server's own art route - not by duplicating that route's
+// SVG-building logic here. That means the warm-up can never quietly drift
+// out of sync with what a real client actually gets: it IS a real client
+// request, just one this server makes to itself, ahead of any real viewer,
+// purely as a side effect of populating renderedImageCache (see
+// serveCachedRenderIfPresent/renderAndCache) - the response body itself is
+// never used for anything.
+async function prewarmRenderedImage(pathAndQuery) {
+  try {
+    await axios.get(`http://127.0.0.1:${PORT}${pathAndQuery}`, { timeout: 20000 });
+    return true;
+  } catch (err) {
+    console.error(`[ArtWarmup] Failed to pre-render ${pathAndQuery}:`, err.message);
+    return false;
+  }
+}
+
 async function warmTodaysArt() {
   const sportKeys = Object.keys(ESPN_ENDPOINTS);
+  const timeZones = getConfiguredTimeZones();
+
   const candidateLists = [];
+  const renderTargets = [];
   let gamesChecked = 0;
 
   for (const sportKey of sportKeys) {
-    const games = sportKey === 'UFC'
-      ? await fetchTodayUFCEvents(WARM_PLACEHOLDER_HOST)
-      : await fetchTodayGames(sportKey, WARM_PLACEHOLDER_HOST);
-    gamesChecked += games.length;
-    for (const game of games) {
-      candidateLists.push(...collectArtUrlsForGame(sportKey, game));
+    // The schedule placeholder (shown when a league has no game today)
+    // carries no per-viewer variance at all - rendered once per sport here,
+    // regardless of how many timezones get checked below.
+    const lower = sportKey.toLowerCase();
+    renderTargets.push(`/logo/${lower}.png`, `/poster/none/${lower}.jpg`, `/background/schedule/${lower}.jpg`);
+
+    for (const tz of timeZones) {
+      const games = sportKey === 'UFC'
+        ? await fetchTodayUFCEvents(WARM_PLACEHOLDER_HOST, tz)
+        : await fetchTodayGames(sportKey, WARM_PLACEHOLDER_HOST, tz);
+      // Counted once, not once per timezone - a different timezone can
+      // occasionally see a different "today" right at date rollover, but
+      // this is only ever an informational count, not something acted on.
+      if (tz === timeZones[0]) gamesChecked += games.length;
+      for (const game of games) {
+        candidateLists.push(...collectArtUrlsForGame(sportKey, game));
+        renderTargets.push(pathAndQueryFromUrl(game.poster), pathAndQueryFromUrl(game.background));
+      }
     }
   }
 
-  let nextIndex = 0;
-  let warmed = 0;
-  let failed = 0;
-  async function worker() {
-    while (nextIndex < candidateLists.length) {
-      const urls = candidateLists[nextIndex++];
-      if (await forceFetchWithFallback(urls)) warmed++; else failed++;
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(ART_WARMUP_CONCURRENCY, candidateLists.length) }, worker));
+  // Deduplicated before the fetch pass - the same team's logo candidate
+  // chain shows up once per timezone checked above (team art doesn't vary
+  // by viewer timezone the way the final rendered image does), so without
+  // this a deployment with several configured timezones would force-
+  // refetch the same handful of team logos from ESPN redundantly.
+  const seenCandidates = new Set();
+  const dedupedCandidateLists = candidateLists.filter(urls => {
+    const key = urls.join('|');
+    if (seenCandidates.has(key)) return false;
+    seenCandidates.add(key);
+    return true;
+  });
 
-  const result = { sportsChecked: sportKeys.length, gamesChecked, teamsWarmed: warmed, teamsFailed: failed };
-  console.log(`[ArtWarmup] Checked ${result.sportsChecked} leagues, ${result.gamesChecked} game(s) today: ${warmed} warmed, ${failed} failed.`);
+  // Logo bytes warmed FIRST, fully, before any rendering starts - so the
+  // render pass below (which internally calls the exact same getBase64Image*
+  // functions each art route already uses) finds every logo it needs
+  // already cached, rather than paying that fetch cost twice in one run.
+  const logoResult = await runWithConcurrency(dedupedCandidateLists, ART_WARMUP_CONCURRENCY, forceFetchWithFallback);
+  const renderResult = await runWithConcurrency(renderTargets, ART_WARMUP_CONCURRENCY, prewarmRenderedImage);
+
+  const result = {
+    sportsChecked: sportKeys.length,
+    gamesChecked,
+    teamsWarmed: logoResult.ok,
+    teamsFailed: logoResult.bad,
+    imagesRendered: renderResult.ok,
+    imagesFailed: renderResult.bad
+  };
+  console.log(`[ArtWarmup] Checked ${result.sportsChecked} leagues, ${result.gamesChecked} game(s) today across ${timeZones.length} timezone(s): ${result.teamsWarmed} logo(s) warmed (${result.teamsFailed} failed), ${result.imagesRendered} image(s) pre-rendered (${result.imagesFailed} failed).`);
   return result;
 }
 
@@ -1330,15 +1420,92 @@ function escapeXml(str) {
 // fast. Every art route catches around its body and falls back to this
 // instead, so a template bug degrades to a plain placeholder image rather
 // than an indefinite spinner in the client.
-function sendSvgErrorFallback(res, width, height, label) {
+// Rendered to a real JPEG, same as every other art response below (see
+// renderSvgToImage) - not left as raw SVG, since a client that struggles to
+// decode this app's normal SVG output would presumably struggle just as
+// much on an error placeholder. Falls back to the raw SVG text only if the
+// render itself somehow fails too (sharp erroring on this trivially simple
+// markup would be very surprising, but sending something is still better
+// than the request hanging with no response at all).
+async function sendImageErrorFallback(res, width, height, label) {
   const fontSize = Math.round(width * 0.06);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">
     <rect width="${width}" height="${height}" fill="#111827" />
     ${label ? `<text x="${width / 2}" y="${height / 2}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="${fontSize}" font-weight="700" fill="#e5e7eb" text-anchor="middle">${escapeXml(label)}</text>` : ''}
   </svg>`;
-  res.setHeader('Content-Type', 'image/svg+xml');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.status(200).send(svg);
+  try {
+    const jpeg = await renderSvgToImage(svg, 'jpeg');
+    res.setHeader('Content-Type', 'image/jpeg');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.status(200).send(jpeg);
+  } catch (err) {
+    console.error('[Art] Even the error-fallback render failed, sending raw SVG:', err.message);
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.status(200).send(svg);
+  }
+}
+
+// JPEG by default: measured directly against this app's own real output
+// during design - PNG came out LARGER than the original SVG for the
+// landscape image specifically (1.17MB vs ~205KB; photographic/gradient
+// content doesn't compress well losslessly), while JPEG matched or beat
+// the SVG's size in every case tested (44KB vs ~205KB for the poster).
+// Quality 85 is a standard "visually lossless for photographic content"
+// setting - the source material here (team-color gradients, photographic
+// logos/headshots) has no sharp single-pixel edges relying on lossless
+// output the way, say, a screenshot of text would.
+//
+// PNG is used for exactly one route (the plain league logo) instead: it's
+// the only art in this app with a genuinely transparent background (no
+// fill behind the logo at all) - JPEG has no alpha channel, so rendering
+// that one to JPEG would flatten the transparency to an opaque (usually
+// white) box behind every league logo, a real visual regression rather
+// than a neutral format swap. Every other route always paints a full
+// opaque background (a gradient, a solid team color, a photo), so JPEG's
+// lack of alpha costs nothing there.
+async function renderSvgToImage(svg, format = 'jpeg') {
+  const pipeline = sharp(Buffer.from(svg));
+  return format === 'png' ? pipeline.png().toBuffer() : pipeline.jpeg({ quality: 85 }).toBuffer();
+}
+
+function contentTypeForFormat(format) {
+  return format === 'png' ? 'image/png' : 'image/jpeg';
+}
+
+// Every finished poster/background/logo is cached under the exact request
+// URL (path+query) that produced it - a poster's colors/date/viewer-
+// timezone all live in the query string already, so two different requests
+// that would render two visibly different images naturally get two
+// different cache keys for free, with no separate key-building logic
+// needed here. A cache hit means skipping not just the render below but
+// the entire logo-fetch/SVG-assembly pipeline above it in the calling
+// route - see serveCachedRenderIfPresent, which every art route calls
+// FIRST, before doing any of that work.
+const renderedImageCache = new Map(); // req.originalUrl -> rendered image Buffer
+
+// Returns true and sends the response if this exact request was already
+// rendered before (by an earlier request, or by the daily art warm-up -
+// see warmTodaysArt) - callers should return immediately when this does,
+// without running any of their own fetch/build logic at all.
+function serveCachedRenderIfPresent(req, res, cacheControl, format = 'jpeg') {
+  const cached = renderedImageCache.get(req.originalUrl);
+  if (!cached) return false;
+  res.setHeader('Content-Type', contentTypeForFormat(format));
+  res.setHeader('Cache-Control', cacheControl);
+  res.send(cached);
+  return true;
+}
+
+// Counterpart to serveCachedRenderIfPresent for a cache miss: renders the
+// freshly-built SVG, caches the result under this request's own URL, and
+// sends it.
+async function renderAndCache(req, res, svg, cacheControl, format = 'jpeg') {
+  const image = await renderSvgToImage(svg, format);
+  renderedImageCache.set(req.originalUrl, image);
+  res.setHeader('Content-Type', contentTypeForFormat(format));
+  res.setHeader('Cache-Control', cacheControl);
+  res.send(image);
 }
 
 // Splits a name into two roughly-balanced lines at the word boundary
@@ -1533,11 +1700,13 @@ function getUfcPosterTemplateInline() {
 }
 
 // Registered BEFORE the generic team-based poster route below, since both
-// have the same number of path segments (/poster/X/Y/Z.svg) - Express
+// have the same number of path segments (/poster/X/Y/Z.jpg) - Express
 // matches routes in registration order, so the more specific UFC route
 // needs to come first or it would never be reached.
-app.get('/poster/ufc/:fighterAId/:fighterBId.svg', async (req, res) => {
+app.get('/poster/ufc/:fighterAId/:fighterBId.jpg', async (req, res) => {
  try {
+  if (serveCachedRenderIfPresent(req, res, 'public, max-age=3600')) return;
+
   const fighterAName = req.query.home || 'Fighter A';
   const fighterBName = req.query.away || 'Fighter B';
   const gameUtcDate = req.query.date || null;
@@ -1557,7 +1726,7 @@ app.get('/poster/ufc/:fighterAId/:fighterBId.svg', async (req, res) => {
   ]);
 
   // Real UFC league logo, same source already confirmed working for the
-  // /logo/ufc.svg route - rendered 130px wide, scaled proportionately, so
+  // /logo/ufc.png route - rendered 130px wide, scaled proportionately, so
   // its real pixel dimensions are needed too (not just fit into a fixed
   // box via preserveAspectRatio alone). Its content bounds are needed on
   // top of that: the raw PNG ESPN serves is a 500x500 canvas with the
@@ -1621,12 +1790,10 @@ app.get('/poster/ufc/:fighterAId/:fighterBId.svg', async (req, res) => {
     ${ufcLogoMarkup}
   </svg>`;
 
-  res.setHeader('Content-Type', 'image/svg+xml');
-  res.setHeader('Cache-Control', 'public, max-age=3600');
-  res.send(svg);
+  await renderAndCache(req, res, svg, 'public, max-age=3600');
  } catch (err) {
   console.error('[Poster] Failed to render UFC poster:', err.message);
-  sendSvgErrorFallback(res, 600, 900, 'UFC');
+  await sendImageErrorFallback(res, 600, 900, 'UFC');
  }
 });
 
@@ -1635,8 +1802,10 @@ function getPosterTemplateInline() {
   return getInlineSvgOverlay(filePath, 'poster-template');
 }
 
-app.get('/poster/:sport/:homeId/:awayId.svg', async (req, res) => {
+app.get('/poster/:sport/:homeId/:awayId.jpg', async (req, res) => {
  try {
+  if (serveCachedRenderIfPresent(req, res, 'public, max-age=3600')) return;
+
   const { sport, homeId, awayId } = req.params;
   const gameUtcDate = req.query.date || null;
   const userTz = req.query.tz || 'America/New_York';
@@ -1712,12 +1881,10 @@ app.get('/poster/:sport/:homeId/:awayId.svg', async (req, res) => {
     ${timeMarkup}
   </svg>`;
 
-  res.setHeader('Content-Type', 'image/svg+xml');
-  res.setHeader('Cache-Control', 'public, max-age=3600');
-  res.send(svg);
+  await renderAndCache(req, res, svg, 'public, max-age=3600');
  } catch (err) {
   console.error(`[Poster] Failed to render ${req.params.sport} poster:`, err.message);
-  sendSvgErrorFallback(res, 600, 900, req.params.sport.toUpperCase());
+  await sendImageErrorFallback(res, 600, 900, req.params.sport.toUpperCase());
  }
 });
 
@@ -1816,14 +1983,14 @@ app.get('/landscape/:sport.svg', (req, res) => {
 // Background art specifically for the "Upcoming Schedule" placeholder
 // entry - a static, sport-specific photo served directly (see
 // getScheduleBackgroundBuffer for why this isn't SVG-wrapped/base64).
-app.get('/background/schedule/:sport.svg', (req, res) => {
+app.get('/background/schedule/:sport.jpg', async (req, res) => {
   const sportKey = req.params.sport.toUpperCase();
-  const buffer = getScheduleBackgroundBuffer(sportKey);
+  const buffer = await getScheduleBackgroundBuffer(sportKey);
   if (!buffer) {
     res.status(404).send('Not found');
     return;
   }
-  res.setHeader('Content-Type', 'image/svg+xml');
+  res.setHeader('Content-Type', 'image/jpeg');
   res.setHeader('Cache-Control', 'public, max-age=86400');
   res.send(buffer);
 });
@@ -1837,8 +2004,10 @@ const LANDSCAPE_BOUNDARY_PATH = "M 2393 0 L 2313 20 L 2279 40 L 2256 60 L 2238 8
 
 // Registered BEFORE the generic team-based landscape route below, for the
 // same routing-order reason as the UFC poster route above.
-app.get('/landscape/ufc/:fighterAId/:fighterBId.svg', async (req, res) => {
+app.get('/landscape/ufc/:fighterAId/:fighterBId.jpg', async (req, res) => {
  try {
+  if (serveCachedRenderIfPresent(req, res, 'public, max-age=3600')) return;
+
   const fighterAName = req.query.home || 'Fighter A';
   const fighterBName = req.query.away || 'Fighter B';
   const fighterAFlagUrl = req.query.homeFlagUrl || '';
@@ -1891,17 +2060,17 @@ app.get('/landscape/ufc/:fighterAId/:fighterBId.svg', async (req, res) => {
     <text x="1920" y="1900" font-family="'Trebuchet MS', Verdana, sans-serif" font-size="72" font-weight="700" fill="#ffffff" text-anchor="middle">${escapeXml(fighterAName)} vs ${escapeXml(fighterBName)}</text>
   </svg>`;
 
-  res.setHeader('Content-Type', 'image/svg+xml');
-  res.setHeader('Cache-Control', 'public, max-age=3600');
-  res.send(svg);
+  await renderAndCache(req, res, svg, 'public, max-age=3600');
  } catch (err) {
   console.error('[Landscape] Failed to render UFC landscape:', err.message);
-  sendSvgErrorFallback(res, 3840, 2160, 'UFC');
+  await sendImageErrorFallback(res, 3840, 2160, 'UFC');
  }
 });
 
-app.get('/landscape/:sport/:homeId/:awayId.svg', async (req, res) => {
+app.get('/landscape/:sport/:homeId/:awayId.jpg', async (req, res) => {
  try {
+  if (serveCachedRenderIfPresent(req, res, 'public, max-age=3600')) return;
+
   const { sport, homeId, awayId } = req.params;
   const sportKey = sport.toUpperCase();
   const theme = SPORT_THEMES[sportKey] || SPORT_THEMES.MLB;
@@ -1945,17 +2114,17 @@ app.get('/landscape/:sport/:homeId/:awayId.svg', async (req, res) => {
     ${homeLogoMarkup}
   </svg>`;
 
-  res.setHeader('Content-Type', 'image/svg+xml');
-  res.setHeader('Cache-Control', 'public, max-age=3600');
-  res.send(svg);
+  await renderAndCache(req, res, svg, 'public, max-age=3600');
  } catch (err) {
   console.error(`[Landscape] Failed to render ${req.params.sport} landscape:`, err.message);
-  sendSvgErrorFallback(res, 3840, 2160, req.params.sport.toUpperCase());
+  await sendImageErrorFallback(res, 3840, 2160, req.params.sport.toUpperCase());
  }
 });
 
-app.get('/poster/none/:sport.svg', async (req, res) => {
+app.get('/poster/none/:sport.jpg', async (req, res) => {
  try {
+  if (serveCachedRenderIfPresent(req, res, 'public, max-age=3600')) return;
+
   const sportKey = req.params.sport.toUpperCase();
   const theme = SPORT_THEMES[sportKey] || SPORT_THEMES.MLB;
 
@@ -1986,12 +2155,10 @@ app.get('/poster/none/:sport.svg', async (req, res) => {
     <text x="300" y="790" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="72" font-weight="800" fill="#f8fafc" text-anchor="middle" textLength="480" lengthAdjust="spacingAndGlyphs" letter-spacing="2">SCHEDULE</text>
   </svg>`;
 
-  res.setHeader('Content-Type', 'image/svg+xml');
-  res.setHeader('Cache-Control', 'public, max-age=3600');
-  res.send(svg);
+  await renderAndCache(req, res, svg, 'public, max-age=3600');
  } catch (err) {
   console.error(`[Poster] Failed to render Upcoming Schedule poster for ${req.params.sport}:`, err.message);
-  sendSvgErrorFallback(res, 600, 900, 'UPCOMING');
+  await sendImageErrorFallback(res, 600, 900, 'UPCOMING');
  }
 });
 
@@ -2036,8 +2203,13 @@ async function getRealLeagueLogoUrl(sportKey) {
   }
 }
 
-app.get('/logo/:sport.svg', async (req, res) => {
+// PNG, not JPEG, deliberately - see renderSvgToImage for why: this is the
+// one route with a genuinely transparent background (no fill behind the
+// logo at all), and JPEG has no alpha channel to preserve that with.
+app.get('/logo/:sport.png', async (req, res) => {
  try {
+  if (serveCachedRenderIfPresent(req, res, 'public, max-age=86400', 'png')) return;
+
   const sportKey = req.params.sport.toUpperCase();
   const leagueLogoUrl = await getRealLeagueLogoUrl(sportKey);
 
@@ -2050,12 +2222,10 @@ app.get('/logo/:sport.svg', async (req, res) => {
     ${logoMarkup}
   </svg>`;
 
-  res.setHeader('Content-Type', 'image/svg+xml');
-  res.setHeader('Cache-Control', 'public, max-age=86400');
-  res.send(svg);
+  await renderAndCache(req, res, svg, 'public, max-age=86400', 'png');
  } catch (err) {
   console.error(`[Logo] Failed to render logo for ${req.params.sport}:`, err.message);
-  sendSvgErrorFallback(res, 1080, 1080, req.params.sport.toUpperCase());
+  await sendImageErrorFallback(res, 1080, 1080, req.params.sport.toUpperCase());
  }
 });
 
@@ -2127,9 +2297,9 @@ async function fetchTodayGames(sport, hostUrl, userTimeZone = 'America/New_York'
         ? `?date=${encodeURIComponent(gameUtcDate)}&tz=${encodeURIComponent(userTimeZone)}&${artParams}`
         : `?tz=${encodeURIComponent(userTimeZone)}&${artParams}`;
 
-      const poster = `${hostUrl}/poster/${sport.toLowerCase()}/${homeId}/${awayId}.svg${dateParam}`;
-      const background = `${hostUrl}/landscape/${sport.toLowerCase()}/${homeId}/${awayId}.svg${dateParam}`;
-      const logo = `${hostUrl}/logo/${sport.toLowerCase()}.svg`;
+      const poster = `${hostUrl}/poster/${sport.toLowerCase()}/${homeId}/${awayId}.jpg${dateParam}`;
+      const background = `${hostUrl}/landscape/${sport.toLowerCase()}/${homeId}/${awayId}.jpg${dateParam}`;
+      const logo = `${hostUrl}/logo/${sport.toLowerCase()}.png`;
 
       const homeWinLoss = home.records?.[0]?.summary || '0-0';
       const awayWinLoss = away.records?.[0]?.summary || '0-0';
@@ -2298,9 +2468,9 @@ async function fetchTodayUFCEvents(hostUrl, userTimeZone = 'America/New_York') {
       const eventUtcDate = competition.date || event.date || '';
       const dateParam = eventUtcDate ? `?date=${encodeURIComponent(eventUtcDate)}&${artParams}` : `?${artParams}`;
 
-      const poster = `${hostUrl}/poster/ufc/${fighterAId}/${fighterBId}.svg${dateParam}`;
-      const background = `${hostUrl}/landscape/ufc/${fighterAId}/${fighterBId}.svg${dateParam}`;
-      const logo = `${hostUrl}/logo/ufc.svg`;
+      const poster = `${hostUrl}/poster/ufc/${fighterAId}/${fighterBId}.jpg${dateParam}`;
+      const background = `${hostUrl}/landscape/ufc/${fighterAId}/${fighterBId}.jpg${dateParam}`;
+      const logo = `${hostUrl}/logo/ufc.png`;
 
       return {
         id: String(event.id),
@@ -3195,8 +3365,8 @@ app.post('/api/admin/logo-cache/recache', async (req, res) => {
   }
   clearFailedAttempts(ip);
 
-  const { sportsChecked, gamesChecked, teamsWarmed, teamsFailed } = await warmTodaysArt();
-  return res.json({ success: true, sportsChecked, gamesChecked, teamsWarmed, teamsFailed });
+  const { sportsChecked, gamesChecked, teamsWarmed, teamsFailed, imagesRendered, imagesFailed } = await warmTodaysArt();
+  return res.json({ success: true, sportsChecked, gamesChecked, teamsWarmed, teamsFailed, imagesRendered, imagesFailed });
 });
 
 // Lists every EPGShare01 source file available to enable, with its
@@ -3676,9 +3846,9 @@ app.get('/user/:uuid/catalog/sports/:id.json', async (req, res) => {
     id: `sb:${sport.toLowerCase()}:none`,
     type: 'sports',
     name: 'Upcoming Schedule',
-    poster: `${hostUrl}/poster/none/${sport.toLowerCase()}.svg`,
-    background: `${hostUrl}/background/schedule/${sport.toLowerCase()}.svg`,
-    logo: `${hostUrl}/logo/${sport.toLowerCase()}.svg`,
+    poster: `${hostUrl}/poster/none/${sport.toLowerCase()}.jpg`,
+    background: `${hostUrl}/background/schedule/${sport.toLowerCase()}.jpg`,
+    logo: `${hostUrl}/logo/${sport.toLowerCase()}.png`,
     description: games.length > 0
       ? `See the full upcoming ${getSportDisplayName(sport)} schedule.`
       : `No ${getSportDisplayName(sport)} games today. Tap to see the upcoming schedule.`
@@ -3715,9 +3885,9 @@ app.get('/user/:uuid/meta/sports/:id.json', async (req, res) => {
         id: req.params.id,
         type: 'sports',
         name: 'Upcoming Schedule',
-        poster: `${hostUrl}/poster/none/${sport.toLowerCase()}.svg`,
-        background: `${hostUrl}/background/schedule/${sport.toLowerCase()}.svg`,
-        logo: `${hostUrl}/logo/${sport.toLowerCase()}.svg`,
+        poster: `${hostUrl}/poster/none/${sport.toLowerCase()}.jpg`,
+        background: `${hostUrl}/background/schedule/${sport.toLowerCase()}.jpg`,
+        logo: `${hostUrl}/logo/${sport.toLowerCase()}.png`,
         description
       }
     });
