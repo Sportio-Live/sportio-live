@@ -1323,6 +1323,23 @@ async function prewarmRenderedImage(pathAndQuery) {
 }
 
 async function warmTodaysArt() {
+  // Art for a game that's already been played never gets requested again,
+  // but posterArtCache/renderedImageCache never evict anything either -
+  // left alone, they'd grow forever across a season (thousands of
+  // one-time-use entries) rather than staying bounded to roughly one
+  // day's worth. Clearing both here, right before rebuilding everything
+  // relevant for today, keeps memory bounded without needing any
+  // per-entry expiry logic. This does briefly clear a few genuinely
+  // reusable, non-per-game entries too (each sport's logo/schedule-
+  // placeholder), but those get rebuilt in the very same pass below, so
+  // the only cost is a handful of cheap re-renders, not a correctness
+  // issue. imageBytesCache (raw team/fighter logo bytes) is deliberately
+  // NOT cleared here - unlike these two, it's naturally bounded (a few
+  // thousand real teams/fighters, not one entry per game), so clearing it
+  // would only force pointless re-fetches of data that's still valid.
+  posterArtCache.clear();
+  renderedImageCache.clear();
+
   const sportKeys = Object.keys(ESPN_ENDPOINTS);
   const timeZones = getConfiguredTimeZones();
 
@@ -1524,31 +1541,43 @@ async function renderAndCache(req, res, svg, cacheControl, format = 'jpeg', resi
 // the same target consistently.
 const LANDSCAPE_RENDER_SIZE = { width: 1920, height: 1080 };
 
-// The poster routes below are the one place a fully-rendered raster image
-// isn't the final response - a client-visible bug (reported directly:
-// game times rendering as garbled boxes) traced back to server-side text
-// rendering needing real fonts installed wherever sharp/librsvg runs,
-// which this app's actual deployment (a minimal Docker image) doesn't ship
-// with by default - see the Dockerfile for the actual font-install fix.
-// Independent of that fix, baking the game's start time into the rendered
-// picture at all has a second problem: the displayed time depends on the
-// VIEWER's own timezone (see the poster route's `tz` param), so a fully
-// rendered image needs one distinct cached copy per timezone in use on
-// top of the copy already needed per matchup - purely wasted work, since
-// the same underlying artwork (logos, colors, background) is identical
-// across every one of those copies.
+// Baking the game's start time into the rendered picture has two separate
+// problems. First: server-side text rendering needs real fonts installed
+// wherever sharp/librsvg runs, which this app's actual deployment (a
+// minimal Docker image) doesn't ship with by default - see the Dockerfile
+// for that fix. Second, independent of fonts: the displayed time depends
+// on the VIEWER's own timezone (the poster route's `tz` param), so a fully
+// rendered image needs one distinct cached copy per timezone in use on top
+// of the copy already needed per matchup - wasted work, since the
+// underlying artwork (logos, colors, background) is identical across
+// every one of those copies.
 //
-// Both problems disappear the same way: only the ART (logos/colors/
-// background - the part that's actually expensive to build, and doesn't
-// vary by viewer) gets rendered to a real PNG and cached, keyed on
-// everything BUT the time-affecting params. The response sent to the
-// client is still a real SVG - but a tiny one: one embedded raster image
-// plus one <text> element for the time, letting the client's own device
-// draw the time text with its own fonts exactly as it always did. That
-// SVG is orders of magnitude simpler than the original template's many
-// gradients/paths/clip-paths/multiple embedded logos, so it should be
-// far cheaper for any client's SVG engine to handle even though it's
-// technically still SVG.
+// An earlier version of this fix shipped the client a small SVG - one
+// embedded raster image for the art plus one live <text> element for the
+// time - so the client's own device drew the time text with its own
+// fonts. That solved both problems above, but broke a THIRD one it wasn't
+// aimed at: confirmed directly against real devices, that SVG failed to
+// render at all on some platforms (Nuvio's Windows and iOS builds)
+// while working fine on others (Nuvio's Android TV build) - apparently
+// some clients' SVG support is either missing or too limited to rely on,
+// regardless of how simple the document is. A background image built the
+// same way (one big embedded raster, no per-viewer text) has always
+// rendered everywhere, on every platform, even back when it was a much
+// larger 4K SVG - so the fix is to never ship SVG to the client for
+// posters either, matching that already-proven approach.
+//
+// The art (logos/colors/background) is still rendered to PNG and cached
+// separately, keyed on everything BUT the time-affecting params, since
+// that part is genuinely expensive and never varies by viewer - see
+// getOrRenderPosterArt. What's different now is the last step: instead of
+// wrapping that PNG in client-side SVG, the time text is composited onto
+// it server-side (compositeTimeOntoArt, using sharp - cheap, ~25ms
+// measured directly, since it's blending a tiny text layer onto an
+// already-decoded image rather than rendering a template from scratch),
+// producing one flat PNG that gets cached again (by the full URL, same as
+// every other art route) and sent as the actual response. No SVG ever
+// reaches the client for a poster now, matching how backgrounds already
+// work.
 function stripTimeParams(originalUrl) {
   const parsed = new URL(originalUrl, 'http://internal');
   parsed.searchParams.delete('date');
@@ -1569,6 +1598,18 @@ async function getOrRenderPosterArt(artCacheKey, buildArtSvg) {
   const png = await renderSvgToImage(svg, 'png');
   posterArtCache.set(artCacheKey, png);
   return png;
+}
+
+// Blends a tiny text-only SVG (just the time markup, transparent
+// everywhere else, sized to the full poster canvas) onto the cached art
+// PNG, producing one flat PNG - no SVG in the response at all. If
+// timeMarkup is empty (the "time" marker had no bounds to place it at),
+// the art is returned completely untouched rather than paying a pointless
+// composite call.
+async function compositeTimeOntoArt(artPng, timeMarkup, width, height) {
+  if (!timeMarkup) return artPng;
+  const overlaySvg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${timeMarkup}</svg>`);
+  return sharp(artPng).composite([{ input: overlaySvg }]).png().toBuffer();
 }
 
 // Splits a name into two roughly-balanced lines at the word boundary
@@ -1763,11 +1804,13 @@ function getUfcPosterTemplateInline() {
 }
 
 // Registered BEFORE the generic team-based poster route below, since both
-// have the same number of path segments (/poster/X/Y/Z.svg) - Express
+// have the same number of path segments (/poster/X/Y/Z.png) - Express
 // matches routes in registration order, so the more specific UFC route
 // needs to come first or it would never be reached.
-app.get('/poster/ufc/:fighterAId/:fighterBId.svg', async (req, res) => {
+app.get('/poster/ufc/:fighterAId/:fighterBId.png', async (req, res) => {
  try {
+  if (serveCachedRenderIfPresent(req, res, 'public, max-age=3600', 'png')) return;
+
   const fighterAName = req.query.home || 'Fighter A';
   const fighterBName = req.query.away || 'Fighter B';
   const gameUtcDate = req.query.date || null;
@@ -1856,19 +1899,14 @@ app.get('/poster/ufc/:fighterAId/:fighterBId.svg', async (req, res) => {
   const timeFontSize = Math.max(24, Math.min(plaqueBounds.height * 0.6, Math.round(estimateTimeFontSize(timeLine, plaqueBounds.width * 0.85))));
   const timeMarkup = `<text x="${plaqueBounds.x + plaqueBounds.width / 2}" y="${plaqueBounds.y + plaqueBounds.height / 2 + timeFontSize * 0.35}" font-family="'Trebuchet MS', Verdana, sans-serif" font-size="${timeFontSize}" font-weight="700" fill="#ffffff" text-anchor="middle" letter-spacing="0.5">${escapeXml(timeLine)}</text>`;
 
-  // The response itself: a small SVG wrapping the cached art PNG as one
-  // embedded raster image, with just the time text drawn as real, live SVG
-  // text on top - drawn by whatever's displaying this, using its own
-  // fonts, the same way it always worked before any server-side rendering
-  // was involved.
-  const wrapperSvg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 600 900" width="600" height="900">
-    <image href="data:image/png;base64,${artPng.toString('base64')}" x="0" y="0" width="600" height="900" />
-    ${timeMarkup}
-  </svg>`;
-
-  res.setHeader('Content-Type', 'image/svg+xml');
+  // The time text is composited directly onto the cached art PNG
+  // server-side (see compositeTimeOntoArt) - the response is one flat
+  // PNG, no SVG involved at all.
+  const finalPng = await compositeTimeOntoArt(artPng, timeMarkup, 600, 900);
+  renderedImageCache.set(req.originalUrl, finalPng);
+  res.setHeader('Content-Type', 'image/png');
   res.setHeader('Cache-Control', 'public, max-age=3600');
-  res.send(wrapperSvg);
+  res.send(finalPng);
  } catch (err) {
   console.error('[Poster] Failed to render UFC poster:', err.message);
   await sendImageErrorFallback(res, 600, 900, 'UFC');
@@ -1880,8 +1918,10 @@ function getPosterTemplateInline() {
   return getInlineSvgOverlay(filePath, 'poster-template');
 }
 
-app.get('/poster/:sport/:homeId/:awayId.svg', async (req, res) => {
+app.get('/poster/:sport/:homeId/:awayId.png', async (req, res) => {
  try {
+  if (serveCachedRenderIfPresent(req, res, 'public, max-age=3600', 'png')) return;
+
   const { sport, homeId, awayId } = req.params;
   const gameUtcDate = req.query.date || null;
   const userTz = req.query.tz || 'America/New_York';
@@ -1966,19 +2006,14 @@ app.get('/poster/:sport/:homeId/:awayId.svg', async (req, res) => {
     ? `<text x="${timeBounds.x + timeBounds.width / 2}" y="${timeBounds.y + timeBounds.height / 2 + timeFontSize * 0.35}" font-family="'Trebuchet MS', Verdana, sans-serif" font-size="${timeFontSize}" font-weight="700" fill="#ffffff" text-anchor="middle" letter-spacing="0.5">${timeLine}</text>`
     : '';
 
-  // The response itself: a small SVG wrapping the cached art PNG as one
-  // embedded raster image, with just the time text drawn as real, live SVG
-  // text on top - drawn by whatever's displaying this, using its own
-  // fonts, the same way it always worked before any server-side rendering
-  // was involved.
-  const wrapperSvg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 600 900" width="600" height="900">
-    <image href="data:image/png;base64,${artPng.toString('base64')}" x="0" y="0" width="600" height="900" />
-    ${timeMarkup}
-  </svg>`;
-
-  res.setHeader('Content-Type', 'image/svg+xml');
+  // The time text is composited directly onto the cached art PNG
+  // server-side (see compositeTimeOntoArt) - the response is one flat
+  // PNG, no SVG involved at all.
+  const finalPng = await compositeTimeOntoArt(artPng, timeMarkup, 600, 900);
+  renderedImageCache.set(req.originalUrl, finalPng);
+  res.setHeader('Content-Type', 'image/png');
   res.setHeader('Cache-Control', 'public, max-age=3600');
-  res.send(wrapperSvg);
+  res.send(finalPng);
  } catch (err) {
   console.error(`[Poster] Failed to render ${req.params.sport} poster:`, err.message);
   await sendImageErrorFallback(res, 600, 900, req.params.sport.toUpperCase());
@@ -2394,7 +2429,7 @@ async function fetchTodayGames(sport, hostUrl, userTimeZone = 'America/New_York'
         ? `?date=${encodeURIComponent(gameUtcDate)}&tz=${encodeURIComponent(userTimeZone)}&${artParams}`
         : `?tz=${encodeURIComponent(userTimeZone)}&${artParams}`;
 
-      const poster = `${hostUrl}/poster/${sport.toLowerCase()}/${homeId}/${awayId}.svg${dateParam}`;
+      const poster = `${hostUrl}/poster/${sport.toLowerCase()}/${homeId}/${awayId}.png${dateParam}`;
       const background = `${hostUrl}/landscape/${sport.toLowerCase()}/${homeId}/${awayId}.png${dateParam}`;
       const logo = `${hostUrl}/logo/${sport.toLowerCase()}.png`;
 
@@ -2565,7 +2600,7 @@ async function fetchTodayUFCEvents(hostUrl, userTimeZone = 'America/New_York') {
       const eventUtcDate = competition.date || event.date || '';
       const dateParam = eventUtcDate ? `?date=${encodeURIComponent(eventUtcDate)}&${artParams}` : `?${artParams}`;
 
-      const poster = `${hostUrl}/poster/ufc/${fighterAId}/${fighterBId}.svg${dateParam}`;
+      const poster = `${hostUrl}/poster/ufc/${fighterAId}/${fighterBId}.png${dateParam}`;
       const background = `${hostUrl}/landscape/ufc/${fighterAId}/${fighterBId}.png${dateParam}`;
       const logo = `${hostUrl}/logo/ufc.png`;
 
