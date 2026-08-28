@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const zlib = require('zlib');
+const sharp = require('sharp');
 const m3u = require('./m3u.js');
 const epgshare = require('./epgshare01.js');
 
@@ -745,9 +746,12 @@ const ESPN_LEAGUES = {
 
 // The "Upcoming Schedule" placeholder's background image, one per sport
 // (several sports share the same graphic, e.g. NBA and NCAAMB both use
-// basketball.svg). These are served directly as raw SVG bytes rather than
-// base64-embedded into a wrapping SVG, since there's no compositing
-// needed here - just static art.
+// basketball.svg). The source art is static SVG with no per-request
+// compositing needed, but it's still rendered to PNG once, at the same
+// 1920x1080 as the other landscape-shaped routes (see
+// getScheduleBackgroundBuffer/LANDSCAPE_RENDER_SIZE) and cached - a client
+// that has trouble with this app's SVG output shouldn't have to
+// special-case this one static image as an exception.
 const SCHEDULE_BACKGROUND_FILES = {
   MLB: 'baseball.svg',
   NBA: 'basketball.svg',
@@ -769,16 +773,17 @@ const SCHEDULE_BACKGROUND_FILES = {
   IPL: 'cricket.svg'
 };
 
-const scheduleBackgroundCache = {};
-function getScheduleBackgroundBuffer(sportKey) {
+const scheduleBackgroundCache = {}; // filename -> rendered PNG Buffer
+async function getScheduleBackgroundBuffer(sportKey) {
   const filename = SCHEDULE_BACKGROUND_FILES[sportKey];
   if (!filename) return null;
   if (scheduleBackgroundCache[filename]) return scheduleBackgroundCache[filename];
   try {
     const filePath = path.join(__dirname, 'assets', 'background', 'schedule', filename);
-    const buffer = fs.readFileSync(filePath);
-    scheduleBackgroundCache[filename] = buffer;
-    return buffer;
+    const svg = fs.readFileSync(filePath);
+    const png = await renderSvgToImage(svg, 'png', LANDSCAPE_RENDER_SIZE);
+    scheduleBackgroundCache[filename] = png;
+    return png;
   } catch (err) {
     console.error(`[Schedule Background] Failed to load ${filename}:`, err.message);
     return null;
@@ -836,64 +841,11 @@ function getInlineSvgOverlay(filePath, idPrefix) {
   }
 }
 
-// Replaces every fill="..." within a named group's subtree with a new
-// color - the fill can live on a child element deeper in the subtree
-// (confirmed directly - the group wrapper itself often has no fill of
-// its own, only its inner path does, and a child's own explicit fill
-// always wins over anything set on the parent), so this searches the
-// whole subtree rather than assuming the fill sits on the group itself.
-function recolorSvgGroup(markup, groupId, newColor) {
-  const pattern = new RegExp(`(<g id="${groupId}"[^>]*>)([\\s\\S]*?)(</g>)`);
-  const match = markup.match(pattern);
-  if (!match) return markup;
-  const recoloredInner = match[2].replace(/fill="[^"]*"/g, `fill="${newColor}"`);
-  return markup.slice(0, match.index) + match[1] + recoloredInner + match[3] + markup.slice(match.index + match[0].length);
-}
-
-// display="none" on the group itself correctly cascades to every child
-// (confirmed - unlike fill, which only inherits when a child doesn't
-// already specify its own), so this only needs to touch the group's own
-// opening tag, not search its subtree.
-function hideSvgGroup(markup, groupId) {
-  const pattern = new RegExp(`<g id="${groupId}"([^>]*)>`);
-  return markup.replace(pattern, `<g id="${groupId}"$1 display="none">`);
-}
-
-// Replaces an entire marker group (including its contents) with real,
-// dynamic markup - unlike hideSvgGroup, which only hides a marker in
-// place, this is for cases where the real content needs to render at
-// that EXACT position in the document's layer order, not just appended
-// at the very end (which would incorrectly place it on top of whatever
-// layers come after the marker in the template, like the UFC poster's
-// logo/plaque layer that must stay on top of the fighter images).
-function replaceSvgGroup(markup, groupId, replacement) {
-  const pattern = new RegExp(`<g id="${groupId}"[^>]*>[\\s\\S]*?</g>`);
-  return markup.replace(pattern, replacement);
-}
-
-// Extracts a named marker group's bounding box for placement purposes -
-// e.g. a "home_logo" marker rect defines exactly where and how large to
-// place the real, dynamic logo image instead. Looks for the first
-// x/y/width/height on any element within the group's subtree.
-function getSvgGroupBounds(markup, groupId) {
-  const pattern = new RegExp(`<g id="${groupId}"[^>]*>([\\s\\S]*?)</g>`);
-  const match = markup.match(pattern);
-  if (!match) return null;
-  const inner = match[1];
-  const x = inner.match(/x="([^"]+)"/);
-  const y = inner.match(/y="([^"]+)"/);
-  const width = inner.match(/width="([^"]+)"/);
-  const height = inner.match(/height="([^"]+)"/);
-  if (!x || !y || !width || !height) return null;
-  return { x: parseFloat(x[1]), y: parseFloat(y[1]), width: parseFloat(width[1]), height: parseFloat(height[1]) };
-}
-
 // Finds a top-level <g id="groupId">...</g> by counting nested <g> depth,
-// rather than assuming the first </g> is the match like getSvgGroupBounds/
-// replaceSvgGroup do - needed for the UFC template's Layer_1, which nests
-// several <g> elements of its own (the hex-pattern group), so a naive
-// non-greedy match would close early on one of those instead of the
-// layer's real closing tag.
+// rather than assuming the first </g> is the match - needed for the UFC
+// template's Layer_1, which nests several <g> elements of its own (the
+// hex-pattern group), so a naive non-greedy match would close early on
+// one of those instead of the layer's real closing tag.
 function findSvgGroupRange(markup, groupId) {
   const openMatch = markup.match(new RegExp(`<g id="${groupId}"[^>]*>`));
   if (!openMatch) return null;
@@ -961,6 +913,22 @@ function getTeamLogoBucket(sportKey) {
   return TEAM_LOGO_BUCKET_OVERRIDES[sportKey] || ESPN_LEAGUES[sportKey] || 'mlb';
 }
 
+// The scoreboard-first/standard-fallback/provided-URL-last candidate chain
+// shared by the poster route, the landscape route, and the proactive daily
+// art warm-up below - factored out so all three stay in exact agreement
+// about which URL a given team's logo actually resolves to (see the poster
+// route for why three candidates: AFL in particular has no /scoreboard/
+// variant and keys its "standard" logo by abbreviation rather than numeric
+// id, so only the provided URL - ESPN's own scoreboard data - ever
+// succeeds for it).
+function buildTeamLogoCandidates(sportKey, teamId, abbr, providedUrl) {
+  const league = getTeamLogoBucket(sportKey);
+  const lowerAbbr = (abbr || '').toLowerCase();
+  const scoreboardUrl = lowerAbbr ? `https://a.espncdn.com/i/teamlogos/${league}/500/scoreboard/${lowerAbbr}.png` : '';
+  const standardUrl = `https://a.espncdn.com/i/teamlogos/${league}/500/${teamId}.png`;
+  return [scoreboardUrl, standardUrl, providedUrl || ''];
+}
+
 // Friendly names for sports whose internal key isn't already a clean label.
 // Anything not listed here just displays as its own key (e.g. NBA, MLB).
 const SPORT_DISPLAY_NAMES = {
@@ -982,20 +950,52 @@ function getSportDisplayName(sportKey) {
   return SPORT_DISPLAY_NAMES[upper] || upper;
 }
 
+const IMAGE_FETCH_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+  'Referer': 'https://www.espn.com/'
+};
+
+// Team/fighter/league logo bytes, keyed by the exact URL fetched - shared by
+// every getBase64Image* variant below, so a logo requested via one (say, the
+// poster route) is already warm for another (the landscape route pulling the
+// identical URL for the same matchup). Deliberately caches the raw PNG bytes,
+// not the base64 string - each caller derives its own base64/dimensions/
+// content-bounds from the same shared buffer, and raw bytes are ~25% smaller
+// to hold in memory than the base64 text would be. Only successful fetches
+// are ever stored - a failed fetch (dead URL, timeout) just isn't cached, so
+// it's retried plainly on the next request exactly like today, rather than
+// risking a transient failure getting "cached" as permanently missing.
+// Team/league logos essentially never change, so there's no per-read
+// expiry here - see warmTodaysArt below for how staleness is actually
+// bounded (a daily, live-schedule-driven re-fetch of every team/fighter
+// playing that day, not just whatever happens to already be in this cache).
+const imageBytesCache = new Map(); // url -> { buffer, contentType }
+
+async function fetchImageBytesUncached(url) {
+  const response = await axios.get(url, {
+    responseType: 'arraybuffer',
+    headers: IMAGE_FETCH_HEADERS,
+    timeout: 5000
+  });
+  const entry = {
+    buffer: Buffer.from(response.data, 'binary'),
+    contentType: response.headers['content-type'] || 'image/png'
+  };
+  imageBytesCache.set(url, entry);
+  return entry;
+}
+
+async function fetchImageBytes(url) {
+  const cached = imageBytesCache.get(url);
+  if (cached) return cached;
+  return fetchImageBytesUncached(url);
+}
+
 async function getBase64Image(url) {
   try {
-    const response = await axios.get(url, {
-      responseType: 'arraybuffer',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-        'Referer': 'https://www.espn.com/'
-      },
-      timeout: 5000
-    });
-    const contentType = response.headers['content-type'] || 'image/png';
-    const base64 = Buffer.from(response.data, 'binary').toString('base64');
-    return `data:${contentType};base64,${base64}`;
+    const { buffer, contentType } = await fetchImageBytes(url);
+    return `data:${contentType};base64,${buffer.toString('base64')}`;
   } catch (err) {
     console.error(`[ImageLoader] Failed to fetch image: ${url}. Error: ${err.message}`);
     return null;
@@ -1032,17 +1032,7 @@ function getPngDimensions(buffer) {
 // rather than relying on the SVG renderer to infer them implicitly.
 async function getBase64ImageWithDimensions(url) {
   try {
-    const response = await axios.get(url, {
-      responseType: 'arraybuffer',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-        'Referer': 'https://www.espn.com/'
-      },
-      timeout: 5000
-    });
-    const contentType = response.headers['content-type'] || 'image/png';
-    const buffer = Buffer.from(response.data, 'binary');
+    const { buffer, contentType } = await fetchImageBytes(url);
     const dimensions = getPngDimensions(buffer);
     if (!dimensions) return null;
     const base64 = buffer.toString('base64');
@@ -1152,17 +1142,7 @@ function getPngContentBounds(buffer) {
 // visible artwork, not the padded canvas ESPN serves it on.
 async function getBase64ImageWithContentBounds(url) {
   try {
-    const response = await axios.get(url, {
-      responseType: 'arraybuffer',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-        'Referer': 'https://www.espn.com/'
-      },
-      timeout: 5000
-    });
-    const contentType = response.headers['content-type'] || 'image/png';
-    const buffer = Buffer.from(response.data, 'binary');
+    const { buffer, contentType } = await fetchImageBytes(url);
     const dimensions = getPngDimensions(buffer);
     if (!dimensions) return null;
     const contentBounds = getPngContentBounds(buffer);
@@ -1177,6 +1157,211 @@ async function getBase64ImageWithContentBounds(url) {
     console.error(`[ImageLoader] Failed to fetch image with content bounds: ${url}. Error: ${err.message}`);
     return null;
   }
+}
+
+// Proactively warms today's team/fighter art BEFORE any client asks for it,
+// rather than relying only on cache-aside to fill things in the first time
+// someone's poster/background request happens to need a given team. Pulls
+// a live schedule per league (not fetchGamesForSport's 60s cache - a stale
+// schedule would just mean warming against yesterday's games) and force-
+// refetches every candidate URL involved (fetchImageBytesUncached, not the
+// cache-aside getBase64Image), so a logo that changed mid-season gets
+// picked up daily too, not just a team's first-ever appearance. hostUrl is
+// only used by fetchTodayGames/fetchTodayUFCEvents to build the poster/
+// background URL *strings* on each game object - this never reads those
+// fields, so any placeholder value works.
+const WARM_PLACEHOLDER_HOST = 'https://localhost';
+const ART_WARMUP_CONCURRENCY = 8;
+
+// Same shape as getBase64ImageWithFallback (try each URL, stop at the first
+// success) but force-refetching instead of reading the cache - used only by
+// the warm-up below, which specifically wants a fresh copy even for a URL
+// it already has cached.
+async function forceFetchWithFallback(urls) {
+  for (const url of urls) {
+    if (!url) continue;
+    try {
+      await fetchImageBytesUncached(url);
+      return true;
+    } catch (err) {
+      // Try the next candidate - a normal, expected outcome for most
+      // sports' scoreboard-variant guess (see buildTeamLogoCandidates).
+    }
+  }
+  return false;
+}
+
+// One candidate-URL-list per logo/photo this game needs - each entry is
+// exactly what forceFetchWithFallback expects. Team sports get one
+// fallback chain per side (home/away); UFC has no such chain (each headshot/
+// flag is a single direct URL), so those are wrapped as one-URL lists to
+// keep the warm loop below uniform across every sport.
+function collectArtUrlsForGame(sportKey, game) {
+  if (sportKey === 'UFC') {
+    const urls = [
+      `https://a.espncdn.com/i/headshots/mma/players/stance/left/${game.fighterAId}.png`,
+      `https://a.espncdn.com/i/headshots/mma/players/stance/right/${game.fighterBId}.png`,
+      `https://a.espncdn.com/i/headshots/mma/players/full/${game.fighterAId}.png`,
+      `https://a.espncdn.com/i/headshots/mma/players/full/${game.fighterBId}.png`
+    ];
+    if (game.fighterAFlagUrl) urls.push(game.fighterAFlagUrl);
+    if (game.fighterBFlagUrl) urls.push(game.fighterBFlagUrl);
+    return urls.map(url => [url]);
+  }
+  return [
+    buildTeamLogoCandidates(sportKey, game.homeId, game.homeAbbr, game.homeLogoUrl),
+    buildTeamLogoCandidates(sportKey, game.awayId, game.awayAbbr, game.awayLogoUrl)
+  ];
+}
+
+// Runs `fn` over `items` with at most `limit` in flight at once, counting
+// how many resolved truthy vs falsy - shared by both the raw-logo-byte pass
+// and the final-image-render pass below, which otherwise duplicated the
+// same worker-pool bookkeeping.
+async function runWithConcurrency(items, limit, fn) {
+  let nextIndex = 0;
+  let ok = 0;
+  let bad = 0;
+  async function worker() {
+    while (nextIndex < items.length) {
+      const item = items[nextIndex++];
+      if (await fn(item)) ok++; else bad++;
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return { ok, bad };
+}
+
+// Every real account's own configured timezone (falling back to America/
+// New_York if there are no accounts yet, or none have set one) - the
+// render pass below pre-renders art for each of these specifically, since
+// the displayed game time (and therefore the finished image's pixels) is
+// baked in per-viewer-timezone. A brand-new visitor whose timezone isn't
+// among these yet still gets cache-aside on their very first request - see
+// serveCachedRenderIfPresent in each art route - just not pre-warmed ahead
+// of time, the same tradeoff this whole design already makes for a
+// brand-new team no one's asked about yet.
+function getConfiguredTimeZones() {
+  const zones = new Set(Object.values(userConfigs).map(u => u.timeZone).filter(Boolean));
+  return zones.size > 0 ? [...zones] : ['America/New_York'];
+}
+
+function pathAndQueryFromUrl(fullUrl) {
+  const parsed = new URL(fullUrl);
+  return parsed.pathname + parsed.search;
+}
+
+// Pre-renders one finished poster/background/logo by making a real request
+// to this same server's own art route - not by duplicating that route's
+// SVG-building logic here. That means the warm-up can never quietly drift
+// out of sync with what a real client actually gets: it IS a real client
+// request, just one this server makes to itself, ahead of any real viewer,
+// purely as a side effect of populating renderedImageCache (see
+// serveCachedRenderIfPresent/renderAndCache) - the response body itself is
+// never used for anything.
+async function prewarmRenderedImage(pathAndQuery) {
+  try {
+    await axios.get(`http://127.0.0.1:${PORT}${pathAndQuery}`, { timeout: 20000 });
+    return true;
+  } catch (err) {
+    console.error(`[ArtWarmup] Failed to pre-render ${pathAndQuery}:`, err.message);
+    return false;
+  }
+}
+
+async function warmTodaysArt() {
+  // Art for a game that's already been played never gets requested again,
+  // but posterArtCache/renderedImageCache never evict anything either -
+  // left alone, they'd grow forever across a season (thousands of
+  // one-time-use entries) rather than staying bounded to roughly one
+  // day's worth. Clearing both here, right before rebuilding everything
+  // relevant for today, keeps memory bounded without needing any
+  // per-entry expiry logic. This does briefly clear a few genuinely
+  // reusable, non-per-game entries too (each sport's logo/schedule-
+  // placeholder), but those get rebuilt in the very same pass below, so
+  // the only cost is a handful of cheap re-renders, not a correctness
+  // issue. imageBytesCache (raw team/fighter logo bytes) is deliberately
+  // NOT cleared here - unlike these two, it's naturally bounded (a few
+  // thousand real teams/fighters, not one entry per game), so clearing it
+  // would only force pointless re-fetches of data that's still valid.
+  posterArtCache.clear();
+  renderedImageCache.clear();
+
+  const sportKeys = Object.keys(ESPN_ENDPOINTS);
+  const timeZones = getConfiguredTimeZones();
+
+  const candidateLists = [];
+  const renderTargets = [];
+  let gamesChecked = 0;
+
+  for (const sportKey of sportKeys) {
+    // The schedule placeholder (shown when a league has no game today)
+    // carries no per-viewer variance at all - rendered once per sport here,
+    // regardless of how many timezones get checked below.
+    const lower = sportKey.toLowerCase();
+    renderTargets.push(`/logo/${lower}.png`, `/poster/none/${lower}.jpg`, `/background/schedule/${lower}.png`);
+
+    for (const tz of timeZones) {
+      const games = sportKey === 'UFC'
+        ? await fetchTodayUFCEvents(WARM_PLACEHOLDER_HOST, tz)
+        : await fetchTodayGames(sportKey, WARM_PLACEHOLDER_HOST, tz);
+      // Counted once, not once per timezone - a different timezone can
+      // occasionally see a different "today" right at date rollover, but
+      // this is only ever an informational count, not something acted on.
+      if (tz === timeZones[0]) gamesChecked += games.length;
+      for (const game of games) {
+        candidateLists.push(...collectArtUrlsForGame(sportKey, game));
+        renderTargets.push(pathAndQueryFromUrl(game.poster), pathAndQueryFromUrl(game.background));
+      }
+    }
+  }
+
+  // Deduplicated before the fetch pass - the same team's logo candidate
+  // chain shows up once per timezone checked above (team art doesn't vary
+  // by viewer timezone the way the final rendered image does), so without
+  // this a deployment with several configured timezones would force-
+  // refetch the same handful of team logos from ESPN redundantly.
+  const seenCandidates = new Set();
+  const dedupedCandidateLists = candidateLists.filter(urls => {
+    const key = urls.join('|');
+    if (seenCandidates.has(key)) return false;
+    seenCandidates.add(key);
+    return true;
+  });
+
+  // Logo bytes warmed FIRST, fully, before any rendering starts - so the
+  // render pass below (which internally calls the exact same getBase64Image*
+  // functions each art route already uses) finds every logo it needs
+  // already cached, rather than paying that fetch cost twice in one run.
+  const logoResult = await runWithConcurrency(dedupedCandidateLists, ART_WARMUP_CONCURRENCY, forceFetchWithFallback);
+  const renderResult = await runWithConcurrency(renderTargets, ART_WARMUP_CONCURRENCY, prewarmRenderedImage);
+
+  const result = {
+    sportsChecked: sportKeys.length,
+    gamesChecked,
+    teamsWarmed: logoResult.ok,
+    teamsFailed: logoResult.bad,
+    imagesRendered: renderResult.ok,
+    imagesFailed: renderResult.bad
+  };
+  console.log(`[ArtWarmup] Checked ${result.sportsChecked} leagues, ${result.gamesChecked} game(s) today across ${timeZones.length} timezone(s): ${result.teamsWarmed} logo(s) warmed (${result.teamsFailed} failed), ${result.imagesRendered} image(s) pre-rendered (${result.imagesFailed} failed).`);
+  return result;
+}
+
+let artWarmupSchedulerHandle = null;
+const ART_WARMUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+// Runs immediately on startup, unlike the old design this replaced - the
+// whole point is to get ahead of the first real request each day, not just
+// top off a cache that's already been filled reactively, so a fresh deploy
+// (or a server restart at 3am) needs this to run right away rather than
+// waiting up to a full day for its first pass.
+function startArtWarmupScheduler() {
+  async function runAndReschedule() {
+    await warmTodaysArt().catch(err => console.error('[ArtWarmup] Unexpected failure:', err.message));
+    artWarmupSchedulerHandle = setTimeout(runAndReschedule, ART_WARMUP_INTERVAL_MS);
+  }
+  runAndReschedule();
 }
 
 function escapeXml(str) {
@@ -1200,15 +1385,185 @@ function escapeXml(str) {
 // fast. Every art route catches around its body and falls back to this
 // instead, so a template bug degrades to a plain placeholder image rather
 // than an indefinite spinner in the client.
-function sendSvgErrorFallback(res, width, height, label) {
+// Rendered to a real JPEG, same as every other art response below (see
+// renderSvgToImage) - not left as raw SVG, since a client that struggles to
+// decode this app's normal SVG output would presumably struggle just as
+// much on an error placeholder. Falls back to the raw SVG text only if the
+// render itself somehow fails too (sharp erroring on this trivially simple
+// markup would be very surprising, but sending something is still better
+// than the request hanging with no response at all).
+async function sendImageErrorFallback(res, width, height, label) {
   const fontSize = Math.round(width * 0.06);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">
     <rect width="${width}" height="${height}" fill="#111827" />
     ${label ? `<text x="${width / 2}" y="${height / 2}" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="${fontSize}" font-weight="700" fill="#e5e7eb" text-anchor="middle">${escapeXml(label)}</text>` : ''}
   </svg>`;
-  res.setHeader('Content-Type', 'image/svg+xml');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.status(200).send(svg);
+  try {
+    const jpeg = await renderSvgToImage(svg, 'jpeg');
+    res.setHeader('Content-Type', 'image/jpeg');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.status(200).send(jpeg);
+  } catch (err) {
+    console.error('[Art] Even the error-fallback render failed, sending raw SVG:', err.message);
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.status(200).send(svg);
+  }
+}
+
+// JPEG by default: measured directly against this app's own real output
+// during design - PNG came out LARGER than the original SVG for the
+// landscape image specifically (1.17MB vs ~205KB; photographic/gradient
+// content doesn't compress well losslessly), while JPEG matched or beat
+// the SVG's size in every case tested (44KB vs ~205KB for the poster).
+// Quality 85 is a standard "visually lossless for photographic content"
+// setting - the source material here (team-color gradients, photographic
+// logos/headshots) has no sharp single-pixel edges relying on lossless
+// output the way, say, a screenshot of text would.
+//
+// PNG is also used for the landscape/background routes and the plain
+// league logo - the logo needs it for real transparency (no fill behind
+// the logo at all; JPEG has no alpha channel, so that would flatten to an
+// opaque box), while the landscape images are rendered at half their
+// source SVG's linear resolution (1920x1080, not the source's native
+// 3840x2160 - see the `resize` param) specifically so PNG's lossless
+// output stays a reasonable size: measured directly during design, PNG at
+// full 4K came out at 1.17MB (larger than the ~205KB SVG it replaced),
+// while PNG at 1920x1080 - still a perfectly sharp resolution for a
+// backdrop image - measured at ~418KB, a size worth paying for PNG's
+// crisper look. sharp resizes an SVG source by re-rasterizing it directly
+// at the target resolution (not rendering at native size and downsampling
+// after), so this stays sharp rather than blurry, and needs no changes to
+// any of the coordinate/positioning math those routes' SVG is built with.
+async function renderSvgToImage(svg, format = 'jpeg', resize = null) {
+  let pipeline = sharp(Buffer.from(svg));
+  if (resize) pipeline = pipeline.resize(resize.width, resize.height);
+  return format === 'png' ? pipeline.png().toBuffer() : pipeline.jpeg({ quality: 85 }).toBuffer();
+}
+
+function contentTypeForFormat(format) {
+  return format === 'png' ? 'image/png' : 'image/jpeg';
+}
+
+// Every finished poster/background/logo is cached under the exact request
+// URL (path+query) that produced it - a poster's colors/date/viewer-
+// timezone all live in the query string already, so two different requests
+// that would render two visibly different images naturally get two
+// different cache keys for free, with no separate key-building logic
+// needed here. A cache hit means skipping not just the render below but
+// the entire logo-fetch/SVG-assembly pipeline above it in the calling
+// route - see serveCachedRenderIfPresent, which every art route calls
+// FIRST, before doing any of that work.
+const renderedImageCache = new Map(); // req.originalUrl -> rendered image Buffer
+
+// Returns true and sends the response if this exact request was already
+// rendered before (by an earlier request, or by the daily art warm-up -
+// see warmTodaysArt) - callers should return immediately when this does,
+// without running any of their own fetch/build logic at all.
+function serveCachedRenderIfPresent(req, res, cacheControl, format = 'jpeg') {
+  const cached = renderedImageCache.get(req.originalUrl);
+  if (!cached) return false;
+  res.setHeader('Content-Type', contentTypeForFormat(format));
+  res.setHeader('Cache-Control', cacheControl);
+  res.send(cached);
+  return true;
+}
+
+// Counterpart to serveCachedRenderIfPresent for a cache miss: renders the
+// freshly-built SVG, caches the result under this request's own URL, and
+// sends it. `resize`, if given, is passed straight through to
+// renderSvgToImage.
+async function renderAndCache(req, res, svg, cacheControl, format = 'jpeg', resize = null) {
+  const image = await renderSvgToImage(svg, format, resize);
+  renderedImageCache.set(req.originalUrl, image);
+  res.setHeader('Content-Type', contentTypeForFormat(format));
+  res.setHeader('Cache-Control', cacheControl);
+  res.send(image);
+}
+
+// Landscape/background art is authored against a 3840x2160 canvas (every
+// coordinate in those routes' SVG - logo boxes, the diagonal boundary path
+// - assumes it), but rendered out at exactly half that linear resolution.
+// Kept as one shared constant so every landscape-shaped route resizes to
+// the same target consistently.
+const LANDSCAPE_RENDER_SIZE = { width: 1920, height: 1080 };
+
+// Tuned for a 1200x1200 logo box (4x poster's 300x300, same 3840-space
+// canvas the boundary path/logo boxes are already authored against) - see
+// buildLogoShadowFilterDefs, defined further down but hoisted since it's a
+// function declaration.
+const LANDSCAPE_LOGO_SHADOW_FILTER_ID = 'landscapeLogoShadow';
+const LANDSCAPE_LOGO_SHADOW_DEFS = buildLogoShadowFilterDefs(LANDSCAPE_LOGO_SHADOW_FILTER_ID, 24, 32);
+
+// Baking the game's start time into the rendered picture has two separate
+// problems. First: server-side text rendering needs real fonts installed
+// wherever sharp/librsvg runs, which this app's actual deployment (a
+// minimal Docker image) doesn't ship with by default - see the Dockerfile
+// for that fix. Second, independent of fonts: the displayed time depends
+// on the VIEWER's own timezone (the poster route's `tz` param), so a fully
+// rendered image needs one distinct cached copy per timezone in use on top
+// of the copy already needed per matchup - wasted work, since the
+// underlying artwork (logos, colors, background) is identical across
+// every one of those copies.
+//
+// An earlier version of this fix shipped the client a small SVG - one
+// embedded raster image for the art plus one live <text> element for the
+// time - so the client's own device drew the time text with its own
+// fonts. That solved both problems above, but broke a THIRD one it wasn't
+// aimed at: confirmed directly against real devices, that SVG failed to
+// render at all on some platforms (Nuvio's Windows and iOS builds)
+// while working fine on others (Nuvio's Android TV build) - apparently
+// some clients' SVG support is either missing or too limited to rely on,
+// regardless of how simple the document is. A background image built the
+// same way (one big embedded raster, no per-viewer text) has always
+// rendered everywhere, on every platform, even back when it was a much
+// larger 4K SVG - so the fix is to never ship SVG to the client for
+// posters either, matching that already-proven approach.
+//
+// The art (logos/colors/background) is still rendered to PNG and cached
+// separately, keyed on everything BUT the time-affecting params, since
+// that part is genuinely expensive and never varies by viewer - see
+// getOrRenderPosterArt. What's different now is the last step: instead of
+// wrapping that PNG in client-side SVG, the time text is composited onto
+// it server-side (compositeTimeOntoArt, using sharp - cheap, ~25ms
+// measured directly, since it's blending a tiny text layer onto an
+// already-decoded image rather than rendering a template from scratch),
+// producing one flat PNG that gets cached again (by the full URL, same as
+// every other art route) and sent as the actual response. No SVG ever
+// reaches the client for a poster now, matching how backgrounds already
+// work.
+function stripTimeParams(originalUrl) {
+  const parsed = new URL(originalUrl, 'http://internal');
+  parsed.searchParams.delete('date');
+  parsed.searchParams.delete('tz');
+  return parsed.pathname + parsed.search;
+}
+
+const posterArtCache = new Map(); // stripped path+query -> art-only PNG Buffer (no time text)
+
+// Cache-aside on posterArtCache: buildArtSvg is only ever called on a miss,
+// so a matchup that's already been rendered (by an earlier request, or by
+// the daily warm-up) never re-fetches logos or re-renders anything, no
+// matter how many different viewer timezones request it afterward.
+async function getOrRenderPosterArt(artCacheKey, buildArtSvg) {
+  const cached = posterArtCache.get(artCacheKey);
+  if (cached) return cached;
+  const svg = await buildArtSvg();
+  const png = await renderSvgToImage(svg, 'png');
+  posterArtCache.set(artCacheKey, png);
+  return png;
+}
+
+// Blends a tiny text-only SVG (just the time markup, transparent
+// everywhere else, sized to the full poster canvas) onto the cached art
+// PNG, producing one flat PNG - no SVG in the response at all. If
+// timeMarkup is empty (the "time" marker had no bounds to place it at),
+// the art is returned completely untouched rather than paying a pointless
+// composite call.
+async function compositeTimeOntoArt(artPng, timeMarkup, width, height) {
+  if (!timeMarkup) return artPng;
+  const overlaySvg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${timeMarkup}</svg>`);
+  return sharp(artPng).composite([{ input: overlaySvg }]).png().toBuffer();
 }
 
 // Splits a name into two roughly-balanced lines at the word boundary
@@ -1403,117 +1758,174 @@ function getUfcPosterTemplateInline() {
 }
 
 // Registered BEFORE the generic team-based poster route below, since both
-// have the same number of path segments (/poster/X/Y/Z.svg) - Express
+// have the same number of path segments (/poster/X/Y/Z.png) - Express
 // matches routes in registration order, so the more specific UFC route
 // needs to come first or it would never be reached.
-app.get('/poster/ufc/:fighterAId/:fighterBId.svg', async (req, res) => {
+app.get('/poster/ufc/:fighterAId/:fighterBId.png', async (req, res) => {
  try {
+  if (serveCachedRenderIfPresent(req, res, 'public, max-age=3600', 'png')) return;
+
   const fighterAName = req.query.home || 'Fighter A';
   const fighterBName = req.query.away || 'Fighter B';
   const gameUtcDate = req.query.date || null;
   const userTz = req.query.tz || 'America/New_York';
   const { fighterAId, fighterBId } = req.params;
 
-  // Fighter A (home) uses their LEFT stance image, Fighter B (away) uses
-  // their RIGHT stance image - both rendered 700px tall, scaled
-  // proportionately (real pixel dimensions needed up front for that, not
-  // left to the SVG renderer to infer implicitly, given known quirks in
-  // how some Stremio-ecosystem clients handle SVG), and each horizontally
-  // centered within its own half of the poster (home in x:0-300, away in
-  // x:300-600), 100px from the top edge.
-  const [homeImage, awayImage] = await Promise.all([
-    getBase64ImageWithDimensions(`https://a.espncdn.com/i/headshots/mma/players/stance/left/${fighterAId}.png`),
-    getBase64ImageWithDimensions(`https://a.espncdn.com/i/headshots/mma/players/stance/right/${fighterBId}.png`)
-  ]);
+  // Only the art (fighter photos, league logo) is expensive to build and
+  // gets cached, keyed on everything but date/tz - see getOrRenderPosterArt.
+  const artCacheKey = stripTimeParams(req.originalUrl);
+  const artPng = await getOrRenderPosterArt(artCacheKey, async () => {
+    // Fighter A (home) uses their LEFT stance image, Fighter B (away) uses
+    // their RIGHT stance image - both rendered 700px tall, scaled
+    // proportionately (real pixel dimensions needed up front for that, not
+    // left to the SVG renderer to infer implicitly), and each horizontally
+    // centered within its own half of the poster (home in x:0-300, away in
+    // x:300-600), 100px from the top edge.
+    const [homeImage, awayImage] = await Promise.all([
+      getBase64ImageWithDimensions(`https://a.espncdn.com/i/headshots/mma/players/stance/left/${fighterAId}.png`),
+      getBase64ImageWithDimensions(`https://a.espncdn.com/i/headshots/mma/players/stance/right/${fighterBId}.png`)
+    ]);
 
-  // Real UFC league logo, same source already confirmed working for the
-  // /logo/ufc.svg route - rendered 130px wide, scaled proportionately, so
-  // its real pixel dimensions are needed too (not just fit into a fixed
-  // box via preserveAspectRatio alone). Its content bounds are needed on
-  // top of that: the raw PNG ESPN serves is a 500x500 canvas with the
-  // wordmark occupying only its vertical center, so sizing/positioning
-  // off the padded canvas (rather than the visible artwork) would put
-  // the "top of the logo" well below where it's meant to sit.
-  const ufcLogoUrl = await getRealLeagueLogoUrl('UFC');
-  const ufcLogoData = ufcLogoUrl ? await getBase64ImageWithContentBounds(ufcLogoUrl) : null;
+    // Real UFC league logo, same source already confirmed working for the
+    // /logo/ufc.png route - rendered 130px wide, scaled proportionately, so
+    // its real pixel dimensions are needed too (not just fit into a fixed
+    // box via preserveAspectRatio alone). Its content bounds are needed on
+    // top of that: the raw PNG ESPN serves is a 500x500 canvas with the
+    // wordmark occupying only its vertical center, so sizing/positioning
+    // off the padded canvas (rather than the visible artwork) would put
+    // the "top of the logo" well below where it's meant to sit.
+    const ufcLogoUrl = await getRealLeagueLogoUrl('UFC');
+    const ufcLogoData = ufcLogoUrl ? await getBase64ImageWithContentBounds(ufcLogoUrl) : null;
 
-  const template = getUfcPosterTemplateInline();
-  let markup = template.markup;
+    const template = getUfcPosterTemplateInline();
+    let markup = template.markup;
 
-  const FIGHTER_IMAGE_HEIGHT = 700;
-  const FIGHTER_IMAGE_TOP = 100;
+    const FIGHTER_IMAGE_HEIGHT = 700;
+    const FIGHTER_IMAGE_TOP = 100;
 
-  const awayWidth = awayImage ? awayImage.width * (FIGHTER_IMAGE_HEIGHT / awayImage.height) : 0;
-  const awayX = 300 + (300 - awayWidth) / 2;
-  const awayImageMarkup = awayImage
-    ? `<image href="${awayImage.dataUri}" x="${awayX}" y="${FIGHTER_IMAGE_TOP}" width="${awayWidth}" height="${FIGHTER_IMAGE_HEIGHT}" />`
-    : buildLogoFallback(450, FIGHTER_IMAGE_TOP, 300, fighterBName, '#c0392b');
-  markup = appendToSvgGroup(markup, 'Layer_1', awayImageMarkup);
+    const awayWidth = awayImage ? awayImage.width * (FIGHTER_IMAGE_HEIGHT / awayImage.height) : 0;
+    const awayX = 300 + (300 - awayWidth) / 2;
+    const awayImageMarkup = awayImage
+      ? `<image href="${awayImage.dataUri}" x="${awayX}" y="${FIGHTER_IMAGE_TOP}" width="${awayWidth}" height="${FIGHTER_IMAGE_HEIGHT}" />`
+      : buildLogoFallback(450, FIGHTER_IMAGE_TOP, 300, fighterBName, '#c0392b');
+    markup = appendToSvgGroup(markup, 'Layer_1', awayImageMarkup);
 
-  const homeWidth = homeImage ? homeImage.width * (FIGHTER_IMAGE_HEIGHT / homeImage.height) : 0;
-  const homeX = (300 - homeWidth) / 2;
-  const homeImageMarkup = homeImage
-    ? `<image href="${homeImage.dataUri}" x="${homeX}" y="${FIGHTER_IMAGE_TOP}" width="${homeWidth}" height="${FIGHTER_IMAGE_HEIGHT}" />`
-    : buildLogoFallback(150, FIGHTER_IMAGE_TOP, 300, fighterAName, '#2a2a2a');
-  markup = appendToSvgGroup(markup, 'Layer_1', homeImageMarkup);
+    const homeWidth = homeImage ? homeImage.width * (FIGHTER_IMAGE_HEIGHT / homeImage.height) : 0;
+    const homeX = (300 - homeWidth) / 2;
+    const homeImageMarkup = homeImage
+      ? `<image href="${homeImage.dataUri}" x="${homeX}" y="${FIGHTER_IMAGE_TOP}" width="${homeWidth}" height="${FIGHTER_IMAGE_HEIGHT}" />`
+      : buildLogoFallback(150, FIGHTER_IMAGE_TOP, 300, fighterAName, '#2a2a2a');
+    markup = appendToSvgGroup(markup, 'Layer_1', homeImageMarkup);
 
-  const UFC_LOGO_WIDTH = 130;
-  const UFC_LOGO_TOP = 21;
-  const ufcLogoX = (600 - UFC_LOGO_WIDTH) / 2;
-  // A nested <svg> crops the padded source image down to just its content
-  // bounds: viewBox positions/sizes the crop window in the source image's
-  // own pixel space, while this element's own x/y/width/height place that
-  // cropped result on the poster - so the box the browser actually lays
-  // out (and that x="..." y="..." positions) is the visible logo itself.
-  const ufcLogoMarkup = ufcLogoData
-    ? (() => {
-        const { x: cx, y: cy, width: cw, height: ch } = ufcLogoData.contentBounds;
-        const displayHeight = ch * (UFC_LOGO_WIDTH / cw);
-        return `<svg x="${ufcLogoX}" y="${UFC_LOGO_TOP}" width="${UFC_LOGO_WIDTH}" height="${displayHeight}" viewBox="${cx} ${cy} ${cw} ${ch}"><image href="${ufcLogoData.dataUri}" x="0" y="0" width="${ufcLogoData.width}" height="${ufcLogoData.height}" /></svg>`;
-      })()
-    : `<text x="300" y="${UFC_LOGO_TOP + 40}" font-family="'Trebuchet MS', Verdana, sans-serif" font-size="32" font-weight="800" fill="#ffffff" text-anchor="middle">UFC</text>`;
+    const UFC_LOGO_WIDTH = 130;
+    const UFC_LOGO_TOP = 21;
+    const ufcLogoX = (600 - UFC_LOGO_WIDTH) / 2;
+    // A nested <svg> crops the padded source image down to just its content
+    // bounds: viewBox positions/sizes the crop window in the source image's
+    // own pixel space, while this element's own x/y/width/height place that
+    // cropped result on the poster - so the box the browser actually lays
+    // out (and that x="..." y="..." positions) is the visible logo itself.
+    const ufcLogoMarkup = ufcLogoData
+      ? (() => {
+          const { x: cx, y: cy, width: cw, height: ch } = ufcLogoData.contentBounds;
+          const displayHeight = ch * (UFC_LOGO_WIDTH / cw);
+          return `<svg x="${ufcLogoX}" y="${UFC_LOGO_TOP}" width="${UFC_LOGO_WIDTH}" height="${displayHeight}" viewBox="${cx} ${cy} ${cw} ${ch}"><image href="${ufcLogoData.dataUri}" x="0" y="0" width="${ufcLogoData.width}" height="${ufcLogoData.height}" /></svg>`;
+        })()
+      : `<text x="300" y="${UFC_LOGO_TOP + 40}" font-family="'Trebuchet MS', Verdana, sans-serif" font-size="32" font-weight="800" fill="#ffffff" text-anchor="middle">UFC</text>`;
+
+    return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 600 900" width="600" height="900">
+      <defs>${template.defs}</defs>
+      ${markup}
+      ${ufcLogoMarkup}
+    </svg>`;
+  });
 
   // The plaque itself is already fully rendered, visible static art from
   // the template (an unnamed rounded-rect path, part of the "keep 2"
   // group) - not a hidden marker to replace, just real estate to center
   // text on top of. Bounds computed once by parsing the path's own
   // geometry precisely, not eyeballed - confirmed exact: x 47.02-552.98,
-  // y 817.29-900.
+  // y 817.29-900. Reused here even though it's baked art-side too, since
+  // that's just the empty plaque shape - the actual time text is added
+  // fresh on every request, on top of the cached art PNG below.
   const plaqueBounds = { x: 47.02, y: 817.29, width: 505.96, height: 82.71 };
   const timeLine = gameUtcDate ? (formatTeamTime(gameUtcDate, userTz) || 'TBD') : 'FIGHT TIME TBD';
   const timeFontSize = Math.max(24, Math.min(plaqueBounds.height * 0.6, Math.round(estimateTimeFontSize(timeLine, plaqueBounds.width * 0.85))));
   const timeMarkup = `<text x="${plaqueBounds.x + plaqueBounds.width / 2}" y="${plaqueBounds.y + plaqueBounds.height / 2 + timeFontSize * 0.35}" font-family="'Trebuchet MS', Verdana, sans-serif" font-size="${timeFontSize}" font-weight="700" fill="#ffffff" text-anchor="middle" letter-spacing="0.5">${escapeXml(timeLine)}</text>`;
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 600 900" width="600" height="900">
-    <defs>${template.defs}</defs>
-    ${markup}
-    ${timeMarkup}
-    ${ufcLogoMarkup}
-  </svg>`;
-
-  res.setHeader('Content-Type', 'image/svg+xml');
+  // The time text is composited directly onto the cached art PNG
+  // server-side (see compositeTimeOntoArt) - the response is one flat
+  // PNG, no SVG involved at all.
+  const finalPng = await compositeTimeOntoArt(artPng, timeMarkup, 600, 900);
+  renderedImageCache.set(req.originalUrl, finalPng);
+  res.setHeader('Content-Type', 'image/png');
   res.setHeader('Cache-Control', 'public, max-age=3600');
-  res.send(svg);
+  res.send(finalPng);
  } catch (err) {
   console.error('[Poster] Failed to render UFC poster:', err.message);
-  sendSvgErrorFallback(res, 600, 900, 'UFC');
+  await sendImageErrorFallback(res, 600, 900, 'UFC');
  }
 });
 
-function getPosterTemplateInline() {
-  const filePath = path.join(__dirname, 'assets', 'posters', 'poster_template.svg');
-  return getInlineSvgOverlay(filePath, 'poster-template');
+// A team logo can be genuinely hard to see against a similarly-toned team
+// color behind it (e.g. a navy-outlined logo on a navy background) - a
+// drop shadow helps it read clearly regardless of what color ends up
+// behind it. This was never viable back when posters/backgrounds shipped
+// SVG straight to the client (some clients' SVG support couldn't be
+// trusted to handle filter effects, or SVG at all - see the commit that
+// moved away from that entirely), but now that every route bakes its SVG
+// down to a flat PNG server-side before responding, a client never has to
+// support this feature itself - it just receives the shadow as ordinary
+// pixels. Confirmed directly: sharp/librsvg renders feDropShadow
+// correctly. dy/stdDeviation are in the SAME coordinate space as the
+// artwork they're applied to, so a route whose logos are drawn much
+// larger (background's 1200x1200 boxes vs. poster's 300x300) needs
+// proportionally larger values to look like the same shadow, not a
+// barely-visible sliver - each call site scales these to its own logo size.
+function buildLogoShadowFilterDefs(filterId, dy, stdDeviation) {
+  return `<filter id="${filterId}" x="-50%" y="-50%" width="200%" height="200%">
+    <feDropShadow dx="0" dy="${dy}" stdDeviation="${stdDeviation}" flood-color="#000000" flood-opacity="0.65"/>
+  </filter>`;
 }
 
-app.get('/poster/:sport/:homeId/:awayId.svg', async (req, res) => {
+// Decorative art only (confetti, gradients, the plaque shape) - no color
+// regions or placement markers baked in, same split as
+// getBackgroundOverlayInline/overlay_background.svg. Where those regions
+// and markers actually go is POSTER_AWAY_COLOR_PATH/POSTER_HOME_COLOR_PATH/
+// POSTER_*_LOGO_BOX/POSTER_TIME_BOX below - extracted once from the design
+// source (poster_mockup_layered-01.svg's away_color/home_color/away_logo/
+// home_logo/time layers) rather than parsed out of a live template at
+// request time the way this route used to work.
+function getPosterOverlayInline() {
+  const filePath = path.join(__dirname, 'assets', 'posters', 'overlay_poster.svg');
+  return getInlineSvgOverlay(filePath, 'poster-overlay');
+}
+
+// The two team-color regions' exact shapes, straight from the design
+// source's away_color/home_color paths - only the fill color is ever
+// substituted in, the shape itself never changes.
+const POSTER_AWAY_COLOR_PATH = 'M.08,900h0,599.93v-337.01c0-22.24-17.65-41-41.77-46.86h0L45.39,384.51C19.47,379.7.08,360.21.08,336.89';
+const POSTER_HOME_COLOR_PATH = 'M45.32,384.51l512.9,131.62h0c24.12,5.85,41.78,24.62,41.78,46.86V0H0v341.88c2.54,21.06,21.28,38.16,45.32,42.61h0v.02Z';
+
+// Placement boxes, straight from the design source's away_logo/home_logo/
+// time layers (each just a plain rect marking where that content goes and
+// how big it can be, scaled proportionately to fit).
+const POSTER_AWAY_LOGO_BOX = { x: 150, y: 515.75, width: 300, height: 300 };
+const POSTER_HOME_LOGO_BOX = { x: 150, y: 50.12, width: 300, height: 300 };
+const POSTER_TIME_BOX = { x: 77.07, y: 824.87, width: 445.86, height: 67.79 };
+
+// Tuned for a 300x300 logo box - see buildLogoShadowFilterDefs.
+const POSTER_LOGO_SHADOW_FILTER_ID = 'posterLogoShadow';
+const POSTER_LOGO_SHADOW_DEFS = buildLogoShadowFilterDefs(POSTER_LOGO_SHADOW_FILTER_ID, 6, 8);
+
+app.get('/poster/:sport/:homeId/:awayId.png', async (req, res) => {
  try {
+  if (serveCachedRenderIfPresent(req, res, 'public, max-age=3600', 'png')) return;
+
   const { sport, homeId, awayId } = req.params;
   const gameUtcDate = req.query.date || null;
   const userTz = req.query.tz || 'America/New_York';
-  const homeName = req.query.home || 'Home';
-  const awayName = req.query.away || 'Away';
   const sportKey = sport.toUpperCase();
-  const league = getTeamLogoBucket(sportKey);
   const theme = SPORT_THEMES[sportKey] || SPORT_THEMES.MLB;
 
   // Using each team's primary color - alternate color was tried and
@@ -1528,81 +1940,58 @@ app.get('/poster/:sport/:homeId/:awayId.svg', async (req, res) => {
   const homeAbbr = (req.query.homeAbbr || '').toLowerCase();
   const awayAbbr = (req.query.awayAbbr || '').toLowerCase();
 
-  // Scoreboard-optimized logo first, full standard logo as fallback if the
-  // scoreboard variant isn't available. Both are guessed from the sport's
-  // usual CDN pattern (bucket/500/{id}.png), which most sports follow -
-  // but not all (confirmed live: AFL keys its logos by lowercase
-  // abbreviation, not numeric team id, and has no /scoreboard/ variant at
-  // all, so both guesses above 404 for it). homeLogoUrl/awayLogoUrl - the
-  // exact URL ESPN's own scoreboard data already gave for this team,
-  // passed through from fetchTodayGames - is the last resort for exactly
-  // that case, so a sport with a non-standard CDN layout still gets its
-  // real logo instead of falling all the way back to buildLogoFallback.
-  const homeScoreboardUrl = homeAbbr ? `https://a.espncdn.com/i/teamlogos/${league}/500/scoreboard/${homeAbbr}.png` : '';
-  const awayScoreboardUrl = awayAbbr ? `https://a.espncdn.com/i/teamlogos/${league}/500/scoreboard/${awayAbbr}.png` : '';
-  const homeStandardUrl = `https://a.espncdn.com/i/teamlogos/${league}/500/${homeId}.png`;
-  const awayStandardUrl = `https://a.espncdn.com/i/teamlogos/${league}/500/${awayId}.png`;
-  const homeLogoUrlParam = req.query.homeLogoUrl || '';
-  const awayLogoUrlParam = req.query.awayLogoUrl || '';
+  // Only the art (logos, colors, background) is expensive to build and
+  // gets cached, keyed on everything but date/tz - see getOrRenderPosterArt.
+  const artCacheKey = stripTimeParams(req.originalUrl);
+  const artPng = await getOrRenderPosterArt(artCacheKey, async () => {
+    const homeName = req.query.home || 'Home';
+    const awayName = req.query.away || 'Away';
 
-  const [homeLogoData, awayLogoData] = await Promise.all([
-    getBase64ImageWithFallback([homeScoreboardUrl, homeStandardUrl, homeLogoUrlParam]),
-    getBase64ImageWithFallback([awayScoreboardUrl, awayStandardUrl, awayLogoUrlParam])
-  ]);
+    // See buildTeamLogoCandidates for the scoreboard/standard/provided-URL
+    // fallback chain this resolves against (AFL in particular only ever
+    // succeeds on the third, provided-URL candidate).
+    const [homeLogoData, awayLogoData] = await Promise.all([
+      getBase64ImageWithFallback(buildTeamLogoCandidates(sportKey, homeId, homeAbbr, req.query.homeLogoUrl)),
+      getBase64ImageWithFallback(buildTeamLogoCandidates(sportKey, awayId, awayAbbr, req.query.awayLogoUrl))
+    ]);
 
-  const template = getPosterTemplateInline();
+    const overlay = getPosterOverlayInline();
 
-  // away_logo/home_logo/time are placement markers only, never meant to
-  // actually render - their rects just define exactly where and how
-  // large to place the real, dynamic content instead. Bounds extracted
-  // from the original markup before any modifications, since hiding a
-  // group doesn't touch its inner coordinates either way.
-  const homeLogoBounds = getSvgGroupBounds(template.markup, 'home_logo');
-  const awayLogoBounds = getSvgGroupBounds(template.markup, 'away_logo');
-  const timeBounds = getSvgGroupBounds(template.markup, 'time');
+    const posterLogoShadow = ` filter="url(#${POSTER_LOGO_SHADOW_FILTER_ID})"`;
+    const homeLogoMarkup = homeLogoData
+      ? `<image href="${homeLogoData}" x="${POSTER_HOME_LOGO_BOX.x}" y="${POSTER_HOME_LOGO_BOX.y}" width="${POSTER_HOME_LOGO_BOX.width}" height="${POSTER_HOME_LOGO_BOX.height}" preserveAspectRatio="xMidYMid meet"${posterLogoShadow} />`
+      : buildLogoFallback(POSTER_HOME_LOGO_BOX.x, POSTER_HOME_LOGO_BOX.y, POSTER_HOME_LOGO_BOX.width, homeName, homeColor, posterLogoShadow);
+    const awayLogoMarkup = awayLogoData
+      ? `<image href="${awayLogoData}" x="${POSTER_AWAY_LOGO_BOX.x}" y="${POSTER_AWAY_LOGO_BOX.y}" width="${POSTER_AWAY_LOGO_BOX.width}" height="${POSTER_AWAY_LOGO_BOX.height}" preserveAspectRatio="xMidYMid meet"${posterLogoShadow} />`
+      : buildLogoFallback(POSTER_AWAY_LOGO_BOX.x, POSTER_AWAY_LOGO_BOX.y, POSTER_AWAY_LOGO_BOX.width, awayName, awayColor, posterLogoShadow);
 
-  let markup = template.markup;
-  markup = recolorSvgGroup(markup, 'away_color', awayColor);
-  markup = recolorSvgGroup(markup, 'home_color', homeColor);
-  markup = hideSvgGroup(markup, 'away_logo');
-  markup = hideSvgGroup(markup, 'home_logo');
-  markup = hideSvgGroup(markup, 'time');
-
-  const homeLogoMarkup = homeLogoBounds
-    ? (homeLogoData
-        ? `<image href="${homeLogoData}" x="${homeLogoBounds.x}" y="${homeLogoBounds.y}" width="${homeLogoBounds.width}" height="${homeLogoBounds.height}" preserveAspectRatio="xMidYMid meet" />`
-        : buildLogoFallback(homeLogoBounds.x, homeLogoBounds.y, homeLogoBounds.width, homeName, homeColor))
-    : '';
-  const awayLogoMarkup = awayLogoBounds
-    ? (awayLogoData
-        ? `<image href="${awayLogoData}" x="${awayLogoBounds.x}" y="${awayLogoBounds.y}" width="${awayLogoBounds.width}" height="${awayLogoBounds.height}" preserveAspectRatio="xMidYMid meet" />`
-        : buildLogoFallback(awayLogoBounds.x, awayLogoBounds.y, awayLogoBounds.width, awayName, awayColor))
-    : '';
+    return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 600 900" width="600" height="900">
+      <defs>${overlay.defs}${POSTER_LOGO_SHADOW_DEFS}</defs>
+      <path fill="${awayColor}" d="${POSTER_AWAY_COLOR_PATH}" />
+      <path fill="${homeColor}" d="${POSTER_HOME_COLOR_PATH}" />
+      ${overlay.markup}
+      ${homeLogoMarkup}
+      ${awayLogoMarkup}
+    </svg>`;
+  });
 
   const timeLine = gameUtcDate ? (formatTeamTime(gameUtcDate, userTz) || 'TBD') : 'GAME TIME TBD';
   // Target width matches the same "most of the box, not edge to edge"
   // ratio our previous plaque used, scaled to this marker's own width.
-  const timeFontSize = timeBounds
-    ? Math.max(24, Math.min(timeBounds.height * 0.9, Math.round(estimateTimeFontSize(timeLine, timeBounds.width * 0.85))))
-    : 36;
-  const timeMarkup = timeBounds
-    ? `<text x="${timeBounds.x + timeBounds.width / 2}" y="${timeBounds.y + timeBounds.height / 2 + timeFontSize * 0.35}" font-family="'Trebuchet MS', Verdana, sans-serif" font-size="${timeFontSize}" font-weight="700" fill="#ffffff" text-anchor="middle" letter-spacing="0.5">${timeLine}</text>`
-    : '';
+  const timeFontSize = Math.max(24, Math.min(POSTER_TIME_BOX.height * 0.9, Math.round(estimateTimeFontSize(timeLine, POSTER_TIME_BOX.width * 0.85))));
+  const timeMarkup = `<text x="${POSTER_TIME_BOX.x + POSTER_TIME_BOX.width / 2}" y="${POSTER_TIME_BOX.y + POSTER_TIME_BOX.height / 2 + timeFontSize * 0.35}" font-family="'Trebuchet MS', Verdana, sans-serif" font-size="${timeFontSize}" font-weight="700" fill="#ffffff" text-anchor="middle" letter-spacing="0.5">${timeLine}</text>`;
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 600 900" width="600" height="900">
-    <defs>${template.defs}</defs>
-    ${markup}
-    ${homeLogoMarkup}
-    ${awayLogoMarkup}
-    ${timeMarkup}
-  </svg>`;
-
-  res.setHeader('Content-Type', 'image/svg+xml');
+  // The time text is composited directly onto the cached art PNG
+  // server-side (see compositeTimeOntoArt) - the response is one flat
+  // PNG, no SVG involved at all.
+  const finalPng = await compositeTimeOntoArt(artPng, timeMarkup, 600, 900);
+  renderedImageCache.set(req.originalUrl, finalPng);
+  res.setHeader('Content-Type', 'image/png');
   res.setHeader('Cache-Control', 'public, max-age=3600');
-  res.send(svg);
+  res.send(finalPng);
  } catch (err) {
   console.error(`[Poster] Failed to render ${req.params.sport} poster:`, err.message);
-  sendSvgErrorFallback(res, 600, 900, req.params.sport.toUpperCase());
+  await sendImageErrorFallback(res, 600, 900, req.params.sport.toUpperCase());
  }
 });
 
@@ -1701,14 +2090,14 @@ app.get('/landscape/:sport.svg', (req, res) => {
 // Background art specifically for the "Upcoming Schedule" placeholder
 // entry - a static, sport-specific photo served directly (see
 // getScheduleBackgroundBuffer for why this isn't SVG-wrapped/base64).
-app.get('/background/schedule/:sport.svg', (req, res) => {
+app.get('/background/schedule/:sport.png', async (req, res) => {
   const sportKey = req.params.sport.toUpperCase();
-  const buffer = getScheduleBackgroundBuffer(sportKey);
+  const buffer = await getScheduleBackgroundBuffer(sportKey);
   if (!buffer) {
     res.status(404).send('Not found');
     return;
   }
-  res.setHeader('Content-Type', 'image/svg+xml');
+  res.setHeader('Content-Type', 'image/png');
   res.setHeader('Cache-Control', 'public, max-age=86400');
   res.send(buffer);
 });
@@ -1722,8 +2111,10 @@ const LANDSCAPE_BOUNDARY_PATH = "M 2393 0 L 2313 20 L 2279 40 L 2256 60 L 2238 8
 
 // Registered BEFORE the generic team-based landscape route below, for the
 // same routing-order reason as the UFC poster route above.
-app.get('/landscape/ufc/:fighterAId/:fighterBId.svg', async (req, res) => {
+app.get('/landscape/ufc/:fighterAId/:fighterBId.png', async (req, res) => {
  try {
+  if (serveCachedRenderIfPresent(req, res, 'public, max-age=3600', 'png')) return;
+
   const fighterAName = req.query.home || 'Fighter A';
   const fighterBName = req.query.away || 'Fighter B';
   const fighterAFlagUrl = req.query.homeFlagUrl || '';
@@ -1776,20 +2167,19 @@ app.get('/landscape/ufc/:fighterAId/:fighterBId.svg', async (req, res) => {
     <text x="1920" y="1900" font-family="'Trebuchet MS', Verdana, sans-serif" font-size="72" font-weight="700" fill="#ffffff" text-anchor="middle">${escapeXml(fighterAName)} vs ${escapeXml(fighterBName)}</text>
   </svg>`;
 
-  res.setHeader('Content-Type', 'image/svg+xml');
-  res.setHeader('Cache-Control', 'public, max-age=3600');
-  res.send(svg);
+  await renderAndCache(req, res, svg, 'public, max-age=3600', 'png', LANDSCAPE_RENDER_SIZE);
  } catch (err) {
   console.error('[Landscape] Failed to render UFC landscape:', err.message);
-  sendSvgErrorFallback(res, 3840, 2160, 'UFC');
+  await sendImageErrorFallback(res, 1920, 1080, 'UFC');
  }
 });
 
-app.get('/landscape/:sport/:homeId/:awayId.svg', async (req, res) => {
+app.get('/landscape/:sport/:homeId/:awayId.png', async (req, res) => {
  try {
+  if (serveCachedRenderIfPresent(req, res, 'public, max-age=3600', 'png')) return;
+
   const { sport, homeId, awayId } = req.params;
   const sportKey = sport.toUpperCase();
-  const league = getTeamLogoBucket(sportKey);
   const theme = SPORT_THEMES[sportKey] || SPORT_THEMES.MLB;
 
   const homeName = req.query.home || 'Home';
@@ -1799,20 +2189,11 @@ app.get('/landscape/:sport/:homeId/:awayId.svg', async (req, res) => {
   const homeAbbr = (req.query.homeAbbr || '').toLowerCase();
   const awayAbbr = (req.query.awayAbbr || '').toLowerCase();
 
-  // Same scoreboard-first, standard-logo-fallback pattern as the poster,
-  // plus the same homeLogoUrl/awayLogoUrl last resort for sports whose CDN
-  // layout doesn't match either guessed pattern (see the poster route for
-  // why - confirmed live against AFL).
-  const homeScoreboardUrl = homeAbbr ? `https://a.espncdn.com/i/teamlogos/${league}/500/scoreboard/${homeAbbr}.png` : '';
-  const awayScoreboardUrl = awayAbbr ? `https://a.espncdn.com/i/teamlogos/${league}/500/scoreboard/${awayAbbr}.png` : '';
-  const homeStandardUrl = `https://a.espncdn.com/i/teamlogos/${league}/500/${homeId}.png`;
-  const awayStandardUrl = `https://a.espncdn.com/i/teamlogos/${league}/500/${awayId}.png`;
-  const homeLogoUrlParam = req.query.homeLogoUrl || '';
-  const awayLogoUrlParam = req.query.awayLogoUrl || '';
-
+  // Same scoreboard/standard/provided-URL fallback chain as the poster
+  // route - see buildTeamLogoCandidates.
   const [homeLogoData, awayLogoData] = await Promise.all([
-    getBase64ImageWithFallback([homeScoreboardUrl, homeStandardUrl, homeLogoUrlParam]),
-    getBase64ImageWithFallback([awayScoreboardUrl, awayStandardUrl, awayLogoUrlParam])
+    getBase64ImageWithFallback(buildTeamLogoCandidates(sportKey, homeId, homeAbbr, req.query.homeLogoUrl)),
+    getBase64ImageWithFallback(buildTeamLogoCandidates(sportKey, awayId, awayAbbr, req.query.awayLogoUrl))
   ]);
 
   const overlayInline = getBackgroundOverlayInline();
@@ -1824,15 +2205,16 @@ app.get('/landscape/:sport/:homeId/:awayId.svg', async (req, res) => {
   const awayLogoBox = { x: 360, y: 480, size: 1200 };
   const homeLogoBox = { x: 2280, y: 480, size: 1200 };
 
+  const landscapeLogoShadow = ` filter="url(#${LANDSCAPE_LOGO_SHADOW_FILTER_ID})"`;
   const awayLogoMarkup = awayLogoData
-    ? `<image href="${awayLogoData}" x="${awayLogoBox.x}" y="${awayLogoBox.y}" width="${awayLogoBox.size}" height="${awayLogoBox.size}" preserveAspectRatio="xMidYMid meet" />`
-    : buildLogoFallback(awayLogoBox.x, awayLogoBox.y, awayLogoBox.size, awayName, awayColor);
+    ? `<image href="${awayLogoData}" x="${awayLogoBox.x}" y="${awayLogoBox.y}" width="${awayLogoBox.size}" height="${awayLogoBox.size}" preserveAspectRatio="xMidYMid meet"${landscapeLogoShadow} />`
+    : buildLogoFallback(awayLogoBox.x, awayLogoBox.y, awayLogoBox.size, awayName, awayColor, landscapeLogoShadow);
   const homeLogoMarkup = homeLogoData
-    ? `<image href="${homeLogoData}" x="${homeLogoBox.x}" y="${homeLogoBox.y}" width="${homeLogoBox.size}" height="${homeLogoBox.size}" preserveAspectRatio="xMidYMid meet" />`
-    : buildLogoFallback(homeLogoBox.x, homeLogoBox.y, homeLogoBox.size, homeName, homeColor);
+    ? `<image href="${homeLogoData}" x="${homeLogoBox.x}" y="${homeLogoBox.y}" width="${homeLogoBox.size}" height="${homeLogoBox.size}" preserveAspectRatio="xMidYMid meet"${landscapeLogoShadow} />`
+    : buildLogoFallback(homeLogoBox.x, homeLogoBox.y, homeLogoBox.size, homeName, homeColor, landscapeLogoShadow);
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 3840 2160" width="3840" height="2160">
-    <defs>${overlayInline.defs}</defs>
+    <defs>${overlayInline.defs}${LANDSCAPE_LOGO_SHADOW_DEFS}</defs>
     <path d="${LANDSCAPE_BOUNDARY_PATH} L 0 2160 L 0 0 Z" fill="${awayColor}" />
     <path d="${LANDSCAPE_BOUNDARY_PATH} L 3840 2160 L 3840 0 Z" fill="${homeColor}" />
     ${overlayInline.markup}
@@ -1840,17 +2222,17 @@ app.get('/landscape/:sport/:homeId/:awayId.svg', async (req, res) => {
     ${homeLogoMarkup}
   </svg>`;
 
-  res.setHeader('Content-Type', 'image/svg+xml');
-  res.setHeader('Cache-Control', 'public, max-age=3600');
-  res.send(svg);
+  await renderAndCache(req, res, svg, 'public, max-age=3600', 'png', LANDSCAPE_RENDER_SIZE);
  } catch (err) {
   console.error(`[Landscape] Failed to render ${req.params.sport} landscape:`, err.message);
-  sendSvgErrorFallback(res, 3840, 2160, req.params.sport.toUpperCase());
+  await sendImageErrorFallback(res, 1920, 1080, req.params.sport.toUpperCase());
  }
 });
 
-app.get('/poster/none/:sport.svg', async (req, res) => {
+app.get('/poster/none/:sport.jpg', async (req, res) => {
  try {
+  if (serveCachedRenderIfPresent(req, res, 'public, max-age=3600')) return;
+
   const sportKey = req.params.sport.toUpperCase();
   const theme = SPORT_THEMES[sportKey] || SPORT_THEMES.MLB;
 
@@ -1881,12 +2263,10 @@ app.get('/poster/none/:sport.svg', async (req, res) => {
     <text x="300" y="790" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="72" font-weight="800" fill="#f8fafc" text-anchor="middle" textLength="480" lengthAdjust="spacingAndGlyphs" letter-spacing="2">SCHEDULE</text>
   </svg>`;
 
-  res.setHeader('Content-Type', 'image/svg+xml');
-  res.setHeader('Cache-Control', 'public, max-age=3600');
-  res.send(svg);
+  await renderAndCache(req, res, svg, 'public, max-age=3600');
  } catch (err) {
   console.error(`[Poster] Failed to render Upcoming Schedule poster for ${req.params.sport}:`, err.message);
-  sendSvgErrorFallback(res, 600, 900, 'UPCOMING');
+  await sendImageErrorFallback(res, 600, 900, 'UPCOMING');
  }
 });
 
@@ -1931,8 +2311,13 @@ async function getRealLeagueLogoUrl(sportKey) {
   }
 }
 
-app.get('/logo/:sport.svg', async (req, res) => {
+// PNG, not JPEG, deliberately - see renderSvgToImage for why: this is the
+// one route with a genuinely transparent background (no fill behind the
+// logo at all), and JPEG has no alpha channel to preserve that with.
+app.get('/logo/:sport.png', async (req, res) => {
  try {
+  if (serveCachedRenderIfPresent(req, res, 'public, max-age=86400', 'png')) return;
+
   const sportKey = req.params.sport.toUpperCase();
   const leagueLogoUrl = await getRealLeagueLogoUrl(sportKey);
 
@@ -1945,12 +2330,10 @@ app.get('/logo/:sport.svg', async (req, res) => {
     ${logoMarkup}
   </svg>`;
 
-  res.setHeader('Content-Type', 'image/svg+xml');
-  res.setHeader('Cache-Control', 'public, max-age=86400');
-  res.send(svg);
+  await renderAndCache(req, res, svg, 'public, max-age=86400', 'png');
  } catch (err) {
   console.error(`[Logo] Failed to render logo for ${req.params.sport}:`, err.message);
-  sendSvgErrorFallback(res, 1080, 1080, req.params.sport.toUpperCase());
+  await sendImageErrorFallback(res, 1080, 1080, req.params.sport.toUpperCase());
  }
 });
 
@@ -2022,9 +2405,9 @@ async function fetchTodayGames(sport, hostUrl, userTimeZone = 'America/New_York'
         ? `?date=${encodeURIComponent(gameUtcDate)}&tz=${encodeURIComponent(userTimeZone)}&${artParams}`
         : `?tz=${encodeURIComponent(userTimeZone)}&${artParams}`;
 
-      const poster = `${hostUrl}/poster/${sport.toLowerCase()}/${homeId}/${awayId}.svg${dateParam}`;
-      const background = `${hostUrl}/landscape/${sport.toLowerCase()}/${homeId}/${awayId}.svg${dateParam}`;
-      const logo = `${hostUrl}/logo/${sport.toLowerCase()}.svg`;
+      const poster = `${hostUrl}/poster/${sport.toLowerCase()}/${homeId}/${awayId}.png${dateParam}`;
+      const background = `${hostUrl}/landscape/${sport.toLowerCase()}/${homeId}/${awayId}.png${dateParam}`;
+      const logo = `${hostUrl}/logo/${sport.toLowerCase()}.png`;
 
       const homeWinLoss = home.records?.[0]?.summary || '0-0';
       const awayWinLoss = away.records?.[0]?.summary || '0-0';
@@ -2093,6 +2476,14 @@ async function fetchTodayGames(sport, hostUrl, userTimeZone = 'America/New_York'
         awayNick,
         homeAbbr,
         awayAbbr,
+        // Raw ids and ESPN-provided logo URLs, not just the fully-built
+        // poster/background URLs above - needed by the daily art warm-up
+        // (see warmTodaysArt) to resolve each team's logo candidate chain
+        // (buildTeamLogoCandidates) itself, the same way those routes do.
+        homeId,
+        awayId,
+        homeLogoUrl,
+        awayLogoUrl,
         broadcastNames,
         poster,
         background,
@@ -2185,9 +2576,9 @@ async function fetchTodayUFCEvents(hostUrl, userTimeZone = 'America/New_York') {
       const eventUtcDate = competition.date || event.date || '';
       const dateParam = eventUtcDate ? `?date=${encodeURIComponent(eventUtcDate)}&${artParams}` : `?${artParams}`;
 
-      const poster = `${hostUrl}/poster/ufc/${fighterAId}/${fighterBId}.svg${dateParam}`;
-      const background = `${hostUrl}/landscape/ufc/${fighterAId}/${fighterBId}.svg${dateParam}`;
-      const logo = `${hostUrl}/logo/ufc.svg`;
+      const poster = `${hostUrl}/poster/ufc/${fighterAId}/${fighterBId}.png${dateParam}`;
+      const background = `${hostUrl}/landscape/ufc/${fighterAId}/${fighterBId}.png${dateParam}`;
+      const logo = `${hostUrl}/logo/ufc.png`;
 
       return {
         id: String(event.id),
@@ -2198,6 +2589,13 @@ async function fetchTodayUFCEvents(hostUrl, userTimeZone = 'America/New_York') {
         awayNick: fighterBName,
         homeAbbr: '',
         awayAbbr: '',
+        // Needed by the daily art warm-up (warmTodaysArt) to fetch each
+        // fighter's stance/full headshots and flag art itself, the same
+        // URLs the poster/landscape UFC routes already build from these.
+        fighterAId,
+        fighterBId,
+        fighterAFlagUrl,
+        fighterBFlagUrl,
         broadcastNames,
         poster,
         background,
@@ -3053,6 +3451,32 @@ app.post('/api/admin/m3u-cache/recache', async (req, res) => {
   });
 });
 
+// Manual counterpart to the daily art warm-up (see startArtWarmupScheduler)
+// - runs the exact same warmTodaysArt() the automatic daily job runs,
+// on demand. Deliberately re-pulls a LIVE schedule per league rather than
+// just re-fetching whatever's already cached: that means a manual click
+// here also picks up anything that changed in the schedule itself (a
+// postponement, a weather delay) in addition to any logo that changed,
+// not just logo freshness alone.
+app.post('/api/admin/logo-cache/recache', async (req, res) => {
+  const { username, password } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  const { sportsChecked, gamesChecked, teamsWarmed, teamsFailed, imagesRendered, imagesFailed } = await warmTodaysArt();
+  return res.json({ success: true, sportsChecked, gamesChecked, teamsWarmed, teamsFailed, imagesRendered, imagesFailed });
+});
+
 // Lists every EPGShare01 source file available to enable, with its
 // compressed and (exact, via gzip's ISIZE trailer - see epgshare01.js)
 // decompressed size, for the admin picker's column view. This is just
@@ -3530,9 +3954,9 @@ app.get('/user/:uuid/catalog/sports/:id.json', async (req, res) => {
     id: `sb:${sport.toLowerCase()}:none`,
     type: 'sports',
     name: 'Upcoming Schedule',
-    poster: `${hostUrl}/poster/none/${sport.toLowerCase()}.svg`,
-    background: `${hostUrl}/background/schedule/${sport.toLowerCase()}.svg`,
-    logo: `${hostUrl}/logo/${sport.toLowerCase()}.svg`,
+    poster: `${hostUrl}/poster/none/${sport.toLowerCase()}.jpg`,
+    background: `${hostUrl}/background/schedule/${sport.toLowerCase()}.png`,
+    logo: `${hostUrl}/logo/${sport.toLowerCase()}.png`,
     description: games.length > 0
       ? `See the full upcoming ${getSportDisplayName(sport)} schedule.`
       : `No ${getSportDisplayName(sport)} games today. Tap to see the upcoming schedule.`
@@ -3569,9 +3993,9 @@ app.get('/user/:uuid/meta/sports/:id.json', async (req, res) => {
         id: req.params.id,
         type: 'sports',
         name: 'Upcoming Schedule',
-        poster: `${hostUrl}/poster/none/${sport.toLowerCase()}.svg`,
-        background: `${hostUrl}/background/schedule/${sport.toLowerCase()}.svg`,
-        logo: `${hostUrl}/logo/${sport.toLowerCase()}.svg`,
+        poster: `${hostUrl}/poster/none/${sport.toLowerCase()}.jpg`,
+        background: `${hostUrl}/background/schedule/${sport.toLowerCase()}.png`,
+        logo: `${hostUrl}/logo/${sport.toLowerCase()}.png`,
         description
       }
     });
@@ -4006,3 +4430,4 @@ function startEpgShareScheduler() {
 }
 
 startEpgShareScheduler();
+startArtWarmupScheduler();
