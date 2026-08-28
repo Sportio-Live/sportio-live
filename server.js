@@ -1876,8 +1876,8 @@ function getPosterOverlayInline() {
 // The two team-color regions' exact shapes, straight from the design
 // source's away_color/home_color paths - only the fill color is ever
 // substituted in, the shape itself never changes.
-const POSTER_AWAY_COLOR_PATH = 'M.08,900h-.01,599.93v-337.01c0-22.24-17.65-41-41.77-46.86h0L45.39,384.51C19.47,379.7.08,360.21.08,336.89';
-const POSTER_HOME_COLOR_PATH = 'M45.32,384.51l512.9,131.62h0c24.12,5.85,41.78,24.62,41.78,46.86V0H0v341.88c2.54,21.06,21.28,38.16,45.32,42.61h0Z';
+const POSTER_AWAY_COLOR_PATH = 'M.08,900h0,599.93v-337.01c0-22.24-17.65-41-41.77-46.86h0L45.39,384.51C19.47,379.7.08,360.21.08,336.89';
+const POSTER_HOME_COLOR_PATH = 'M45.32,384.51l512.9,131.62h0c24.12,5.85,41.78,24.62,41.78,46.86V0H0v341.88c2.54,21.06,21.28,38.16,45.32,42.61h0v.02Z';
 
 // Placement boxes, straight from the design source's away_logo/home_logo/
 // time layers (each just a plain rect marking where that content goes and
