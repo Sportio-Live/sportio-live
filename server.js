@@ -841,64 +841,11 @@ function getInlineSvgOverlay(filePath, idPrefix) {
   }
 }
 
-// Replaces every fill="..." within a named group's subtree with a new
-// color - the fill can live on a child element deeper in the subtree
-// (confirmed directly - the group wrapper itself often has no fill of
-// its own, only its inner path does, and a child's own explicit fill
-// always wins over anything set on the parent), so this searches the
-// whole subtree rather than assuming the fill sits on the group itself.
-function recolorSvgGroup(markup, groupId, newColor) {
-  const pattern = new RegExp(`(<g id="${groupId}"[^>]*>)([\\s\\S]*?)(</g>)`);
-  const match = markup.match(pattern);
-  if (!match) return markup;
-  const recoloredInner = match[2].replace(/fill="[^"]*"/g, `fill="${newColor}"`);
-  return markup.slice(0, match.index) + match[1] + recoloredInner + match[3] + markup.slice(match.index + match[0].length);
-}
-
-// display="none" on the group itself correctly cascades to every child
-// (confirmed - unlike fill, which only inherits when a child doesn't
-// already specify its own), so this only needs to touch the group's own
-// opening tag, not search its subtree.
-function hideSvgGroup(markup, groupId) {
-  const pattern = new RegExp(`<g id="${groupId}"([^>]*)>`);
-  return markup.replace(pattern, `<g id="${groupId}"$1 display="none">`);
-}
-
-// Replaces an entire marker group (including its contents) with real,
-// dynamic markup - unlike hideSvgGroup, which only hides a marker in
-// place, this is for cases where the real content needs to render at
-// that EXACT position in the document's layer order, not just appended
-// at the very end (which would incorrectly place it on top of whatever
-// layers come after the marker in the template, like the UFC poster's
-// logo/plaque layer that must stay on top of the fighter images).
-function replaceSvgGroup(markup, groupId, replacement) {
-  const pattern = new RegExp(`<g id="${groupId}"[^>]*>[\\s\\S]*?</g>`);
-  return markup.replace(pattern, replacement);
-}
-
-// Extracts a named marker group's bounding box for placement purposes -
-// e.g. a "home_logo" marker rect defines exactly where and how large to
-// place the real, dynamic logo image instead. Looks for the first
-// x/y/width/height on any element within the group's subtree.
-function getSvgGroupBounds(markup, groupId) {
-  const pattern = new RegExp(`<g id="${groupId}"[^>]*>([\\s\\S]*?)</g>`);
-  const match = markup.match(pattern);
-  if (!match) return null;
-  const inner = match[1];
-  const x = inner.match(/x="([^"]+)"/);
-  const y = inner.match(/y="([^"]+)"/);
-  const width = inner.match(/width="([^"]+)"/);
-  const height = inner.match(/height="([^"]+)"/);
-  if (!x || !y || !width || !height) return null;
-  return { x: parseFloat(x[1]), y: parseFloat(y[1]), width: parseFloat(width[1]), height: parseFloat(height[1]) };
-}
-
 // Finds a top-level <g id="groupId">...</g> by counting nested <g> depth,
-// rather than assuming the first </g> is the match like getSvgGroupBounds/
-// replaceSvgGroup do - needed for the UFC template's Layer_1, which nests
-// several <g> elements of its own (the hex-pattern group), so a naive
-// non-greedy match would close early on one of those instead of the
-// layer's real closing tag.
+// rather than assuming the first </g> is the match - needed for the UFC
+// template's Layer_1, which nests several <g> elements of its own (the
+// hex-pattern group), so a naive non-greedy match would close early on
+// one of those instead of the layer's real closing tag.
 function findSvgGroupRange(markup, groupId) {
   const openMatch = markup.match(new RegExp(`<g id="${groupId}"[^>]*>`));
   if (!openMatch) return null;
@@ -1913,10 +1860,31 @@ app.get('/poster/ufc/:fighterAId/:fighterBId.png', async (req, res) => {
  }
 });
 
-function getPosterTemplateInline() {
-  const filePath = path.join(__dirname, 'assets', 'posters', 'poster_template.svg');
-  return getInlineSvgOverlay(filePath, 'poster-template');
+// Decorative art only (confetti, gradients, the plaque shape) - no color
+// regions or placement markers baked in, same split as
+// getBackgroundOverlayInline/overlay_background.svg. Where those regions
+// and markers actually go is POSTER_AWAY_COLOR_PATH/POSTER_HOME_COLOR_PATH/
+// POSTER_*_LOGO_BOX/POSTER_TIME_BOX below - extracted once from the design
+// source (poster_mockup_layered-01.svg's away_color/home_color/away_logo/
+// home_logo/time layers) rather than parsed out of a live template at
+// request time the way this route used to work.
+function getPosterOverlayInline() {
+  const filePath = path.join(__dirname, 'assets', 'posters', 'overlay_poster.svg');
+  return getInlineSvgOverlay(filePath, 'poster-overlay');
 }
+
+// The two team-color regions' exact shapes, straight from the design
+// source's away_color/home_color paths - only the fill color is ever
+// substituted in, the shape itself never changes.
+const POSTER_AWAY_COLOR_PATH = 'M.08,900h-.01,599.93v-337.01c0-22.24-17.65-41-41.77-46.86h0L45.39,384.51C19.47,379.7.08,360.21.08,336.89';
+const POSTER_HOME_COLOR_PATH = 'M45.32,384.51l512.9,131.62h0c24.12,5.85,41.78,24.62,41.78,46.86V0H0v341.88c2.54,21.06,21.28,38.16,45.32,42.61h0Z';
+
+// Placement boxes, straight from the design source's away_logo/home_logo/
+// time layers (each just a plain rect marking where that content goes and
+// how big it can be, scaled proportionately to fit).
+const POSTER_AWAY_LOGO_BOX = { x: 150, y: 515.75, width: 300, height: 300 };
+const POSTER_HOME_LOGO_BOX = { x: 150, y: 50.12, width: 300, height: 300 };
+const POSTER_TIME_BOX = { x: 77.07, y: 824.87, width: 445.86, height: 67.79 };
 
 app.get('/poster/:sport/:homeId/:awayId.png', async (req, res) => {
  try {
@@ -1940,13 +1908,6 @@ app.get('/poster/:sport/:homeId/:awayId.png', async (req, res) => {
   const homeAbbr = (req.query.homeAbbr || '').toLowerCase();
   const awayAbbr = (req.query.awayAbbr || '').toLowerCase();
 
-  // template is needed both to build the art (on a cache miss, inside
-  // getOrRenderPosterArt below) and to locate the "time" marker's bounds
-  // (needed on every request, hit or miss) - loading it is cheap either
-  // way, since getPosterTemplateInline itself caches the parsed file.
-  const template = getPosterTemplateInline();
-  const timeBounds = getSvgGroupBounds(template.markup, 'time');
-
   // Only the art (logos, colors, background) is expensive to build and
   // gets cached, keyed on everything but date/tz - see getOrRenderPosterArt.
   const artCacheKey = stripTimeParams(req.originalUrl);
@@ -1962,35 +1923,20 @@ app.get('/poster/:sport/:homeId/:awayId.png', async (req, res) => {
       getBase64ImageWithFallback(buildTeamLogoCandidates(sportKey, awayId, awayAbbr, req.query.awayLogoUrl))
     ]);
 
-    // away_logo/home_logo/time are placement markers only, never meant to
-    // actually render - their rects just define exactly where and how
-    // large to place the real, dynamic content instead. Bounds extracted
-    // from the original markup before any modifications, since hiding a
-    // group doesn't touch its inner coordinates either way.
-    const homeLogoBounds = getSvgGroupBounds(template.markup, 'home_logo');
-    const awayLogoBounds = getSvgGroupBounds(template.markup, 'away_logo');
+    const overlay = getPosterOverlayInline();
 
-    let markup = template.markup;
-    markup = recolorSvgGroup(markup, 'away_color', awayColor);
-    markup = recolorSvgGroup(markup, 'home_color', homeColor);
-    markup = hideSvgGroup(markup, 'away_logo');
-    markup = hideSvgGroup(markup, 'home_logo');
-    markup = hideSvgGroup(markup, 'time');
-
-    const homeLogoMarkup = homeLogoBounds
-      ? (homeLogoData
-          ? `<image href="${homeLogoData}" x="${homeLogoBounds.x}" y="${homeLogoBounds.y}" width="${homeLogoBounds.width}" height="${homeLogoBounds.height}" preserveAspectRatio="xMidYMid meet" />`
-          : buildLogoFallback(homeLogoBounds.x, homeLogoBounds.y, homeLogoBounds.width, homeName, homeColor))
-      : '';
-    const awayLogoMarkup = awayLogoBounds
-      ? (awayLogoData
-          ? `<image href="${awayLogoData}" x="${awayLogoBounds.x}" y="${awayLogoBounds.y}" width="${awayLogoBounds.width}" height="${awayLogoBounds.height}" preserveAspectRatio="xMidYMid meet" />`
-          : buildLogoFallback(awayLogoBounds.x, awayLogoBounds.y, awayLogoBounds.width, awayName, awayColor))
-      : '';
+    const homeLogoMarkup = homeLogoData
+      ? `<image href="${homeLogoData}" x="${POSTER_HOME_LOGO_BOX.x}" y="${POSTER_HOME_LOGO_BOX.y}" width="${POSTER_HOME_LOGO_BOX.width}" height="${POSTER_HOME_LOGO_BOX.height}" preserveAspectRatio="xMidYMid meet" />`
+      : buildLogoFallback(POSTER_HOME_LOGO_BOX.x, POSTER_HOME_LOGO_BOX.y, POSTER_HOME_LOGO_BOX.width, homeName, homeColor);
+    const awayLogoMarkup = awayLogoData
+      ? `<image href="${awayLogoData}" x="${POSTER_AWAY_LOGO_BOX.x}" y="${POSTER_AWAY_LOGO_BOX.y}" width="${POSTER_AWAY_LOGO_BOX.width}" height="${POSTER_AWAY_LOGO_BOX.height}" preserveAspectRatio="xMidYMid meet" />`
+      : buildLogoFallback(POSTER_AWAY_LOGO_BOX.x, POSTER_AWAY_LOGO_BOX.y, POSTER_AWAY_LOGO_BOX.width, awayName, awayColor);
 
     return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 600 900" width="600" height="900">
-      <defs>${template.defs}</defs>
-      ${markup}
+      <defs>${overlay.defs}</defs>
+      <path fill="${awayColor}" d="${POSTER_AWAY_COLOR_PATH}" />
+      <path fill="${homeColor}" d="${POSTER_HOME_COLOR_PATH}" />
+      ${overlay.markup}
       ${homeLogoMarkup}
       ${awayLogoMarkup}
     </svg>`;
@@ -1999,12 +1945,8 @@ app.get('/poster/:sport/:homeId/:awayId.png', async (req, res) => {
   const timeLine = gameUtcDate ? (formatTeamTime(gameUtcDate, userTz) || 'TBD') : 'GAME TIME TBD';
   // Target width matches the same "most of the box, not edge to edge"
   // ratio our previous plaque used, scaled to this marker's own width.
-  const timeFontSize = timeBounds
-    ? Math.max(24, Math.min(timeBounds.height * 0.9, Math.round(estimateTimeFontSize(timeLine, timeBounds.width * 0.85))))
-    : 36;
-  const timeMarkup = timeBounds
-    ? `<text x="${timeBounds.x + timeBounds.width / 2}" y="${timeBounds.y + timeBounds.height / 2 + timeFontSize * 0.35}" font-family="'Trebuchet MS', Verdana, sans-serif" font-size="${timeFontSize}" font-weight="700" fill="#ffffff" text-anchor="middle" letter-spacing="0.5">${timeLine}</text>`
-    : '';
+  const timeFontSize = Math.max(24, Math.min(POSTER_TIME_BOX.height * 0.9, Math.round(estimateTimeFontSize(timeLine, POSTER_TIME_BOX.width * 0.85))));
+  const timeMarkup = `<text x="${POSTER_TIME_BOX.x + POSTER_TIME_BOX.width / 2}" y="${POSTER_TIME_BOX.y + POSTER_TIME_BOX.height / 2 + timeFontSize * 0.35}" font-family="'Trebuchet MS', Verdana, sans-serif" font-size="${timeFontSize}" font-weight="700" fill="#ffffff" text-anchor="middle" letter-spacing="0.5">${timeLine}</text>`;
 
   // The time text is composited directly onto the cached art PNG
   // server-side (see compositeTimeOntoArt) - the response is one flat
