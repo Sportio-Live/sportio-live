@@ -1488,6 +1488,13 @@ async function renderAndCache(req, res, svg, cacheControl, format = 'jpeg', resi
 // the same target consistently.
 const LANDSCAPE_RENDER_SIZE = { width: 1920, height: 1080 };
 
+// Tuned for a 1200x1200 logo box (4x poster's 300x300, same 3840-space
+// canvas the boundary path/logo boxes are already authored against) - see
+// buildLogoShadowFilterDefs, defined further down but hoisted since it's a
+// function declaration.
+const LANDSCAPE_LOGO_SHADOW_FILTER_ID = 'landscapeLogoShadow';
+const LANDSCAPE_LOGO_SHADOW_DEFS = buildLogoShadowFilterDefs(LANDSCAPE_LOGO_SHADOW_FILTER_ID, 24, 32);
+
 // Baking the game's start time into the rendered picture has two separate
 // problems. First: server-side text rendering needs real fonts installed
 // wherever sharp/librsvg runs, which this app's actual deployment (a
@@ -1860,6 +1867,27 @@ app.get('/poster/ufc/:fighterAId/:fighterBId.png', async (req, res) => {
  }
 });
 
+// A team logo can be genuinely hard to see against a similarly-toned team
+// color behind it (e.g. a navy-outlined logo on a navy background) - a
+// drop shadow helps it read clearly regardless of what color ends up
+// behind it. This was never viable back when posters/backgrounds shipped
+// SVG straight to the client (some clients' SVG support couldn't be
+// trusted to handle filter effects, or SVG at all - see the commit that
+// moved away from that entirely), but now that every route bakes its SVG
+// down to a flat PNG server-side before responding, a client never has to
+// support this feature itself - it just receives the shadow as ordinary
+// pixels. Confirmed directly: sharp/librsvg renders feDropShadow
+// correctly. dy/stdDeviation are in the SAME coordinate space as the
+// artwork they're applied to, so a route whose logos are drawn much
+// larger (background's 1200x1200 boxes vs. poster's 300x300) needs
+// proportionally larger values to look like the same shadow, not a
+// barely-visible sliver - each call site scales these to its own logo size.
+function buildLogoShadowFilterDefs(filterId, dy, stdDeviation) {
+  return `<filter id="${filterId}" x="-50%" y="-50%" width="200%" height="200%">
+    <feDropShadow dx="0" dy="${dy}" stdDeviation="${stdDeviation}" flood-color="#000000" flood-opacity="0.65"/>
+  </filter>`;
+}
+
 // Decorative art only (confetti, gradients, the plaque shape) - no color
 // regions or placement markers baked in, same split as
 // getBackgroundOverlayInline/overlay_background.svg. Where those regions
@@ -1885,6 +1913,10 @@ const POSTER_HOME_COLOR_PATH = 'M45.32,384.51l512.9,131.62h0c24.12,5.85,41.78,24
 const POSTER_AWAY_LOGO_BOX = { x: 150, y: 515.75, width: 300, height: 300 };
 const POSTER_HOME_LOGO_BOX = { x: 150, y: 50.12, width: 300, height: 300 };
 const POSTER_TIME_BOX = { x: 77.07, y: 824.87, width: 445.86, height: 67.79 };
+
+// Tuned for a 300x300 logo box - see buildLogoShadowFilterDefs.
+const POSTER_LOGO_SHADOW_FILTER_ID = 'posterLogoShadow';
+const POSTER_LOGO_SHADOW_DEFS = buildLogoShadowFilterDefs(POSTER_LOGO_SHADOW_FILTER_ID, 6, 8);
 
 app.get('/poster/:sport/:homeId/:awayId.png', async (req, res) => {
  try {
@@ -1925,15 +1957,16 @@ app.get('/poster/:sport/:homeId/:awayId.png', async (req, res) => {
 
     const overlay = getPosterOverlayInline();
 
+    const posterLogoShadow = ` filter="url(#${POSTER_LOGO_SHADOW_FILTER_ID})"`;
     const homeLogoMarkup = homeLogoData
-      ? `<image href="${homeLogoData}" x="${POSTER_HOME_LOGO_BOX.x}" y="${POSTER_HOME_LOGO_BOX.y}" width="${POSTER_HOME_LOGO_BOX.width}" height="${POSTER_HOME_LOGO_BOX.height}" preserveAspectRatio="xMidYMid meet" />`
-      : buildLogoFallback(POSTER_HOME_LOGO_BOX.x, POSTER_HOME_LOGO_BOX.y, POSTER_HOME_LOGO_BOX.width, homeName, homeColor);
+      ? `<image href="${homeLogoData}" x="${POSTER_HOME_LOGO_BOX.x}" y="${POSTER_HOME_LOGO_BOX.y}" width="${POSTER_HOME_LOGO_BOX.width}" height="${POSTER_HOME_LOGO_BOX.height}" preserveAspectRatio="xMidYMid meet"${posterLogoShadow} />`
+      : buildLogoFallback(POSTER_HOME_LOGO_BOX.x, POSTER_HOME_LOGO_BOX.y, POSTER_HOME_LOGO_BOX.width, homeName, homeColor, posterLogoShadow);
     const awayLogoMarkup = awayLogoData
-      ? `<image href="${awayLogoData}" x="${POSTER_AWAY_LOGO_BOX.x}" y="${POSTER_AWAY_LOGO_BOX.y}" width="${POSTER_AWAY_LOGO_BOX.width}" height="${POSTER_AWAY_LOGO_BOX.height}" preserveAspectRatio="xMidYMid meet" />`
-      : buildLogoFallback(POSTER_AWAY_LOGO_BOX.x, POSTER_AWAY_LOGO_BOX.y, POSTER_AWAY_LOGO_BOX.width, awayName, awayColor);
+      ? `<image href="${awayLogoData}" x="${POSTER_AWAY_LOGO_BOX.x}" y="${POSTER_AWAY_LOGO_BOX.y}" width="${POSTER_AWAY_LOGO_BOX.width}" height="${POSTER_AWAY_LOGO_BOX.height}" preserveAspectRatio="xMidYMid meet"${posterLogoShadow} />`
+      : buildLogoFallback(POSTER_AWAY_LOGO_BOX.x, POSTER_AWAY_LOGO_BOX.y, POSTER_AWAY_LOGO_BOX.width, awayName, awayColor, posterLogoShadow);
 
     return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 600 900" width="600" height="900">
-      <defs>${overlay.defs}</defs>
+      <defs>${overlay.defs}${POSTER_LOGO_SHADOW_DEFS}</defs>
       <path fill="${awayColor}" d="${POSTER_AWAY_COLOR_PATH}" />
       <path fill="${homeColor}" d="${POSTER_HOME_COLOR_PATH}" />
       ${overlay.markup}
@@ -2172,15 +2205,16 @@ app.get('/landscape/:sport/:homeId/:awayId.png', async (req, res) => {
   const awayLogoBox = { x: 360, y: 480, size: 1200 };
   const homeLogoBox = { x: 2280, y: 480, size: 1200 };
 
+  const landscapeLogoShadow = ` filter="url(#${LANDSCAPE_LOGO_SHADOW_FILTER_ID})"`;
   const awayLogoMarkup = awayLogoData
-    ? `<image href="${awayLogoData}" x="${awayLogoBox.x}" y="${awayLogoBox.y}" width="${awayLogoBox.size}" height="${awayLogoBox.size}" preserveAspectRatio="xMidYMid meet" />`
-    : buildLogoFallback(awayLogoBox.x, awayLogoBox.y, awayLogoBox.size, awayName, awayColor);
+    ? `<image href="${awayLogoData}" x="${awayLogoBox.x}" y="${awayLogoBox.y}" width="${awayLogoBox.size}" height="${awayLogoBox.size}" preserveAspectRatio="xMidYMid meet"${landscapeLogoShadow} />`
+    : buildLogoFallback(awayLogoBox.x, awayLogoBox.y, awayLogoBox.size, awayName, awayColor, landscapeLogoShadow);
   const homeLogoMarkup = homeLogoData
-    ? `<image href="${homeLogoData}" x="${homeLogoBox.x}" y="${homeLogoBox.y}" width="${homeLogoBox.size}" height="${homeLogoBox.size}" preserveAspectRatio="xMidYMid meet" />`
-    : buildLogoFallback(homeLogoBox.x, homeLogoBox.y, homeLogoBox.size, homeName, homeColor);
+    ? `<image href="${homeLogoData}" x="${homeLogoBox.x}" y="${homeLogoBox.y}" width="${homeLogoBox.size}" height="${homeLogoBox.size}" preserveAspectRatio="xMidYMid meet"${landscapeLogoShadow} />`
+    : buildLogoFallback(homeLogoBox.x, homeLogoBox.y, homeLogoBox.size, homeName, homeColor, landscapeLogoShadow);
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 3840 2160" width="3840" height="2160">
-    <defs>${overlayInline.defs}</defs>
+    <defs>${overlayInline.defs}${LANDSCAPE_LOGO_SHADOW_DEFS}</defs>
     <path d="${LANDSCAPE_BOUNDARY_PATH} L 0 2160 L 0 0 Z" fill="${awayColor}" />
     <path d="${LANDSCAPE_BOUNDARY_PATH} L 3840 2160 L 3840 0 Z" fill="${homeColor}" />
     ${overlayInline.markup}
