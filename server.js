@@ -8,6 +8,18 @@ const path = require('path');
 const crypto = require('crypto');
 const zlib = require('zlib');
 const sharp = require('sharp');
+
+// Without this, sharp/libvips keeps its own internal cache of decoded
+// images/operations AND spins up one worker thread per CPU core by default
+// - both add memory on top of this app's own render cache (see
+// RENDER_CACHE_DIR below) for no real benefit here: renders happen at most
+// a few hundred times a day during the warm-up pass, nowhere near a rate
+// where multi-threaded throughput matters. cache(false) turns off the
+// former; concurrency(2) caps the latter to a small, predictable thread
+// count instead of scaling with however many cores the host happens to have.
+sharp.cache(false);
+sharp.concurrency(2);
+
 const m3u = require('./m3u.js');
 const epgshare = require('./epgshare01.js');
 
@@ -1256,7 +1268,7 @@ function pathAndQueryFromUrl(fullUrl) {
 // SVG-building logic here. That means the warm-up can never quietly drift
 // out of sync with what a real client actually gets: it IS a real client
 // request, just one this server makes to itself, ahead of any real viewer,
-// purely as a side effect of populating renderedImageCache (see
+// purely as a side effect of populating RENDER_CACHE_DIR (see
 // serveCachedRenderIfPresent/renderAndCache) - the response body itself is
 // never used for anything.
 async function prewarmRenderedImage(pathAndQuery) {
@@ -1271,21 +1283,20 @@ async function prewarmRenderedImage(pathAndQuery) {
 
 async function warmTodaysArt() {
   // Art for a game that's already been played never gets requested again,
-  // but posterArtCache/renderedImageCache never evict anything either -
-  // left alone, they'd grow forever across a season (thousands of
-  // one-time-use entries) rather than staying bounded to roughly one
-  // day's worth. Clearing both here, right before rebuilding everything
-  // relevant for today, keeps memory bounded without needing any
-  // per-entry expiry logic. This does briefly clear a few genuinely
-  // reusable, non-per-game entries too (each sport's logo/schedule-
-  // placeholder), but those get rebuilt in the very same pass below, so
-  // the only cost is a handful of cheap re-renders, not a correctness
-  // issue. imageBytesCache (raw team/fighter logo bytes) is deliberately
-  // NOT cleared here - unlike these two, it's naturally bounded (a few
-  // thousand real teams/fighters, not one entry per game), so clearing it
-  // would only force pointless re-fetches of data that's still valid.
-  posterArtCache.clear();
-  renderedImageCache.clear();
+  // but RENDER_CACHE_DIR never evicts anything on its own either - left
+  // alone, it would grow forever across a season (thousands of one-time-
+  // use files) rather than staying bounded to roughly one day's worth.
+  // Clearing it here, right before rebuilding everything relevant for
+  // today, keeps disk usage bounded without needing any per-entry expiry
+  // logic. This does briefly clear a few genuinely reusable, non-per-game
+  // entries too (each sport's logo/schedule-placeholder), but those get
+  // rebuilt in the very same pass below, so the only cost is a handful of
+  // cheap re-renders, not a correctness issue. imageBytesCache (raw team/
+  // fighter logo bytes) is deliberately NOT cleared here - unlike the
+  // render cache, it's naturally bounded (a few thousand real teams/
+  // fighters, not one entry per game), so clearing it would only force
+  // pointless re-fetches of data that's still valid.
+  await clearRenderCacheDir();
 
   const sportKeys = Object.keys(ESPN_ENDPOINTS);
   const timeZones = getConfiguredTimeZones();
@@ -1445,23 +1456,65 @@ function contentTypeForFormat(format) {
   return format === 'png' ? 'image/png' : 'image/jpeg';
 }
 
-// Every finished poster/background/logo is cached under the exact request
-// URL (path+query) that produced it - a poster's colors/date/viewer-
-// timezone all live in the query string already, so two different requests
-// that would render two visibly different images naturally get two
-// different cache keys for free, with no separate key-building logic
-// needed here. A cache hit means skipping not just the render below but
-// the entire logo-fetch/SVG-assembly pipeline above it in the calling
-// route - see serveCachedRenderIfPresent, which every art route calls
-// FIRST, before doing any of that work.
-const renderedImageCache = new Map(); // req.originalUrl -> rendered image Buffer
+// Every finished poster/background/logo is cached on disk under a hash of
+// the exact request URL (path+query) that produced it - a poster's colors/
+// date/viewer-timezone all live in the query string already, so two
+// different requests that would render two visibly different images
+// naturally get two different cache keys for free, with no separate key-
+// building logic needed here. A cache hit means skipping not just the
+// render below but the entire logo-fetch/SVG-assembly pipeline above it in
+// the calling route - see serveCachedRenderIfPresent, which every art route
+// calls FIRST, before doing any of that work.
+//
+// Kept on disk rather than in a JS Map: across every sport's games for the
+// day, times every viewer timezone (time is baked into the pixels), this
+// easily reaches hundreds of MB to low GB of PNGs - fine to leave on disk
+// on a VPS, not fine to hold in the Node process's own memory for up to
+// 24h between warmTodaysArt() clears. Lives under DATA_DIR so it rides the
+// same gitignored Docker volume as everything else in data/.
+const RENDER_CACHE_DIR = path.join(DATA_DIR, 'render-cache');
+if (!fs.existsSync(RENDER_CACHE_DIR)) {
+  fs.mkdirSync(RENDER_CACHE_DIR, { recursive: true });
+}
+
+// `namespace` keeps this one directory safe for two unrelated cache key
+// spaces (full rendered images vs. art-only PNGs, see getOrRenderPosterArt)
+// without their hashes ever colliding with each other.
+function renderCacheFilePath(namespace, key, ext) {
+  const hash = crypto.createHash('sha256').update(key).digest('hex');
+  return path.join(RENDER_CACHE_DIR, `${namespace}-${hash}.${ext}`);
+}
+
+async function readRenderCache(namespace, key, ext) {
+  try {
+    return await fs.promises.readFile(renderCacheFilePath(namespace, key, ext));
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+async function writeRenderCache(namespace, key, ext, buffer) {
+  await fs.promises.writeFile(renderCacheFilePath(namespace, key, ext), buffer);
+}
+
+// Deletes every file in RENDER_CACHE_DIR - the disk counterpart of the old
+// in-memory cache's .clear(), called by warmTodaysArt right before it
+// rebuilds everything for the new day so yesterday's one-time-use game art
+// doesn't just sit on disk taking up space forever.
+async function clearRenderCacheDir() {
+  const entries = await fs.promises.readdir(RENDER_CACHE_DIR).catch(() => []);
+  await Promise.all(entries.map(name =>
+    fs.promises.unlink(path.join(RENDER_CACHE_DIR, name)).catch(() => {})
+  ));
+}
 
 // Returns true and sends the response if this exact request was already
 // rendered before (by an earlier request, or by the daily art warm-up -
 // see warmTodaysArt) - callers should return immediately when this does,
 // without running any of their own fetch/build logic at all.
-function serveCachedRenderIfPresent(req, res, cacheControl, format = 'jpeg') {
-  const cached = renderedImageCache.get(req.originalUrl);
+async function serveCachedRenderIfPresent(req, res, cacheControl, format = 'jpeg') {
+  const cached = await readRenderCache('render', req.originalUrl, format === 'png' ? 'png' : 'jpg');
   if (!cached) return false;
   res.setHeader('Content-Type', contentTypeForFormat(format));
   res.setHeader('Cache-Control', cacheControl);
@@ -1475,7 +1528,7 @@ function serveCachedRenderIfPresent(req, res, cacheControl, format = 'jpeg') {
 // renderSvgToImage.
 async function renderAndCache(req, res, svg, cacheControl, format = 'jpeg', resize = null) {
   const image = await renderSvgToImage(svg, format, resize);
-  renderedImageCache.set(req.originalUrl, image);
+  await writeRenderCache('render', req.originalUrl, format === 'png' ? 'png' : 'jpg', image);
   res.setHeader('Content-Type', contentTypeForFormat(format));
   res.setHeader('Cache-Control', cacheControl);
   res.send(image);
@@ -1539,18 +1592,18 @@ function stripTimeParams(originalUrl) {
   return parsed.pathname + parsed.search;
 }
 
-const posterArtCache = new Map(); // stripped path+query -> art-only PNG Buffer (no time text)
-
-// Cache-aside on posterArtCache: buildArtSvg is only ever called on a miss,
-// so a matchup that's already been rendered (by an earlier request, or by
-// the daily warm-up) never re-fetches logos or re-renders anything, no
-// matter how many different viewer timezones request it afterward.
+// Cache-aside on RENDER_CACHE_DIR (namespace 'art', keyed on the stripped
+// path+query so time/timezone don't fragment it - see stripTimeParams):
+// buildArtSvg is only ever called on a miss, so a matchup that's already
+// been rendered (by an earlier request, or by the daily warm-up) never
+// re-fetches logos or re-renders anything, no matter how many different
+// viewer timezones request it afterward.
 async function getOrRenderPosterArt(artCacheKey, buildArtSvg) {
-  const cached = posterArtCache.get(artCacheKey);
+  const cached = await readRenderCache('art', artCacheKey, 'png');
   if (cached) return cached;
   const svg = await buildArtSvg();
   const png = await renderSvgToImage(svg, 'png');
-  posterArtCache.set(artCacheKey, png);
+  await writeRenderCache('art', artCacheKey, 'png', png);
   return png;
 }
 
@@ -1763,7 +1816,7 @@ function getUfcPosterTemplateInline() {
 // needs to come first or it would never be reached.
 app.get('/poster/ufc/:fighterAId/:fighterBId.png', async (req, res) => {
  try {
-  if (serveCachedRenderIfPresent(req, res, 'public, max-age=3600', 'png')) return;
+  if (await serveCachedRenderIfPresent(req, res, 'public, max-age=3600', 'png')) return;
 
   const fighterAName = req.query.home || 'Fighter A';
   const fighterBName = req.query.away || 'Fighter B';
@@ -1857,7 +1910,7 @@ app.get('/poster/ufc/:fighterAId/:fighterBId.png', async (req, res) => {
   // server-side (see compositeTimeOntoArt) - the response is one flat
   // PNG, no SVG involved at all.
   const finalPng = await compositeTimeOntoArt(artPng, timeMarkup, 600, 900);
-  renderedImageCache.set(req.originalUrl, finalPng);
+  await writeRenderCache('render', req.originalUrl, 'png', finalPng);
   res.setHeader('Content-Type', 'image/png');
   res.setHeader('Cache-Control', 'public, max-age=3600');
   res.send(finalPng);
@@ -1920,7 +1973,7 @@ const POSTER_LOGO_SHADOW_DEFS = buildLogoShadowFilterDefs(POSTER_LOGO_SHADOW_FIL
 
 app.get('/poster/:sport/:homeId/:awayId.png', async (req, res) => {
  try {
-  if (serveCachedRenderIfPresent(req, res, 'public, max-age=3600', 'png')) return;
+  if (await serveCachedRenderIfPresent(req, res, 'public, max-age=3600', 'png')) return;
 
   const { sport, homeId, awayId } = req.params;
   const gameUtcDate = req.query.date || null;
@@ -1985,7 +2038,7 @@ app.get('/poster/:sport/:homeId/:awayId.png', async (req, res) => {
   // server-side (see compositeTimeOntoArt) - the response is one flat
   // PNG, no SVG involved at all.
   const finalPng = await compositeTimeOntoArt(artPng, timeMarkup, 600, 900);
-  renderedImageCache.set(req.originalUrl, finalPng);
+  await writeRenderCache('render', req.originalUrl, 'png', finalPng);
   res.setHeader('Content-Type', 'image/png');
   res.setHeader('Cache-Control', 'public, max-age=3600');
   res.send(finalPng);
@@ -2113,7 +2166,7 @@ const LANDSCAPE_BOUNDARY_PATH = "M 2393 0 L 2313 20 L 2279 40 L 2256 60 L 2238 8
 // same routing-order reason as the UFC poster route above.
 app.get('/landscape/ufc/:fighterAId/:fighterBId.png', async (req, res) => {
  try {
-  if (serveCachedRenderIfPresent(req, res, 'public, max-age=3600', 'png')) return;
+  if (await serveCachedRenderIfPresent(req, res, 'public, max-age=3600', 'png')) return;
 
   const fighterAName = req.query.home || 'Fighter A';
   const fighterBName = req.query.away || 'Fighter B';
@@ -2176,7 +2229,7 @@ app.get('/landscape/ufc/:fighterAId/:fighterBId.png', async (req, res) => {
 
 app.get('/landscape/:sport/:homeId/:awayId.png', async (req, res) => {
  try {
-  if (serveCachedRenderIfPresent(req, res, 'public, max-age=3600', 'png')) return;
+  if (await serveCachedRenderIfPresent(req, res, 'public, max-age=3600', 'png')) return;
 
   const { sport, homeId, awayId } = req.params;
   const sportKey = sport.toUpperCase();
@@ -2231,7 +2284,7 @@ app.get('/landscape/:sport/:homeId/:awayId.png', async (req, res) => {
 
 app.get('/poster/none/:sport.jpg', async (req, res) => {
  try {
-  if (serveCachedRenderIfPresent(req, res, 'public, max-age=3600')) return;
+  if (await serveCachedRenderIfPresent(req, res, 'public, max-age=3600')) return;
 
   const sportKey = req.params.sport.toUpperCase();
   const theme = SPORT_THEMES[sportKey] || SPORT_THEMES.MLB;
@@ -2316,7 +2369,7 @@ async function getRealLeagueLogoUrl(sportKey) {
 // logo at all), and JPEG has no alpha channel to preserve that with.
 app.get('/logo/:sport.png', async (req, res) => {
  try {
-  if (serveCachedRenderIfPresent(req, res, 'public, max-age=86400', 'png')) return;
+  if (await serveCachedRenderIfPresent(req, res, 'public, max-age=86400', 'png')) return;
 
   const sportKey = req.params.sport.toUpperCase();
   const leagueLogoUrl = await getRealLeagueLogoUrl(sportKey);
