@@ -15,10 +15,14 @@ const sharp = require('sharp');
 // RENDER_CACHE_DIR below) for no real benefit here: renders happen at most
 // a few hundred times a day during the warm-up pass, nowhere near a rate
 // where multi-threaded throughput matters. cache(false) turns off the
-// former; concurrency(2) caps the latter to a small, predictable thread
-// count instead of scaling with however many cores the host happens to have.
+// former; concurrency(1) caps the latter to a single thread rather than
+// scaling with however many cores the host happens to have - confirmed via
+// real VPS testing that even concurrency(2) combined with
+// ART_WARMUP_RENDER_CONCURRENCY (see below) pushed CPU to 300-400% during
+// warm-up. A slower warm-up is the accepted trade for not contending with
+// every other container on the host for CPU.
 sharp.cache(false);
-sharp.concurrency(2);
+sharp.concurrency(1);
 
 const m3u = require('./m3u.js');
 const epgshare = require('./epgshare01.js');
@@ -1188,11 +1192,14 @@ const ART_WARMUP_CONCURRENCY = 8;
 // Deliberately much lower than ART_WARMUP_CONCURRENCY above: that constant
 // is also used for the logo-byte fetch pass, which is network-bound and
 // benefits from high parallelism, but rendering is CPU-bound (rasterizing
-// each game's SVG via sharp/libvips, then encoding a PNG) - running 8 of
-// those at once was spiking the host to several hundred percent CPU during
-// every startup/daily warm-up. A small number here trades a bit of extra
-// warm-up wall-clock time for not saturating every core at once.
-const ART_WARMUP_RENDER_CONCURRENCY = 3;
+// each game's SVG via sharp/libvips, then encoding a PNG) - running several
+// of those at once was spiking the host to 300-400%+ CPU during every
+// startup/daily warm-up (confirmed on a real 6-core VPS, even after
+// dropping this from 8 to 3). Rendering strictly one at a time keeps CPU
+// usage from a single warm-up render ever exceeding what one core does -
+// a slower warm-up is the accepted trade for not contending with every
+// other container on the host for CPU.
+const ART_WARMUP_RENDER_CONCURRENCY = 1;
 
 // Same shape as getBase64ImageWithFallback (try each URL, stop at the first
 // success) but force-refetching instead of reading the cache - used only by
