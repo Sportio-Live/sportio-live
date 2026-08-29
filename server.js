@@ -1185,6 +1185,15 @@ async function getBase64ImageWithContentBounds(url) {
 const WARM_PLACEHOLDER_HOST = 'https://localhost';
 const ART_WARMUP_CONCURRENCY = 8;
 
+// Deliberately much lower than ART_WARMUP_CONCURRENCY above: that constant
+// is also used for the logo-byte fetch pass, which is network-bound and
+// benefits from high parallelism, but rendering is CPU-bound (rasterizing
+// each game's SVG via sharp/libvips, then encoding a PNG) - running 8 of
+// those at once was spiking the host to several hundred percent CPU during
+// every startup/daily warm-up. A small number here trades a bit of extra
+// warm-up wall-clock time for not saturating every core at once.
+const ART_WARMUP_RENDER_CONCURRENCY = 3;
+
 // Same shape as getBase64ImageWithFallback (try each URL, stop at the first
 // success) but force-refetching instead of reading the cache - used only by
 // the warm-up below, which specifically wants a fresh copy even for a URL
@@ -1345,7 +1354,7 @@ async function warmTodaysArt() {
   // functions each art route already uses) finds every logo it needs
   // already cached, rather than paying that fetch cost twice in one run.
   const logoResult = await runWithConcurrency(dedupedCandidateLists, ART_WARMUP_CONCURRENCY, forceFetchWithFallback);
-  const renderResult = await runWithConcurrency(renderTargets, ART_WARMUP_CONCURRENCY, prewarmRenderedImage);
+  const renderResult = await runWithConcurrency(renderTargets, ART_WARMUP_RENDER_CONCURRENCY, prewarmRenderedImage);
 
   const result = {
     sportsChecked: sportKeys.length,
