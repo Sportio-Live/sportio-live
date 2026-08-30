@@ -87,7 +87,26 @@ function parseEpgShareXmltv(content, relevantChannelIds) {
     const channelMatch = attrs.match(CHANNEL_ATTR_PATTERN);
     if (!startMatch || !channelMatch) continue;
 
-    const channel = channelMatch[1];
+    // Forces a real, independent copy of a regex-extracted substring
+    // rather than whatever representation V8 chose for the match -
+    // confirmed via a real repro (parsing the actual ALL_SOURCES1 file,
+    // 1.77GB decompressed) as the cause of catastrophic memory retention
+    // that an explicit global.gc() could NOT reclaim on its own: V8 can
+    // implement a substring of a huge string (content here is processed
+    // in ~200MB chunks - see parseEpgShareXmltvBuffer) as a "sliced
+    // string" that internally still points at the ENTIRE parent chunk's
+    // backing memory. channel is the one field that gets kept alive
+    // forever (as part of epgShareCache's channelIds list, see
+    // refreshEpgShareSource); start/title/description are only used
+    // transiently within this one refresh call before being written to
+    // disk and discarded, but for a source spanning multiple 200MB
+    // chunks, an uncopied one of these can just as easily keep that
+    // chunk's entire parent string pinned in memory for the rest of the
+    // refresh - confirmed directly: leaving these three uncopied alone
+    // left ~340MB of otherwise-dead memory unreclaimable even after
+    // forcing a collection, on top of what copying just the channel id
+    // already fixed.
+    const channel = Buffer.from(channelMatch[1]).toString('utf8');
     if (relevantChannelIds && !relevantChannelIds.has(channel)) continue;
     if (!programmesByChannel.has(channel)) {
       programmesByChannel.set(channel, []);
@@ -96,9 +115,9 @@ function parseEpgShareXmltv(content, relevantChannelIds) {
     // it's always present even when desc isn't, and there may be uses for
     // it distinct from description later.
     programmesByChannel.get(channel).push({
-      start: startMatch[1],
-      title: title.trim(),
-      description: desc ? desc.trim() : ''
+      start: Buffer.from(startMatch[1]).toString('utf8'),
+      title: Buffer.from(title.trim()).toString('utf8'),
+      description: desc ? Buffer.from(desc.trim()).toString('utf8') : ''
     });
   }
 
@@ -308,14 +327,23 @@ const epgShareCache = new Map(); // sourceUrl -> { url, channelIds, fetchedAt }
 // parsed source while this runs (same "temporary spike during a refresh,
 // not a standing cost" shape as the art warm-up's rendering pass), but
 // nothing from it stays resident afterward.
+// A handful of enabled sources can add up to tens of thousands of
+// channels (confirmed against the real ALL_SOURCES1 file) - writing every
+// channel's file with unbounded Promise.all concurrency exhausts the
+// process's open-file-descriptor limit (confirmed directly: a real EMFILE
+// crash mid-refresh). mapWithConcurrency (already used above for the
+// catalog's decompressed-size lookups) caps how many writes are ever
+// in flight at once.
+const EPG_WRITE_CONCURRENCY = 50;
+
 async function refreshEpgShareSource(url) {
   const parsed = await fetchAndParseEpgShareSource(url);
   await clearSourceCacheDir(url);
   await fs.promises.mkdir(sourceCacheDir(url), { recursive: true });
   const channelIds = [...parsed.programmesByChannel.keys()].sort();
-  await Promise.all(channelIds.map(channelId =>
+  await mapWithConcurrency(channelIds, EPG_WRITE_CONCURRENCY, channelId =>
     writeChannelProgrammes(url, channelId, parsed.programmesByChannel.get(channelId))
-  ));
+  );
   const cached = { url, channelIds, fetchedAt: parsed.fetchedAt };
   epgShareCache.set(url, cached);
   return cached;

@@ -40,6 +40,17 @@ function parseM3UPlaylist(content) {
   // URLs silently dropped).
   const channelsByUrl = new Map();
 
+  // Forces a real, independent copy of a regex-extracted substring rather
+  // than whatever representation V8 chose for the match - see the
+  // matching comment in parseXMLTVEpg below for the full explanation.
+  // Every field extracted per-channel here is kept alive for as long as
+  // this source stays cached (see m3uSourceCache), same risk as the EPG
+  // side: a real 18k-channel playlist (see the comment above) is easily
+  // several MB of raw text, and without this, each tiny-looking id/name/
+  // logo/URL string would secretly keep that whole buffer unreachable but
+  // never collected.
+  const copy = (str) => Buffer.from(str).toString('utf8');
+
   for (const block of blocks) {
     if (!block.startsWith('#EXTINF:')) continue;
 
@@ -55,11 +66,11 @@ function parseM3UPlaylist(content) {
     // anyway.
     if (!idMatch || !urlMatch) continue;
 
-    const id = idMatch[1];
-    const name = (nameMatch ? nameMatch[1] : id).trim();
-    const logo = logoMatch ? logoMatch[1] : '';
-    const streamUrl = urlMatch[1].trim();
-    const group = groupMatch ? groupMatch[1] : '';
+    const id = copy(idMatch[1]);
+    const name = copy((nameMatch ? nameMatch[1] : idMatch[1]).trim());
+    const logo = logoMatch ? copy(logoMatch[1]) : '';
+    const streamUrl = copy(urlMatch[1].trim());
+    const group = groupMatch ? copy(groupMatch[1]) : '';
 
     if (!channelsByUrl.has(streamUrl)) {
       channelsByUrl.set(streamUrl, { id, name, logo, streamUrl, categories: new Set() });
@@ -105,14 +116,29 @@ function parseXMLTVEpg(content, relevantChannelIds) {
   const programmesByChannel = new Map();
   const pattern = /<programme start="(\d{14}) [^"]*" stop="(\d{14}) [^"]*" channel="([^"]*)"><title>([^<]*)<\/title>/g;
 
+  // Forces a real, independent copy of a regex-extracted substring rather
+  // than whatever representation V8 chose for the match - found (via
+  // /api/admin/diagnostics on epgshare01.js's identical parsing pattern)
+  // to be the actual cause of "external" process memory staying pinned at
+  // 1.2GB+ even after an explicit global.gc(): V8 can implement a
+  // substring of a huge string (content here can run to hundreds of MB)
+  // as a "sliced string" that internally still points at the ENTIRE
+  // parent string's backing memory. Every field extracted below ends up
+  // kept alive for as long as this source stays cached (see
+  // m3uSourceCache) - without this, each tiny-looking field would
+  // secretly keep the whole multi-hundred-MB parsed buffer unreachable
+  // but never collected.
+  const copy = (str) => Buffer.from(str).toString('utf8');
+
   let match;
   while ((match = pattern.exec(content)) !== null) {
     const [, start, stop, channel, title] = match;
     if (relevantChannelIds && !relevantChannelIds.has(channel)) continue;
-    if (!programmesByChannel.has(channel)) {
-      programmesByChannel.set(channel, []);
+    const channelCopy = copy(channel);
+    if (!programmesByChannel.has(channelCopy)) {
+      programmesByChannel.set(channelCopy, []);
     }
-    programmesByChannel.get(channel).push({ start, stop, title: title.trim() });
+    programmesByChannel.get(channelCopy).push({ start: copy(start), stop: copy(stop), title: copy(title.trim()) });
   }
 
   return programmesByChannel;
