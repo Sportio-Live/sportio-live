@@ -2026,7 +2026,7 @@
         const instructionText = isGlobalSection
           ? 'Categories checked here are automatically searched for every league, in addition to that league\'s own selections.'
           : 'Please choose which categories should be searched when sourcing game streams.';
-        const dragHandle = isGlobalSection ? '' : '<i class="fa-solid fa-grip-vertical text-[#e6e6e6]/40 text-sm cursor-grab active:cursor-grabbing"></i>';
+        const dragHandle = isGlobalSection ? '' : '<i data-drag-handle class="fa-solid fa-grip-vertical text-[#e6e6e6]/40 text-sm cursor-grab active:cursor-grabbing"></i>';
 
         // Only the real dashboard (idPrefix === '') can remove a league
         // in place - the wizard's own leagues step has no
@@ -2082,7 +2082,24 @@
 
         if (!isGlobalSection) {
           section.dataset.sport = sport;
-          section.draggable = true;
+          // draggable lives on the grip handle specifically, not the whole
+          // row - the row also now contains real interactive controls (the
+          // rename pencil/input, the home-visibility toggle, remove) and
+          // making the entire row a drag source made those unreliable to
+          // use: a real mouse click has enough incidental movement between
+          // mousedown and mouseup to occasionally read as a drag gesture,
+          // which yanks focus away before a click/keydown handler (whose
+          // own event.stopPropagation() only stops JS event bubbling, not
+          // this - drag recognition isn't driven by bubbling at all) gets a
+          // chance to run. Scoping draggable to just the handle sidesteps
+          // the problem entirely instead of trying to out-race it. The
+          // dragstart/dragend/dragover/dragleave/drop listeners stay on
+          // `section` itself (dragstart/dragend bubble up from the handle
+          // to it same as any other event; the drop-target listeners were
+          // always independent of where `draggable` was set, since they
+          // just hit-test whatever the pointer is currently over).
+          const handle = section.querySelector('[data-drag-handle]');
+          if (handle) handle.draggable = true;
 
           section.addEventListener('dragstart', (e) => {
             // The "empty slot" left behind while dragging - dashed border
@@ -3964,18 +3981,6 @@
       input.maxLength = 60;
       input.className = 'bg-[#2f3e47] border border-[#3b8fc4] rounded px-1.5 py-0.5 text-sm font-bold text-[#e6e6e6] outline-none w-44 max-w-[50vw] align-middle';
 
-      // The whole league row is a native HTML5 drag source (see the
-      // `draggable` property set on it, for reordering leagues). That's a
-      // browser default action tied to the ancestor itself, recognized
-      // outside the normal JS event-bubbling path - stopping the input's
-      // own mousedown from bubbling (tried first) did NOT stop it, since
-      // there's nothing to "stop" propagating to; the row's drag-gesture
-      // recognition isn't listening for a bubbled event at all. Actually
-      // disabling `draggable` on that ancestor for the duration of the
-      // edit is what's needed - restored once the edit ends, either way.
-      const dragRow = span.closest('[draggable="true"]');
-      if (dragRow) dragRow.draggable = false;
-
       // Enter/Escape call this directly, but removing the still-focused
       // input via replaceWith() below also fires a genuine native blur on
       // it as part of that removal - which would otherwise call finish()
@@ -3988,7 +3993,6 @@
       const finish = (commit) => {
         if (finished) return;
         finished = true;
-        if (dragRow) dragRow.draggable = true;
         if (commit) {
           const trimmed = input.value.trim();
           activeUser.catalogNames = activeUser.catalogNames || {};
@@ -4005,7 +4009,6 @@
       };
 
       input.onclick = e => e.stopPropagation();
-      input.onmousedown = e => e.stopPropagation();
       input.onkeydown = e => {
         e.stopPropagation();
         if (e.key === 'Enter') { e.preventDefault(); finish(true); }
