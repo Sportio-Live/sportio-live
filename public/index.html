@@ -347,7 +347,20 @@
           </button>
         </div>
 
-        <div class="flex justify-end mb-2">
+        <div class="flex items-center justify-between mb-2 gap-4">
+          <div class="flex items-center gap-2">
+            <label class="flex items-center gap-2 cursor-pointer select-none">
+              <div class="relative shrink-0">
+                <input type="checkbox" id="all-games-today-toggle" onchange="toggleAllGamesToday()" class="sr-only peer">
+                <div class="w-9 h-5 bg-[#56707d] rounded-full peer-checked:bg-[#3b8fc4] transition"></div>
+                <div class="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full transition peer-checked:translate-x-4"></div>
+              </div>
+              <span id="all-games-today-label" class="text-xs font-semibold text-[#e6e6e6]/75">"Live Sports Today" catalog</span>
+            </label>
+            <button type="button" onclick="startInlineRename('all-games-today-label', 'sb_all_today', 'Live Sports Today', true, event)" class="text-[#e6e6e6]/40 hover:text-[#5aa8d1] transition px-0.5" title="Rename this catalog (shown in Stremio)">
+              <i class="fa-solid fa-pen text-[11px]"></i>
+            </button>
+          </div>
           <button id="expand-all-btn" onclick="toggleAllAccordions()" class="text-xs font-bold text-[#5aa8d1] hover:text-[#6bb5dd] flex items-center gap-1.5 transition">
             <i class="fa-solid fa-expand"></i>
             Expand All
@@ -1388,7 +1401,7 @@
         });
         const data = await res.json();
         if (data.success) {
-          activeUser = { uuid, password, providers: data.providers || [], timeZone: data.timeZone, sportOrder: data.sportOrder || [], nameFormat: data.nameFormat, titleFormat: data.titleFormat };
+          activeUser = { uuid, password, providers: data.providers || [], timeZone: data.timeZone, sportOrder: data.sportOrder || [], hiddenFromHomeSports: data.hiddenFromHomeSports || [], allGamesTodayEnabled: !!data.allGamesTodayEnabled, catalogNames: data.catalogNames || {}, nameFormat: data.nameFormat, titleFormat: data.titleFormat };
           activeProviderIndex = 0;
           document.getElementById('active-uuid-display').textContent = uuid;
           resetDashboardPanels();
@@ -1924,18 +1937,7 @@
       }).join('');
     }
 
-    // Removes any lingering drop-position indicator from every draggable
-    // section in a container - called before applying a new one and on
-    // drag end/leave, so at most one section ever shows an indicator at
-    // a time.
-    function clearAllDropIndicators(container) {
-      container.querySelectorAll('[data-sport]').forEach(el => {
-        el.style.borderTop = '';
-        el.style.borderBottom = '';
-      });
-    }
-
-    function renderCategoryConfig(sportsList, containerId, idPrefix, getPreSelected, getGlobalSelected, existingOrder, onReorder) {
+    function renderCategoryConfig(sportsList, containerId, idPrefix, getPreSelected, getGlobalSelected, existingOrder, onReorder, getHiddenFromHome = () => false) {
       const container = document.getElementById(containerId);
       container.innerHTML = '';
 
@@ -1959,9 +1961,9 @@
 
       // Global always sits first, regardless of which real leagues are
       // selected - it functions exactly like any other league's section,
-      // just with a globe icon instead of a sport icon. It's also never
-      // draggable, for the same reason - its position is fixed by design,
-      // not something the user reorders.
+      // just with a globe icon instead of a sport icon. It also never gets
+      // move up/down buttons, for the same reason - its position is fixed
+      // by design, not something the user reorders.
       const fullList = ['GLOBAL', ...sortedSportsList];
       const globalSelected = getGlobalSelected();
 
@@ -1970,6 +1972,35 @@
         const preSelected = isGlobalSection ? globalSelected : getPreSelected(sport);
         const icon = isGlobalSection ? 'fa-globe' : (SPORT_ICONS[sport] || 'fa-trophy');
         const sectionLabel = isGlobalSection ? 'Global' : (SPORT_LABELS[sport] || sport);
+
+        // Only the real dashboard has an account (and a real Stremio catalog
+        // behind it) to rename - the wizard's leagues step and the Global
+        // section (not a catalog at all, so it keeps the plain short label)
+        // never get the pencil icon. The header shows the same name the
+        // manifest actually uses ("X Live Games" by default, or the custom
+        // override) rather than the short section label - showing anything
+        // else here was actively misleading about what's really in the
+        // manifest, which is the whole reason this control exists.
+        const catalogId = `sb_${sport.toLowerCase()}`;
+        const defaultCatalogName = `${sectionLabel} Live Games`;
+        const canRenameCatalog = idPrefix === '' && !isGlobalSection;
+        const customCatalogName = canRenameCatalog
+          ? ((activeUser && activeUser.catalogNames && activeUser.catalogNames[catalogId]) || '')
+          : '';
+        const headerLabelId = `catlabel-${idPrefix}${sport}`;
+        // customCatalogName is arbitrary user-entered text (see the pencil
+        // rename control), unlike every other value interpolated into this
+        // section's innerHTML - it needs proper escaping for both the
+        // element content (escapeHtml) and the title attribute
+        // (escapeHtml alone leaves a literal " that would break out of a
+        // double-quoted attribute, since HTML text-node serialization only
+        // ever escapes &, < and > - not quotes).
+        const headerLabelTextRaw = isGlobalSection ? sectionLabel : (customCatalogName || defaultCatalogName);
+        const headerLabelText = escapeHtml(headerLabelTextRaw);
+        const headerLabelTitleAttr = headerLabelText.replace(/"/g, '&quot;');
+        const renameCatalogBtn = canRenameCatalog
+          ? `<button type="button" onclick="startInlineRename('${headerLabelId}', '${catalogId}', '${escapeJsAttr(defaultCatalogName)}', false, event)" class="text-[#e6e6e6]/40 hover:text-[#5aa8d1] transition px-0.5 shrink-0" title="Rename this league's catalog (shown in Stremio)"><i class="fa-solid fa-pen text-[11px]"></i></button>`
+          : '';
 
         const section = document.createElement('div');
         section.className = 'bg-[#3b4d58]/40 border border-[#e6e6e6]/15 rounded-lg overflow-hidden';
@@ -1984,8 +2015,6 @@
         const instructionText = isGlobalSection
           ? 'Categories checked here are automatically searched for every league, in addition to that league\'s own selections.'
           : 'Please choose which categories should be searched when sourcing game streams.';
-        const dragHandle = isGlobalSection ? '' : '<i class="fa-solid fa-grip-vertical text-[#e6e6e6]/40 text-sm cursor-grab active:cursor-grabbing"></i>';
-
         // Only the real dashboard (idPrefix === '') can remove a league
         // in place - the wizard's own leagues step has no
         // provider/selectedSports yet to remove one from. A real <button>
@@ -1998,15 +2027,46 @@
           ? `<button type="button" onclick="event.stopPropagation(); removeLeagueFromCategorySearch('${sport}')" class="text-[#e6e6e6]/45 hover:text-[#e56a6a] transition px-1" title="Remove league"><i class="fa-solid fa-xmark"></i></button>`
           : '';
 
+        // Only the real dashboard has an account to persist this against,
+        // and Global isn't itself a browsable catalog - same guard as the
+        // remove-league button above.
+        const isHiddenFromHome = (idPrefix === '' && !isGlobalSection) && getHiddenFromHome(sport);
+        const homeVisBtn = (idPrefix === '' && !isGlobalSection)
+          ? `<button type="button" id="homevis-${sport}" onclick="event.stopPropagation(); toggleHiddenFromHome('${sport}')" class="transition px-1 ${isHiddenFromHome ? 'text-[#e6e6e6]/30 hover:text-[#e6e6e6]/60' : 'text-[#5aa8d1] hover:text-[#6bb5dd]'}" title="${isHiddenFromHome ? 'Hidden from the Home screen - click to show on Home' : 'Shown on the Home screen - click to hide from Home'}">
+                <span class="relative inline-block">
+                  <i class="fa-solid fa-house"></i>
+                  <span id="homevis-slash-${sport}" class="absolute top-1/2 left-1/2${isHiddenFromHome ? '' : ' hidden'}" style="width:1.3em;height:1.5px;background:currentColor;transform:translate(-50%,-50%) rotate(-45deg);"></span>
+                </span>
+              </button>`
+          : '';
+
+        // Reordering used to be native HTML5 drag-and-drop on the whole
+        // row, but that made the row's own interactive controls (the
+        // rename pencil/input especially) unreliable: a real mouse click
+        // has enough incidental movement between mousedown and mouseup to
+        // occasionally read as a drag gesture, which yanks focus away
+        // before any click/keydown handler gets a chance to run - and
+        // that's a browser default action, not something a JS
+        // stopPropagation() (tried first) or a temporarily-toggled
+        // `draggable` (tried second) reliably heads off across every
+        // browser. Plain up/down buttons - wired up as click listeners
+        // below, right alongside the click handlers already attached for
+        // drag events - sidestep the whole native-drag conflict entirely.
+        const reorderBtns = isGlobalSection ? '' : `
+              <button type="button" data-move-up class="text-[#e6e6e6]/45 hover:text-[#e6e6e6] transition px-1" title="Move up"><i class="fa-solid fa-arrow-up text-xs"></i></button>
+              <button type="button" data-move-down class="text-[#e6e6e6]/45 hover:text-[#e6e6e6] transition px-1" title="Move down"><i class="fa-solid fa-arrow-down text-xs"></i></button>`;
+
         section.innerHTML = `
           <div role="button" tabindex="0" onclick="toggleAccordionSection('${idPrefix}', '${sport}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAccordionSection('${idPrefix}', '${sport}');}" class="w-full flex items-center justify-between px-4 py-3 hover:bg-[#3b4d58]/40 transition text-left cursor-pointer">
-            <div class="flex items-center gap-3">
-              ${dragHandle}
-              <i class="fa-solid ${icon} text-[#5aa8d1] text-base w-5 text-center"></i>
-              <span class="font-bold text-sm text-[#e6e6e6]">${sectionLabel}</span>
+            <div class="flex items-center gap-3 min-w-0 flex-1">
+              <i id="${idPrefix}chevron-${sport}" class="fa-solid fa-chevron-down text-[#e6e6e6]/55 text-xs transition-transform shrink-0"></i>
+              <i class="fa-solid ${icon} text-[#5aa8d1] text-base w-5 text-center shrink-0"></i>
+              <span id="${headerLabelId}" class="font-bold text-sm text-[#e6e6e6] truncate min-w-0" title="${headerLabelTitleAttr}">${headerLabelText}</span>
+              ${renameCatalogBtn}
             </div>
-            <div class="flex items-center gap-3">
-              <i id="${idPrefix}chevron-${sport}" class="fa-solid fa-chevron-down text-[#e6e6e6]/55 text-xs transition-transform"></i>
+            <div class="flex items-center gap-3 shrink-0">
+              ${reorderBtns}
+              ${homeVisBtn}
               <span id="${idPrefix}badge-${sport}" class="text-xs font-semibold px-2 py-0.5 rounded-full ${badgeClass}">${effectiveCount} selected</span>
               ${removeLeagueBtn}
             </div>
@@ -2025,79 +2085,28 @@
 
         if (!isGlobalSection) {
           section.dataset.sport = sport;
-          section.draggable = true;
 
-          section.addEventListener('dragstart', (e) => {
-            // The "empty slot" left behind while dragging - dashed border
-            // and low opacity read clearly as "this is being moved", not
-            // just a generic dimmed state. Inline styles rather than
-            // Tailwind classes here, same reasoning as the drop indicator
-            // below - these are applied purely at runtime via JS, with no
-            // static text anywhere in the page's HTML for Tailwind's CDN
-            // JIT scanner to have already picked up.
-            section.style.opacity = '0.15';
-            section.style.border = '2px dashed rgba(230,230,230,0.3)';
-
-            // Native drag-and-drop's default cursor-following image is
-            // just a flat snapshot of the element - CSS transitions on the
-            // original don't affect it. Supplying a styled clone instead
-            // gives a genuine "picked up" look: slightly larger, tilted,
-            // with a strong shadow.
-            const dragImage = section.cloneNode(true);
-            dragImage.style.position = 'fixed';
-            dragImage.style.top = '-9999px';
-            dragImage.style.width = `${section.offsetWidth}px`;
-            dragImage.style.transform = 'scale(1.05) rotate(2deg)';
-            dragImage.style.boxShadow = '0 20px 40px rgba(0,0,0,0.5)';
-            dragImage.style.opacity = '1';
-            document.body.appendChild(dragImage);
-            e.dataTransfer.setDragImage(dragImage, e.clientX - section.getBoundingClientRect().left, e.clientY - section.getBoundingClientRect().top);
-            setTimeout(() => dragImage.remove(), 0);
-
-            e.dataTransfer.setData('text/plain', sport);
-            e.dataTransfer.effectAllowed = 'move';
-          });
-          section.addEventListener('dragend', () => {
-            section.style.opacity = '';
-            section.style.border = '';
-            clearAllDropIndicators(container);
-          });
-          section.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = 'move';
-
-            // Live preview of where the item would land if dropped right
-            // now - a highlighted line on whichever edge (top/bottom) the
-            // cursor is currently closer to. Inline styles here rather
-            // than Tailwind classes, since these are applied purely via
-            // classList/style at runtime - safer than relying on the
-            // Tailwind CDN's JIT scanner picking up classes that never
-            // appear as literal text anywhere in the page's HTML.
-            clearAllDropIndicators(container);
-            const rect = section.getBoundingClientRect();
-            const insertBefore = (e.clientY - rect.top) < rect.height / 2;
-            section.style.borderTop = insertBefore ? '3px solid #3b8fc4' : '';
-            section.style.borderBottom = insertBefore ? '' : '3px solid #3b8fc4';
-          });
-          section.addEventListener('dragleave', () => {
-            section.style.borderTop = '';
-            section.style.borderBottom = '';
-          });
-          section.addEventListener('drop', (e) => {
-            e.preventDefault();
-            clearAllDropIndicators(container);
-            const draggedSport = e.dataTransfer.getData('text/plain');
-            if (!draggedSport || draggedSport === sport) return;
-            const draggedEl = container.querySelector(`[data-sport="${draggedSport}"]`);
-            if (!draggedEl) return;
-
-            const rect = section.getBoundingClientRect();
-            const insertBefore = (e.clientY - rect.top) < rect.height / 2;
-            container.insertBefore(draggedEl, insertBefore ? section : section.nextSibling);
+          // Moves this section one slot up/down among the other real
+          // leagues, then persists the new order exactly the way the old
+          // drag-and-drop drop handler did (recompute from DOM order, hand
+          // it to onReorder). Global has no data-sport and always sits
+          // first - a sibling without one means "there's nothing further
+          // in that direction to swap with" (either genuinely at the edge,
+          // or the only thing left is Global), so this naturally stops
+          // there instead of swapping a league in front of it.
+          const moveTo = (direction) => {
+            const sibling = direction === 'up' ? section.previousElementSibling : section.nextElementSibling;
+            if (!sibling || !sibling.dataset.sport) return;
+            if (direction === 'up') container.insertBefore(section, sibling);
+            else container.insertBefore(sibling, section);
 
             const newOrder = Array.from(container.querySelectorAll('[data-sport]')).map(el => el.dataset.sport);
             if (onReorder) onReorder(newOrder);
-          });
+          };
+          const upBtn = section.querySelector('[data-move-up]');
+          const downBtn = section.querySelector('[data-move-down]');
+          if (upBtn) upBtn.addEventListener('click', (e) => { e.stopPropagation(); moveTo('up'); });
+          if (downBtn) downBtn.addEventListener('click', (e) => { e.stopPropagation(); moveTo('down'); });
         }
 
         container.appendChild(section);
@@ -3548,6 +3557,28 @@
     // there's nothing left to lose and no need to interrupt with a
     // confirm() for an edit that never leaves this panel.
 
+    // Updates the button in place rather than going through
+    // renderActiveProviderPanel() - that would also reset every accordion
+    // back to collapsed (allAccordionsExpanded = false on every render),
+    // which would be a jarring side effect of toggling one icon.
+    function toggleHiddenFromHome(sport) {
+      if (!activeUser) return;
+      activeUser.hiddenFromHomeSports = activeUser.hiddenFromHomeSports || [];
+      const idx = activeUser.hiddenFromHomeSports.indexOf(sport);
+      const nowHidden = idx === -1;
+      if (nowHidden) activeUser.hiddenFromHomeSports.push(sport);
+      else activeUser.hiddenFromHomeSports.splice(idx, 1);
+
+      const btn = document.getElementById(`homevis-${sport}`);
+      if (btn) {
+        btn.className = `transition px-1 ${nowHidden ? 'text-[#e6e6e6]/30 hover:text-[#e6e6e6]/60' : 'text-[#5aa8d1] hover:text-[#6bb5dd]'}`;
+        btn.title = nowHidden ? 'Hidden from the Home screen - click to show on Home' : 'Shown on the Home screen - click to hide from Home';
+      }
+      const slash = document.getElementById(`homevis-slash-${sport}`);
+      if (slash) slash.classList.toggle('hidden', !nowHidden);
+      markDashboardDirty();
+    }
+
     function removeLeagueFromCategorySearch(sport) {
       const provider = activeUser.providers[activeProviderIndex];
       commitActiveProviderCategoryState();
@@ -3821,7 +3852,8 @@
         (newOrder) => {
           if (activeUser) activeUser.sportOrder = newOrder;
           markDashboardDirty();
-        }
+        },
+        (sport) => !!(activeUser && (activeUser.hiddenFromHomeSports || []).includes(sport))
       );
       // Every section renders collapsed by default, so the Expand/Collapse
       // All control needs to match that on every render, regardless of
@@ -3829,6 +3861,99 @@
       allAccordionsExpanded = false;
       updateExpandAllButton();
       updateAddLeagueButtonVisibility();
+      document.getElementById('all-games-today-toggle').checked = !!(activeUser && activeUser.allGamesTodayEnabled);
+      // Only overwrite the label when it's currently the resting span, not
+      // mid-edit as a rename <input> (same id, swapped in by
+      // startInlineRename) - a re-render triggered while someone's
+      // actively typing a new name (e.g. a tab switch) must never clobber
+      // their in-progress edit.
+      const allTodayLabel = document.getElementById('all-games-today-label');
+      if (allTodayLabel && allTodayLabel.tagName !== 'INPUT') {
+        const customAllTodayName = activeUser && activeUser.catalogNames && activeUser.catalogNames.sb_all_today;
+        allTodayLabel.textContent = `"${customAllTodayName || 'Live Sports Today'}" catalog`;
+      }
+    }
+
+    // Account-wide (not per-provider) setting, so unlike the sport
+    // accordion's own controls this doesn't touch provider.sportCategories -
+    // just flips the flag saved alongside timeZone/hiddenFromHomeSports.
+    function toggleAllGamesToday() {
+      if (!activeUser) return;
+      activeUser.allGamesTodayEnabled = document.getElementById('all-games-today-toggle').checked;
+      markDashboardDirty();
+    }
+
+    // Shared by every rename-this-catalog pencil icon (the league accordion
+    // headers and the "All Games Today" row) - swaps the label span for a
+    // focused text input pre-filled with the catalog's current effective
+    // name (which is always `defaultName` itself when there's no override,
+    // since the resting label is kept in sync with the real manifest name -
+    // see renderCategoryConfig), and on commit stores the trimmed value
+    // into activeUser.catalogNames keyed by catalog id (server-side, this
+    // is what the manifest route checks before falling back to the
+    // built-in default name). A value that's empty or matches the default
+    // is never persisted as a needless override, so clearing the field (or
+    // just retyping the default) cleanly reverts to the built-in name.
+    //
+    // `quoted` controls how the resting span renders the effective name:
+    // false for the compact league headers (bare label), true for the
+    // standalone "All Games Today" row (spelled out as a full sentence,
+    // since there's no icon/context otherwise identifying what's being
+    // named).
+    function startInlineRename(spanId, catalogId, defaultName, quoted, ev) {
+      ev.stopPropagation();
+      if (!activeUser) return;
+      const span = document.getElementById(spanId);
+      if (!span || span.tagName === 'INPUT') return;
+
+      const format = (custom) => quoted ? `"${custom || defaultName}" catalog` : (custom || defaultName);
+
+      const current = (activeUser.catalogNames && activeUser.catalogNames[catalogId]) || '';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.id = spanId;
+      input.value = current || defaultName;
+      input.maxLength = 60;
+      input.className = 'bg-[#2f3e47] border border-[#3b8fc4] rounded px-1.5 py-0.5 text-sm font-bold text-[#e6e6e6] outline-none w-44 max-w-[50vw] align-middle';
+
+      // Enter/Escape call this directly, but removing the still-focused
+      // input via replaceWith() below also fires a genuine native blur on
+      // it as part of that removal - which would otherwise call finish()
+      // a second time (via the onblur handler) for the same edit, trying
+      // to replaceWith() a node that's already been detached. Harmless in
+      // effect either way (the second pass computes the same commit and
+      // no-ops on an already-parentless node) but throws in the console,
+      // so guarded outright rather than relying on that being silent.
+      let finished = false;
+      const finish = (commit) => {
+        if (finished) return;
+        finished = true;
+        if (commit) {
+          const trimmed = input.value.trim();
+          activeUser.catalogNames = activeUser.catalogNames || {};
+          if (!trimmed || trimmed === defaultName) delete activeUser.catalogNames[catalogId];
+          else activeUser.catalogNames[catalogId] = trimmed;
+          markDashboardDirty();
+        }
+        const custom = activeUser.catalogNames && activeUser.catalogNames[catalogId];
+        const newSpan = document.createElement('span');
+        newSpan.id = spanId;
+        newSpan.className = span.className;
+        newSpan.title = newSpan.textContent = format(custom);
+        input.replaceWith(newSpan);
+      };
+
+      input.onclick = e => e.stopPropagation();
+      input.onkeydown = e => {
+        e.stopPropagation();
+        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+        else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+      };
+      input.onblur = () => finish(true);
+
+      span.replaceWith(input);
+      input.focus();
+      input.select();
     }
 
     // Clears the unsaved-changes indicator - only ever called right after
@@ -4034,6 +4159,9 @@
             providers: activeUser.providers,
             timeZone: activeUser.timeZone,
             sportOrder: activeUser.sportOrder,
+            hiddenFromHomeSports: activeUser.hiddenFromHomeSports,
+            allGamesTodayEnabled: activeUser.allGamesTodayEnabled,
+            catalogNames: activeUser.catalogNames,
             nameFormat: activeUser.nameFormat,
             titleFormat: activeUser.titleFormat
           })

@@ -1372,6 +1372,18 @@ async function warmTodaysArt() {
     imagesFailed: renderResult.bad
   };
   console.log(`[ArtWarmup] Checked ${result.sportsChecked} leagues, ${result.gamesChecked} game(s) today across ${timeZones.length} timezone(s): ${result.teamsWarmed} logo(s) warmed (${result.teamsFailed} failed), ${result.imagesRendered} image(s) pre-rendered (${result.imagesFailed} failed).`);
+
+  // Confirmed via /api/admin/diagnostics: this pass's sharp/libvips
+  // renders balloon Node's "external" native memory by hundreds of MB,
+  // but V8's own GC scheduling is driven by JS heap pressure - which this
+  // app's JS heap barely generates even during a huge render burst - so
+  // that memory can sit around fully reclaimable but uncollected
+  // indefinitely. Forcing a collection right here, once the burst is
+  // over, reclaims it immediately instead of leaving it to chance. A
+  // no-op unless the process was started with --expose-gc (see
+  // package.json's start script).
+  if (typeof global.gc === 'function') global.gc();
+
   return result;
 }
 
@@ -3213,6 +3225,9 @@ app.post('/api/user/login', async (req, res) => {
     providers: user.providers || [],
     timeZone: user.timeZone || 'America/New_York',
     sportOrder: user.sportOrder || [],
+    hiddenFromHomeSports: user.hiddenFromHomeSports || [],
+    allGamesTodayEnabled: !!user.allGamesTodayEnabled,
+    catalogNames: user.catalogNames || {},
     nameFormat: user.nameFormat || DEFAULT_NAME_FORMAT,
     titleFormat: user.titleFormat || DEFAULT_TITLE_FORMAT,
     manifestUrl: `/user/${uuid}/manifest.json`
@@ -3220,7 +3235,7 @@ app.post('/api/user/login', async (req, res) => {
 });
 
 app.post('/api/user/update', async (req, res) => {
-  const { uuid, password, providers, timeZone, sportOrder, nameFormat, titleFormat } = req.body;
+  const { uuid, password, providers, timeZone, sportOrder, hiddenFromHomeSports, allGamesTodayEnabled, catalogNames, nameFormat, titleFormat } = req.body;
   const ip = req.ip;
 
   if (isRateLimited(ip)) {
@@ -3249,6 +3264,29 @@ app.post('/api/user/update', async (req, res) => {
   }
   if (timeZone) user.timeZone = timeZone;
   if (sportOrder !== undefined) user.sportOrder = sportOrder;
+  if (hiddenFromHomeSports !== undefined) {
+    user.hiddenFromHomeSports = Array.isArray(hiddenFromHomeSports)
+      ? hiddenFromHomeSports.filter(s => typeof s === 'string')
+      : [];
+  }
+  if (allGamesTodayEnabled !== undefined) user.allGamesTodayEnabled = !!allGamesTodayEnabled;
+  // Custom per-catalog display names, keyed by catalog id (e.g. "sb_nba",
+  // "sb_all_today") - only non-empty string values survive, everything
+  // else (wrong type, blank/whitespace-only) is dropped rather than saved,
+  // since the dashboard's own rename control already treats a
+  // cleared/default-matching value as "remove the override" before it
+  // ever reaches this request.
+  if (catalogNames !== undefined) {
+    const sanitized = {};
+    if (catalogNames && typeof catalogNames === 'object' && !Array.isArray(catalogNames)) {
+      for (const [id, name] of Object.entries(catalogNames)) {
+        if (typeof id === 'string' && typeof name === 'string' && name.trim()) {
+          sanitized[id] = name.trim().slice(0, 60);
+        }
+      }
+    }
+    user.catalogNames = sanitized;
+  }
   // Blank/whitespace-only is treated as "go back to default" rather than
   // saved literally - an empty template would otherwise render every
   // stream's name/title as a blank string, which is never actually what
@@ -3416,6 +3454,7 @@ app.post('/api/admin/users', async (req, res) => {
   // of account this is.
   const users = Object.values(userConfigs).map(user => ({
     uuid: user.uuid,
+    nickname: user.nickname || null,
     connectionTypes: (user.providers || []).map(p => p.connectionType || 'xtream'),
     createdAt: user.createdAt || null,
     lastAccessedAt: user.lastAccessedAt || null
@@ -3505,7 +3544,7 @@ app.post('/api/admin/m3u-cache/recache', async (req, res) => {
   // enabledSources list (the default) means this is just a no-op loop,
   // not a skipped step, so no separate "is EPGShare enabled" branch is
   // needed here.
-  epgshare.clearEpgShareCache();
+  await epgshare.clearEpgShareCache();
   const epgShareResults = await epgshare.refreshEnabledSources(epgShareSettings.enabledSources);
   const epgShareRefreshedCount = epgShareResults.filter(r => r.success).length;
 
@@ -3517,6 +3556,110 @@ app.post('/api/admin/m3u-cache/recache', async (req, res) => {
     // Per-source detail (file + error) so a failure is diagnosable from
     // the admin page itself, not just an aggregate "N failed" count.
     epgShareResults
+  });
+});
+
+// Read-only memory diagnostics for an admin to see what's actually using
+// RAM on THIS running process right now - process.memoryUsage() straight
+// from the live server, not a new one (unlike `docker exec node -e ...`,
+// which only ever reports on a freshly-spawned process and tells you
+// nothing about the one actually serving traffic). Pairs a size for every
+// cache still held in memory with a byte count for the ones now on disk
+// (render-cache, epg-cache), so a high RSS number from `docker stats` can
+// actually be traced to a specific cache instead of guessed at.
+app.post('/api/admin/diagnostics', async (req, res) => {
+  const { username, password, forceGc } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  const mb = (bytes) => Math.round(bytes / 1024 / 1024 * 10) / 10;
+  const memToMB = (mem) => ({
+    rss: mb(mem.rss),
+    heapUsed: mb(mem.heapUsed),
+    heapTotal: mb(mem.heapTotal),
+    external: mb(mem.external),
+    arrayBuffers: mb(mem.arrayBuffers)
+  });
+
+  // Only present when the process was started with --expose-gc (see the
+  // Dockerfile's CMD) - global.gc() forces a full V8 garbage collection
+  // pass on demand, used here purely as a diagnostic: comparing memory
+  // immediately before and after tells us whether high `external` memory
+  // (native memory tied to still-referenced objects - Buffers, sharp's own
+  // native objects) is genuinely still in use, or just hasn't been
+  // collected yet because nothing has pressured V8's GC scheduler to run
+  // - two very different problems that look identical from the outside.
+  const gcAvailable = typeof global.gc === 'function';
+  let gcRan = false;
+  let processMemoryBeforeGcMB = null;
+  if (forceGc && gcAvailable) {
+    processMemoryBeforeGcMB = memToMB(process.memoryUsage());
+    global.gc();
+    gcRan = true;
+  }
+
+  // Walks a disk cache directory (recursively, for epg-cache's per-source
+  // subdirectories) summing file sizes - approximate is fine here, this is
+  // an on-demand diagnostic hit, not something called per-request.
+  async function dirStats(dir) {
+    let files = 0;
+    let bytes = 0;
+    async function walk(current) {
+      let entries;
+      try {
+        entries = await fs.promises.readdir(current, { withFileTypes: true });
+      } catch (err) {
+        return;
+      }
+      for (const entry of entries) {
+        const full = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          await walk(full);
+        } else {
+          files++;
+          bytes += (await fs.promises.stat(full)).size;
+        }
+      }
+    }
+    await walk(dir);
+    return { files, megabytes: mb(bytes) };
+  }
+
+  const [renderCacheStats, epgCacheStats] = await Promise.all([
+    dirStats(RENDER_CACHE_DIR),
+    dirStats(path.join(DATA_DIR, 'epg-cache'))
+  ]);
+
+  return res.json({
+    gcAvailable,
+    gcRequested: !!forceGc,
+    gcRan,
+    processMemoryBeforeGcMB,
+    processMemoryMB: memToMB(process.memoryUsage()),
+    inMemoryCaches: {
+      imageBytesCache: imageBytesCache.size,
+      gamesCache: gamesCache.size,
+      teamNameCache: teamNameCache.size,
+      realLeagueLogoCache: Object.keys(realLeagueLogoCache).length,
+      scheduleBackgroundCache: Object.keys(scheduleBackgroundCache).length,
+      inlineSvgOverlayCache: Object.keys(inlineSvgOverlayCache).length,
+      m3uSourceCache: m3u.m3uSourceCache.size,
+      epgShareCache: epgshare.epgShareCache.size
+    },
+    onDiskCaches: {
+      renderCache: renderCacheStats,
+      epgCache: epgCacheStats
+    }
   });
 });
 
@@ -3927,6 +4070,80 @@ app.post('/api/admin/user/delete', async (req, res) => {
   return res.json({ success: true });
 });
 
+// Lets the admin label an account with something more memorable than its
+// raw UUID (e.g. a customer's name) - purely a display/sort convenience on
+// the admin page, never used to authenticate or look up the account
+// anywhere else.
+app.post('/api/admin/user/nickname', async (req, res) => {
+  const { username, password, targetUuid, nickname } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  const user = userConfigs[targetUuid];
+  if (!user) {
+    return res.status(404).json({ error: 'No account found with that UUID.' });
+  }
+
+  const trimmed = typeof nickname === 'string' ? nickname.trim().slice(0, 60) : '';
+  if (trimmed) {
+    user.nickname = trimmed;
+  } else {
+    delete user.nickname;
+  }
+  saveUserConfigs();
+
+  return res.json({ success: true, nickname: user.nickname || null });
+});
+
+// A sport only counts as active if at least one category folder has been
+// mapped to it in AT LEAST ONE provider - this keeps unconfigured sports
+// out of Nuvio while letting different providers each contribute different
+// leagues (or the same league redundantly) to the same account. GLOBAL is a
+// special key (categories that apply to every real sport's search
+// automatically, scoped to that one provider) and is never itself a
+// browsable catalog.
+//
+// Order reflects the user's own drag-and-drop ordering of the Category
+// Search accordions, not raw object insertion order (which isn't a
+// meaningful order at all - just whatever sequence categories happened to
+// get saved in over time). Anything not yet given an explicit position
+// (e.g. a league added after the order was last set) falls back to
+// alphabetical, sorting after everything explicitly ordered.
+//
+// Shared by the manifest route (to list per-league catalogs) and the "All
+// Games Today" combined catalog (to know which sports to merge together).
+function getOrderedActiveSports(user) {
+  const activeSportsSet = new Set();
+  for (const provider of user.providers || []) {
+    for (const [sport, categoryIds] of Object.entries(provider.sportCategories || {})) {
+      if (sport !== 'GLOBAL' && Array.isArray(categoryIds) && categoryIds.length > 0) {
+        activeSportsSet.add(sport);
+      }
+    }
+  }
+  const activeSports = [...activeSportsSet];
+
+  const sportOrder = user.sportOrder || [];
+  return [...activeSports].sort((a, b) => {
+    const idxA = sportOrder.indexOf(a);
+    const idxB = sportOrder.indexOf(b);
+    if (idxA === -1 && idxB === -1) return getSportDisplayName(a).localeCompare(getSportDisplayName(b));
+    if (idxA === -1) return 1;
+    if (idxB === -1) return -1;
+    return idxA - idxB;
+  });
+}
+
 app.get('/user/:uuid/manifest.json', (req, res) => {
   const user = userConfigs[req.params.uuid];
   if (!user) return res.status(404).json({ error: 'Invalid manifest UUID' });
@@ -3938,44 +4155,62 @@ app.get('/user/:uuid/manifest.json', (req, res) => {
   user.lastAccessedAt = new Date().toISOString();
   saveUserConfigs();
 
-  // A sport only appears as a catalog if at least one category folder has
-  // been mapped to it in AT LEAST ONE provider - this keeps unconfigured
-  // sports out of Nuvio while letting different providers each contribute
-  // different leagues (or the same league redundantly) to the same account.
-  // GLOBAL is a special key (categories that apply to every real sport's
-  // search automatically, scoped to that one provider) and is never itself
-  // a browsable catalog.
-  const activeSportsSet = new Set();
-  for (const provider of user.providers || []) {
-    for (const [sport, categoryIds] of Object.entries(provider.sportCategories || {})) {
-      if (sport !== 'GLOBAL' && Array.isArray(categoryIds) && categoryIds.length > 0) {
-        activeSportsSet.add(sport);
-      }
-    }
-  }
-  const activeSports = [...activeSportsSet];
+  const orderedActiveSports = getOrderedActiveSports(user);
 
-  // Catalog order reflects the user's own drag-and-drop ordering of the
-  // Category Search accordions, not raw object insertion order (which
-  // isn't a meaningful order at all - just whatever sequence categories
-  // happened to get saved in over time). Anything not yet given an
-  // explicit position (e.g. a league added after the order was last set)
-  // falls back to alphabetical, sorting after everything explicitly ordered.
-  const sportOrder = user.sportOrder || [];
-  const orderedActiveSports = [...activeSports].sort((a, b) => {
-    const idxA = sportOrder.indexOf(a);
-    const idxB = sportOrder.indexOf(b);
-    if (idxA === -1 && idxB === -1) return getSportDisplayName(a).localeCompare(getSportDisplayName(b));
-    if (idxA === -1) return 1;
-    if (idxB === -1) return -1;
-    return idxA - idxB;
+  // Two mechanisms layered together, both lifted from AIOMetadata's own
+  // manifest (compared side by side against a real AIOMetadata export where
+  // one catalog is hidden from Home and one isn't):
+  //
+  // 1. Spec-correct: Stremio/Nuvio's Home board requests every catalog with
+  //    zero extra params - a catalog that declares a *required* extra can
+  //    never satisfy that request, so spec-compliant clients (Stremio Web,
+  //    Nuvio Mobile/Desktop/iOS - all confirmed working) silently skip it
+  //    from Home while it stays a completely normal, fully loadable catalog
+  //    everywhere else (Discover prompts for the value, same as any addon's
+  //    genre-filtered catalog, using the first/only option as its default).
+  //    The genre value itself is never read by the catalog route below - it
+  //    exists purely to make the parameter "required".
+  // 2. Non-spec fallback: a plain `showInHome: false` on the catalog object
+  //    itself. Nuvio Android TV runs on an entirely different codebase from
+  //    Nuvio's other platforms (forked from CloudStream3, no Stremio-extra
+  //    handling found in its source) and doesn't honor #1 at all - but it
+  //    does honor this flag, going by AIOMetadata's real manifest, so it's
+  //    included for that client specifically. Harmless no-op for any client
+  //    that doesn't recognize it.
+  // Catalog display names default to a built-in name per catalog, but the
+  // dashboard lets a user override any of them (including the combined
+  // catalog below) - see /api/user/update. Keyed by catalog id rather than
+  // sport, so the combined catalog's override lives in the same map under
+  // its own id ("sb_all_today") with no special-casing needed here.
+  const catalogNames = user.catalogNames || {};
+  const hiddenFromHome = new Set(user.hiddenFromHomeSports || []);
+  const catalogs = orderedActiveSports.map(sport => {
+    const isHidden = hiddenFromHome.has(sport);
+    const catalogId = `sb_${sport.toLowerCase()}`;
+    const catalog = {
+      type: 'sports',
+      id: catalogId,
+      name: catalogNames[catalogId] || `${getSportDisplayName(sport)} Live Games`,
+      showInHome: !isHidden
+    };
+    if (isHidden) {
+      catalog.extra = [{ name: 'genre', options: ['All'], default: 'All', isRequired: true }];
+    }
+    return catalog;
   });
 
-  const catalogs = orderedActiveSports.map(sport => ({
-    type: 'sports',
-    id: `sb_${sport.toLowerCase()}`,
-    name: `${getSportDisplayName(sport)} Live Games`
-  }));
+  // Opt-in combined catalog mixing every active league's games together,
+  // sorted by start time - pinned first (ahead of the per-league catalogs)
+  // rather than folded into the user's drag-and-drop sportOrder, since it
+  // isn't itself a league and always belongs at the top when enabled.
+  if (user.allGamesTodayEnabled) {
+    catalogs.unshift({
+      type: 'sports',
+      id: 'sb_all_today',
+      name: catalogNames.sb_all_today || 'Live Sports Today',
+      showInHome: true
+    });
+  }
 
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -3993,11 +4228,57 @@ app.get('/user/:uuid/manifest.json', (req, res) => {
   });
 });
 
-app.get('/user/:uuid/catalog/sports/:id.json', async (req, res) => {
+// Catalogs hidden from Home (see the manifest route above) declare a
+// required "genre" extra, which means Stremio/Nuvio request them as
+// .../sb_nfl/genre=All.json instead of .../sb_nfl.json once opened from
+// Discover. The extra segment's value is never inspected - every sport's
+// catalog is unfiltered regardless of how it was reached.
+app.get(['/user/:uuid/catalog/sports/:id.json', '/user/:uuid/catalog/sports/:id/:extra.json'], async (req, res) => {
   const user = userConfigs[req.params.uuid];
   if (!user) return res.json({ metas: [] });
 
   const hostUrl = `${req.protocol}://${req.get('host')}`;
+  const userTz = user.timeZone || 'America/New_York';
+
+  // "All Games Today" is a synthetic combined catalog (see the manifest
+  // route) rather than a real league, so it's handled separately before
+  // the sb_{sport} id parsing below - merges every active sport's games
+  // (reusing the same 60s-cached fetch each per-league catalog already
+  // uses, so this adds no extra load beyond what a user browsing each
+  // league individually would already cause) and sorts by start time.
+  // Games with a missing/invalid date sort last rather than crashing the
+  // comparator or landing in an arbitrary spot.
+  if (req.params.id === 'sb_all_today') {
+    const orderedActiveSports = getOrderedActiveSports(user);
+    const gamesBySport = await Promise.all(
+      orderedActiveSports.map(sport => fetchGamesForSport(sport, hostUrl, userTz))
+    );
+    const allGames = orderedActiveSports.flatMap((sport, i) =>
+      gamesBySport[i].map(game => ({ ...game, sport }))
+    );
+    const startTime = game => {
+      const t = new Date(game.date).getTime();
+      return Number.isFinite(t) ? t : Infinity;
+    };
+    allGames.sort((a, b) => startTime(a) - startTime(b));
+
+    const metas = allGames.map(game => ({
+      id: `sb:${game.sport.toLowerCase()}:${game.id}`,
+      type: 'sports',
+      name: game.name,
+      poster: game.poster,
+      background: game.background,
+      logo: game.logo,
+      description: game.description
+    }));
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    return res.json({ metas });
+  }
+
   // Catalog ids are always constructed as sb_{sport} (see the manifest
   // route), so splitting on "_" and taking the second segment reliably
   // extracts the sport for every league - no need to maintain a
@@ -4006,7 +4287,6 @@ app.get('/user/:uuid/catalog/sports/:id.json', async (req, res) => {
   // before this fix.
   const sport = (req.params.id.split('_')[1] || 'mlb').toUpperCase();
 
-  const userTz = user.timeZone || 'America/New_York';
   const games = await fetchGamesForSport(sport, hostUrl, userTz);
 
   const metas = games.map(game => ({
@@ -4206,10 +4486,10 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
   // admin-enabled source, passes through completely unchanged - this never
   // blanks out a description that would otherwise have come from the
   // provider's own EPG.
-  const applyChannelEpgOverrides = (streams, provider) => {
+  const applyChannelEpgOverrides = async (streams, provider) => {
     const overrides = provider.epgOverrides;
     if (!overrides || Object.keys(overrides).length === 0) return streams;
-    return streams.map(s => {
+    return Promise.all(streams.map(async s => {
       const targetChannelId = overrides[s.channelId];
       if (!targetChannelId) return s;
       // No external source involved at all - reads the channel's current
@@ -4218,13 +4498,13 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
       if (targetChannelId === EPG_OVERRIDE_SELF_NAME) {
         return { ...s, description: s.name };
       }
-      const override = epgshare.findOverrideProgramme(targetChannelId, epgShareSettings.enabledSources, gameTimestamp);
+      const override = await epgshare.findOverrideProgramme(targetChannelId, epgShareSettings.enabledSources, gameTimestamp);
       if (!override) return s;
       // description, not title - findOverrideProgramme already falls back
       // to the EPGShare01 entry's title when that specific entry has no
       // <desc> of its own, so this is never blanked out even then.
       return { ...s, description: override.description, startTimestamp: override.startTimestamp };
-    });
+    }));
   };
 
   const perProviderResults = await Promise.allSettled(
@@ -4233,7 +4513,7 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
         if (!provider.m3u || !provider.m3u.playlistUrl) return [];
         const m3uSource = m3u.getCachedM3USource(provider.m3u.playlistUrl);
         if (!m3uSource) return [];
-        const streams = applyChannelEpgOverrides(m3u.getCandidateStreamsForGame(m3uSource, configuredCategoryIds, gameTimestamp), provider);
+        const streams = await applyChannelEpgOverrides(m3u.getCandidateStreamsForGame(m3uSource, configuredCategoryIds, gameTimestamp), provider);
         return showProviderLabel ? streams.map(s => ({ ...s, providerLabel: provider.label })) : streams;
       }
 
@@ -4268,7 +4548,7 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
           ...(showProviderLabel ? { providerLabel: provider.label } : {})
         };
       });
-      return applyChannelEpgOverrides(xtreamCandidates, provider);
+      return await applyChannelEpgOverrides(xtreamCandidates, provider);
     })
   );
 
