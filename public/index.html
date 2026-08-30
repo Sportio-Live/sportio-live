@@ -2059,6 +2059,7 @@
         section.innerHTML = `
           <div role="button" tabindex="0" onclick="toggleAccordionSection('${idPrefix}', '${sport}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAccordionSection('${idPrefix}', '${sport}');}" class="w-full flex items-center justify-between px-4 py-3 hover:bg-[#3b4d58]/40 transition text-left cursor-pointer">
             <div class="flex items-center gap-3 min-w-0 flex-1">
+              <i id="${idPrefix}chevron-${sport}" class="fa-solid fa-chevron-down text-[#e6e6e6]/55 text-xs transition-transform shrink-0"></i>
               <i class="fa-solid ${icon} text-[#5aa8d1] text-base w-5 text-center shrink-0"></i>
               <span id="${headerLabelId}" class="font-bold text-sm text-[#e6e6e6] truncate min-w-0" title="${headerLabelTitleAttr}">${headerLabelText}</span>
               ${renameCatalogBtn}
@@ -2066,7 +2067,6 @@
             <div class="flex items-center gap-3 shrink-0">
               ${reorderBtns}
               ${homeVisBtn}
-              <i id="${idPrefix}chevron-${sport}" class="fa-solid fa-chevron-down text-[#e6e6e6]/55 text-xs transition-transform"></i>
               <span id="${idPrefix}badge-${sport}" class="text-xs font-semibold px-2 py-0.5 rounded-full ${badgeClass}">${effectiveCount} selected</span>
               ${removeLeagueBtn}
             </div>
