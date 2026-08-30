@@ -1937,17 +1937,6 @@
       }).join('');
     }
 
-    // Removes any lingering drop-position indicator from every draggable
-    // section in a container - called before applying a new one and on
-    // drag end/leave, so at most one section ever shows an indicator at
-    // a time.
-    function clearAllDropIndicators(container) {
-      container.querySelectorAll('[data-sport]').forEach(el => {
-        el.style.borderTop = '';
-        el.style.borderBottom = '';
-      });
-    }
-
     function renderCategoryConfig(sportsList, containerId, idPrefix, getPreSelected, getGlobalSelected, existingOrder, onReorder, getHiddenFromHome = () => false) {
       const container = document.getElementById(containerId);
       container.innerHTML = '';
@@ -1972,9 +1961,9 @@
 
       // Global always sits first, regardless of which real leagues are
       // selected - it functions exactly like any other league's section,
-      // just with a globe icon instead of a sport icon. It's also never
-      // draggable, for the same reason - its position is fixed by design,
-      // not something the user reorders.
+      // just with a globe icon instead of a sport icon. It also never gets
+      // move up/down buttons, for the same reason - its position is fixed
+      // by design, not something the user reorders.
       const fullList = ['GLOBAL', ...sortedSportsList];
       const globalSelected = getGlobalSelected();
 
@@ -2026,8 +2015,6 @@
         const instructionText = isGlobalSection
           ? 'Categories checked here are automatically searched for every league, in addition to that league\'s own selections.'
           : 'Please choose which categories should be searched when sourcing game streams.';
-        const dragHandle = isGlobalSection ? '' : '<i data-drag-handle class="fa-solid fa-grip-vertical text-[#e6e6e6]/40 text-sm cursor-grab active:cursor-grabbing"></i>';
-
         // Only the real dashboard (idPrefix === '') can remove a league
         // in place - the wizard's own leagues step has no
         // provider/selectedSports yet to remove one from. A real <button>
@@ -2053,15 +2040,31 @@
               </button>`
           : '';
 
+        // Reordering used to be native HTML5 drag-and-drop on the whole
+        // row, but that made the row's own interactive controls (the
+        // rename pencil/input especially) unreliable: a real mouse click
+        // has enough incidental movement between mousedown and mouseup to
+        // occasionally read as a drag gesture, which yanks focus away
+        // before any click/keydown handler gets a chance to run - and
+        // that's a browser default action, not something a JS
+        // stopPropagation() (tried first) or a temporarily-toggled
+        // `draggable` (tried second) reliably heads off across every
+        // browser. Plain up/down buttons - wired up as click listeners
+        // below, right alongside the click handlers already attached for
+        // drag events - sidestep the whole native-drag conflict entirely.
+        const reorderBtns = isGlobalSection ? '' : `
+              <button type="button" data-move-up class="text-[#e6e6e6]/45 hover:text-[#e6e6e6] transition px-1" title="Move up"><i class="fa-solid fa-arrow-up text-xs"></i></button>
+              <button type="button" data-move-down class="text-[#e6e6e6]/45 hover:text-[#e6e6e6] transition px-1" title="Move down"><i class="fa-solid fa-arrow-down text-xs"></i></button>`;
+
         section.innerHTML = `
           <div role="button" tabindex="0" onclick="toggleAccordionSection('${idPrefix}', '${sport}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAccordionSection('${idPrefix}', '${sport}');}" class="w-full flex items-center justify-between px-4 py-3 hover:bg-[#3b4d58]/40 transition text-left cursor-pointer">
             <div class="flex items-center gap-3 min-w-0 flex-1">
-              ${dragHandle}
               <i class="fa-solid ${icon} text-[#5aa8d1] text-base w-5 text-center shrink-0"></i>
               <span id="${headerLabelId}" class="font-bold text-sm text-[#e6e6e6] truncate min-w-0" title="${headerLabelTitleAttr}">${headerLabelText}</span>
               ${renameCatalogBtn}
             </div>
             <div class="flex items-center gap-3 shrink-0">
+              ${reorderBtns}
               ${homeVisBtn}
               <i id="${idPrefix}chevron-${sport}" class="fa-solid fa-chevron-down text-[#e6e6e6]/55 text-xs transition-transform"></i>
               <span id="${idPrefix}badge-${sport}" class="text-xs font-semibold px-2 py-0.5 rounded-full ${badgeClass}">${effectiveCount} selected</span>
@@ -2082,96 +2085,28 @@
 
         if (!isGlobalSection) {
           section.dataset.sport = sport;
-          // draggable lives on the grip handle specifically, not the whole
-          // row - the row also now contains real interactive controls (the
-          // rename pencil/input, the home-visibility toggle, remove) and
-          // making the entire row a drag source made those unreliable to
-          // use: a real mouse click has enough incidental movement between
-          // mousedown and mouseup to occasionally read as a drag gesture,
-          // which yanks focus away before a click/keydown handler (whose
-          // own event.stopPropagation() only stops JS event bubbling, not
-          // this - drag recognition isn't driven by bubbling at all) gets a
-          // chance to run. Scoping draggable to just the handle sidesteps
-          // the problem entirely instead of trying to out-race it. The
-          // dragstart/dragend/dragover/dragleave/drop listeners stay on
-          // `section` itself (dragstart/dragend bubble up from the handle
-          // to it same as any other event; the drop-target listeners were
-          // always independent of where `draggable` was set, since they
-          // just hit-test whatever the pointer is currently over).
-          const handle = section.querySelector('[data-drag-handle]');
-          if (handle) handle.draggable = true;
 
-          section.addEventListener('dragstart', (e) => {
-            // The "empty slot" left behind while dragging - dashed border
-            // and low opacity read clearly as "this is being moved", not
-            // just a generic dimmed state. Inline styles rather than
-            // Tailwind classes here, same reasoning as the drop indicator
-            // below - these are applied purely at runtime via JS, with no
-            // static text anywhere in the page's HTML for Tailwind's CDN
-            // JIT scanner to have already picked up.
-            section.style.opacity = '0.15';
-            section.style.border = '2px dashed rgba(230,230,230,0.3)';
-
-            // Native drag-and-drop's default cursor-following image is
-            // just a flat snapshot of the element - CSS transitions on the
-            // original don't affect it. Supplying a styled clone instead
-            // gives a genuine "picked up" look: slightly larger, tilted,
-            // with a strong shadow.
-            const dragImage = section.cloneNode(true);
-            dragImage.style.position = 'fixed';
-            dragImage.style.top = '-9999px';
-            dragImage.style.width = `${section.offsetWidth}px`;
-            dragImage.style.transform = 'scale(1.05) rotate(2deg)';
-            dragImage.style.boxShadow = '0 20px 40px rgba(0,0,0,0.5)';
-            dragImage.style.opacity = '1';
-            document.body.appendChild(dragImage);
-            e.dataTransfer.setDragImage(dragImage, e.clientX - section.getBoundingClientRect().left, e.clientY - section.getBoundingClientRect().top);
-            setTimeout(() => dragImage.remove(), 0);
-
-            e.dataTransfer.setData('text/plain', sport);
-            e.dataTransfer.effectAllowed = 'move';
-          });
-          section.addEventListener('dragend', () => {
-            section.style.opacity = '';
-            section.style.border = '';
-            clearAllDropIndicators(container);
-          });
-          section.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = 'move';
-
-            // Live preview of where the item would land if dropped right
-            // now - a highlighted line on whichever edge (top/bottom) the
-            // cursor is currently closer to. Inline styles here rather
-            // than Tailwind classes, since these are applied purely via
-            // classList/style at runtime - safer than relying on the
-            // Tailwind CDN's JIT scanner picking up classes that never
-            // appear as literal text anywhere in the page's HTML.
-            clearAllDropIndicators(container);
-            const rect = section.getBoundingClientRect();
-            const insertBefore = (e.clientY - rect.top) < rect.height / 2;
-            section.style.borderTop = insertBefore ? '3px solid #3b8fc4' : '';
-            section.style.borderBottom = insertBefore ? '' : '3px solid #3b8fc4';
-          });
-          section.addEventListener('dragleave', () => {
-            section.style.borderTop = '';
-            section.style.borderBottom = '';
-          });
-          section.addEventListener('drop', (e) => {
-            e.preventDefault();
-            clearAllDropIndicators(container);
-            const draggedSport = e.dataTransfer.getData('text/plain');
-            if (!draggedSport || draggedSport === sport) return;
-            const draggedEl = container.querySelector(`[data-sport="${draggedSport}"]`);
-            if (!draggedEl) return;
-
-            const rect = section.getBoundingClientRect();
-            const insertBefore = (e.clientY - rect.top) < rect.height / 2;
-            container.insertBefore(draggedEl, insertBefore ? section : section.nextSibling);
+          // Moves this section one slot up/down among the other real
+          // leagues, then persists the new order exactly the way the old
+          // drag-and-drop drop handler did (recompute from DOM order, hand
+          // it to onReorder). Global has no data-sport and always sits
+          // first - a sibling without one means "there's nothing further
+          // in that direction to swap with" (either genuinely at the edge,
+          // or the only thing left is Global), so this naturally stops
+          // there instead of swapping a league in front of it.
+          const moveTo = (direction) => {
+            const sibling = direction === 'up' ? section.previousElementSibling : section.nextElementSibling;
+            if (!sibling || !sibling.dataset.sport) return;
+            if (direction === 'up') container.insertBefore(section, sibling);
+            else container.insertBefore(sibling, section);
 
             const newOrder = Array.from(container.querySelectorAll('[data-sport]')).map(el => el.dataset.sport);
             if (onReorder) onReorder(newOrder);
-          });
+          };
+          const upBtn = section.querySelector('[data-move-up]');
+          const downBtn = section.querySelector('[data-move-down]');
+          if (upBtn) upBtn.addEventListener('click', (e) => { e.stopPropagation(); moveTo('up'); });
+          if (downBtn) downBtn.addEventListener('click', (e) => { e.stopPropagation(); moveTo('down'); });
         }
 
         container.appendChild(section);
