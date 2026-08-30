@@ -3226,6 +3226,7 @@ app.post('/api/user/login', async (req, res) => {
     timeZone: user.timeZone || 'America/New_York',
     sportOrder: user.sportOrder || [],
     hiddenFromHomeSports: user.hiddenFromHomeSports || [],
+    allGamesTodayEnabled: !!user.allGamesTodayEnabled,
     nameFormat: user.nameFormat || DEFAULT_NAME_FORMAT,
     titleFormat: user.titleFormat || DEFAULT_TITLE_FORMAT,
     manifestUrl: `/user/${uuid}/manifest.json`
@@ -3233,7 +3234,7 @@ app.post('/api/user/login', async (req, res) => {
 });
 
 app.post('/api/user/update', async (req, res) => {
-  const { uuid, password, providers, timeZone, sportOrder, hiddenFromHomeSports, nameFormat, titleFormat } = req.body;
+  const { uuid, password, providers, timeZone, sportOrder, hiddenFromHomeSports, allGamesTodayEnabled, nameFormat, titleFormat } = req.body;
   const ip = req.ip;
 
   if (isRateLimited(ip)) {
@@ -3267,6 +3268,7 @@ app.post('/api/user/update', async (req, res) => {
       ? hiddenFromHomeSports.filter(s => typeof s === 'string')
       : [];
   }
+  if (allGamesTodayEnabled !== undefined) user.allGamesTodayEnabled = !!allGamesTodayEnabled;
   // Blank/whitespace-only is treated as "go back to default" rather than
   // saved literally - an empty template would otherwise render every
   // stream's name/title as a blank string, which is never actually what
@@ -4049,6 +4051,45 @@ app.post('/api/admin/user/delete', async (req, res) => {
   return res.json({ success: true });
 });
 
+// A sport only counts as active if at least one category folder has been
+// mapped to it in AT LEAST ONE provider - this keeps unconfigured sports
+// out of Nuvio while letting different providers each contribute different
+// leagues (or the same league redundantly) to the same account. GLOBAL is a
+// special key (categories that apply to every real sport's search
+// automatically, scoped to that one provider) and is never itself a
+// browsable catalog.
+//
+// Order reflects the user's own drag-and-drop ordering of the Category
+// Search accordions, not raw object insertion order (which isn't a
+// meaningful order at all - just whatever sequence categories happened to
+// get saved in over time). Anything not yet given an explicit position
+// (e.g. a league added after the order was last set) falls back to
+// alphabetical, sorting after everything explicitly ordered.
+//
+// Shared by the manifest route (to list per-league catalogs) and the "All
+// Games Today" combined catalog (to know which sports to merge together).
+function getOrderedActiveSports(user) {
+  const activeSportsSet = new Set();
+  for (const provider of user.providers || []) {
+    for (const [sport, categoryIds] of Object.entries(provider.sportCategories || {})) {
+      if (sport !== 'GLOBAL' && Array.isArray(categoryIds) && categoryIds.length > 0) {
+        activeSportsSet.add(sport);
+      }
+    }
+  }
+  const activeSports = [...activeSportsSet];
+
+  const sportOrder = user.sportOrder || [];
+  return [...activeSports].sort((a, b) => {
+    const idxA = sportOrder.indexOf(a);
+    const idxB = sportOrder.indexOf(b);
+    if (idxA === -1 && idxB === -1) return getSportDisplayName(a).localeCompare(getSportDisplayName(b));
+    if (idxA === -1) return 1;
+    if (idxB === -1) return -1;
+    return idxA - idxB;
+  });
+}
+
 app.get('/user/:uuid/manifest.json', (req, res) => {
   const user = userConfigs[req.params.uuid];
   if (!user) return res.status(404).json({ error: 'Invalid manifest UUID' });
@@ -4060,38 +4101,7 @@ app.get('/user/:uuid/manifest.json', (req, res) => {
   user.lastAccessedAt = new Date().toISOString();
   saveUserConfigs();
 
-  // A sport only appears as a catalog if at least one category folder has
-  // been mapped to it in AT LEAST ONE provider - this keeps unconfigured
-  // sports out of Nuvio while letting different providers each contribute
-  // different leagues (or the same league redundantly) to the same account.
-  // GLOBAL is a special key (categories that apply to every real sport's
-  // search automatically, scoped to that one provider) and is never itself
-  // a browsable catalog.
-  const activeSportsSet = new Set();
-  for (const provider of user.providers || []) {
-    for (const [sport, categoryIds] of Object.entries(provider.sportCategories || {})) {
-      if (sport !== 'GLOBAL' && Array.isArray(categoryIds) && categoryIds.length > 0) {
-        activeSportsSet.add(sport);
-      }
-    }
-  }
-  const activeSports = [...activeSportsSet];
-
-  // Catalog order reflects the user's own drag-and-drop ordering of the
-  // Category Search accordions, not raw object insertion order (which
-  // isn't a meaningful order at all - just whatever sequence categories
-  // happened to get saved in over time). Anything not yet given an
-  // explicit position (e.g. a league added after the order was last set)
-  // falls back to alphabetical, sorting after everything explicitly ordered.
-  const sportOrder = user.sportOrder || [];
-  const orderedActiveSports = [...activeSports].sort((a, b) => {
-    const idxA = sportOrder.indexOf(a);
-    const idxB = sportOrder.indexOf(b);
-    if (idxA === -1 && idxB === -1) return getSportDisplayName(a).localeCompare(getSportDisplayName(b));
-    if (idxA === -1) return 1;
-    if (idxB === -1) return -1;
-    return idxA - idxB;
-  });
+  const orderedActiveSports = getOrderedActiveSports(user);
 
   // Two mechanisms layered together, both lifted from AIOMetadata's own
   // manifest (compared side by side against a real AIOMetadata export where
@@ -4128,6 +4138,14 @@ app.get('/user/:uuid/manifest.json', (req, res) => {
     return catalog;
   });
 
+  // Opt-in combined catalog mixing every active league's games together,
+  // sorted by start time - pinned first (ahead of the per-league catalogs)
+  // rather than folded into the user's drag-and-drop sportOrder, since it
+  // isn't itself a league and always belongs at the top when enabled.
+  if (user.allGamesTodayEnabled) {
+    catalogs.unshift({ type: 'sports', id: 'sb_all_today', name: 'All Games Today', showInHome: true });
+  }
+
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.setHeader('Pragma', 'no-cache');
@@ -4154,6 +4172,47 @@ app.get(['/user/:uuid/catalog/sports/:id.json', '/user/:uuid/catalog/sports/:id/
   if (!user) return res.json({ metas: [] });
 
   const hostUrl = `${req.protocol}://${req.get('host')}`;
+  const userTz = user.timeZone || 'America/New_York';
+
+  // "All Games Today" is a synthetic combined catalog (see the manifest
+  // route) rather than a real league, so it's handled separately before
+  // the sb_{sport} id parsing below - merges every active sport's games
+  // (reusing the same 60s-cached fetch each per-league catalog already
+  // uses, so this adds no extra load beyond what a user browsing each
+  // league individually would already cause) and sorts by start time.
+  // Games with a missing/invalid date sort last rather than crashing the
+  // comparator or landing in an arbitrary spot.
+  if (req.params.id === 'sb_all_today') {
+    const orderedActiveSports = getOrderedActiveSports(user);
+    const gamesBySport = await Promise.all(
+      orderedActiveSports.map(sport => fetchGamesForSport(sport, hostUrl, userTz))
+    );
+    const allGames = orderedActiveSports.flatMap((sport, i) =>
+      gamesBySport[i].map(game => ({ ...game, sport }))
+    );
+    const startTime = game => {
+      const t = new Date(game.date).getTime();
+      return Number.isFinite(t) ? t : Infinity;
+    };
+    allGames.sort((a, b) => startTime(a) - startTime(b));
+
+    const metas = allGames.map(game => ({
+      id: `sb:${game.sport.toLowerCase()}:${game.id}`,
+      type: 'sports',
+      name: game.name,
+      poster: game.poster,
+      background: game.background,
+      logo: game.logo,
+      description: game.description
+    }));
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    return res.json({ metas });
+  }
+
   // Catalog ids are always constructed as sb_{sport} (see the manifest
   // route), so splitting on "_" and taking the second segment reliably
   // extracts the sport for every league - no need to maintain a
@@ -4162,7 +4221,6 @@ app.get(['/user/:uuid/catalog/sports/:id.json', '/user/:uuid/catalog/sports/:id/
   // before this fix.
   const sport = (req.params.id.split('_')[1] || 'mlb').toUpperCase();
 
-  const userTz = user.timeZone || 'America/New_York';
   const games = await fetchGamesForSport(sport, hostUrl, userTz);
 
   const metas = games.map(game => ({

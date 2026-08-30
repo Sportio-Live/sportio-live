@@ -347,7 +347,15 @@
           </button>
         </div>
 
-        <div class="flex justify-end mb-2">
+        <div class="flex items-center justify-between mb-2 gap-4">
+          <label class="flex items-center gap-2 cursor-pointer select-none">
+            <div class="relative shrink-0">
+              <input type="checkbox" id="all-games-today-toggle" onchange="toggleAllGamesToday()" class="sr-only peer">
+              <div class="w-9 h-5 bg-[#56707d] rounded-full peer-checked:bg-[#3b8fc4] transition"></div>
+              <div class="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full transition peer-checked:translate-x-4"></div>
+            </div>
+            <span class="text-xs font-semibold text-[#e6e6e6]/75">"All Games Today" catalog</span>
+          </label>
           <button id="expand-all-btn" onclick="toggleAllAccordions()" class="text-xs font-bold text-[#5aa8d1] hover:text-[#6bb5dd] flex items-center gap-1.5 transition">
             <i class="fa-solid fa-expand"></i>
             Expand All
@@ -1388,7 +1396,7 @@
         });
         const data = await res.json();
         if (data.success) {
-          activeUser = { uuid, password, providers: data.providers || [], timeZone: data.timeZone, sportOrder: data.sportOrder || [], hiddenFromHomeSports: data.hiddenFromHomeSports || [], nameFormat: data.nameFormat, titleFormat: data.titleFormat };
+          activeUser = { uuid, password, providers: data.providers || [], timeZone: data.timeZone, sportOrder: data.sportOrder || [], hiddenFromHomeSports: data.hiddenFromHomeSports || [], allGamesTodayEnabled: !!data.allGamesTodayEnabled, nameFormat: data.nameFormat, titleFormat: data.titleFormat };
           activeProviderIndex = 0;
           document.getElementById('active-uuid-display').textContent = uuid;
           resetDashboardPanels();
@@ -3866,6 +3874,16 @@
       allAccordionsExpanded = false;
       updateExpandAllButton();
       updateAddLeagueButtonVisibility();
+      document.getElementById('all-games-today-toggle').checked = !!(activeUser && activeUser.allGamesTodayEnabled);
+    }
+
+    // Account-wide (not per-provider) setting, so unlike the sport
+    // accordion's own controls this doesn't touch provider.sportCategories -
+    // just flips the flag saved alongside timeZone/hiddenFromHomeSports.
+    function toggleAllGamesToday() {
+      if (!activeUser) return;
+      activeUser.allGamesTodayEnabled = document.getElementById('all-games-today-toggle').checked;
+      markDashboardDirty();
     }
 
     // Clears the unsaved-changes indicator - only ever called right after
@@ -4072,6 +4090,7 @@
             timeZone: activeUser.timeZone,
             sportOrder: activeUser.sportOrder,
             hiddenFromHomeSports: activeUser.hiddenFromHomeSports,
+            allGamesTodayEnabled: activeUser.allGamesTodayEnabled,
             nameFormat: activeUser.nameFormat,
             titleFormat: activeUser.titleFormat
           })
