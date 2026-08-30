@@ -3964,6 +3964,18 @@
       input.maxLength = 60;
       input.className = 'bg-[#2f3e47] border border-[#3b8fc4] rounded px-1.5 py-0.5 text-sm font-bold text-[#e6e6e6] outline-none w-44 max-w-[50vw] align-middle';
 
+      // The whole league row is a native HTML5 drag source (see the
+      // `draggable` property set on it, for reordering leagues). That's a
+      // browser default action tied to the ancestor itself, recognized
+      // outside the normal JS event-bubbling path - stopping the input's
+      // own mousedown from bubbling (tried first) did NOT stop it, since
+      // there's nothing to "stop" propagating to; the row's drag-gesture
+      // recognition isn't listening for a bubbled event at all. Actually
+      // disabling `draggable` on that ancestor for the duration of the
+      // edit is what's needed - restored once the edit ends, either way.
+      const dragRow = span.closest('[draggable="true"]');
+      if (dragRow) dragRow.draggable = false;
+
       // Enter/Escape call this directly, but removing the still-focused
       // input via replaceWith() below also fires a genuine native blur on
       // it as part of that removal - which would otherwise call finish()
@@ -3976,6 +3988,7 @@
       const finish = (commit) => {
         if (finished) return;
         finished = true;
+        if (dragRow) dragRow.draggable = true;
         if (commit) {
           const trimmed = input.value.trim();
           activeUser.catalogNames = activeUser.catalogNames || {};
@@ -3992,15 +4005,6 @@
       };
 
       input.onclick = e => e.stopPropagation();
-      // The whole league row is a native HTML5 drag source (see `draggable`
-      // below, for reordering leagues) - without this, a mousedown here
-      // gets picked up by the browser as the start of a drag gesture on
-      // that ancestor, which yanks focus off the input practically
-      // instantly and fires blur (committing whatever was there before any
-      // typing could happen). Reported as "the editor closes before I can
-      // type anything" - stopping the mousedown from ever reaching the
-      // draggable row is what actually fixes it (stopping the later click/
-      // keydown events, which is all this already did, is not enough).
       input.onmousedown = e => e.stopPropagation();
       input.onkeydown = e => {
         e.stopPropagation();
