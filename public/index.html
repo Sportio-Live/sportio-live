@@ -357,7 +357,7 @@
               </div>
               <span id="all-games-today-label" class="text-xs font-semibold text-[#e6e6e6]/75">"Live Sports Today" catalog</span>
             </label>
-            <button type="button" onclick="startInlineRename('all-games-today-label', 'sb_all_today', 'Live Sports Today', 'Live Sports Today', true, event)" class="text-[#e6e6e6]/40 hover:text-[#5aa8d1] transition px-0.5" title="Rename this catalog (shown in Stremio)">
+            <button type="button" onclick="startInlineRename('all-games-today-label', 'sb_all_today', 'Live Sports Today', true, event)" class="text-[#e6e6e6]/40 hover:text-[#5aa8d1] transition px-0.5" title="Rename this catalog (shown in Stremio)">
               <i class="fa-solid fa-pen text-[11px]"></i>
             </button>
           </div>
@@ -1986,13 +1986,12 @@
 
         // Only the real dashboard has an account (and a real Stremio catalog
         // behind it) to rename - the wizard's leagues step and the Global
-        // section (not a catalog at all) never get the pencil icon. The
-        // header itself keeps showing the short section label at rest
-        // (matching every other league, and staying compact next to the
-        // several icons already crammed into this row) - the full "X Live
-        // Games" catalog name only ever appears as the pre-filled starting
-        // point when actually editing, since that's the real default a
-        // renamed value is replacing.
+        // section (not a catalog at all, so it keeps the plain short label)
+        // never get the pencil icon. The header shows the same name the
+        // manifest actually uses ("X Live Games" by default, or the custom
+        // override) rather than the short section label - showing anything
+        // else here was actively misleading about what's really in the
+        // manifest, which is the whole reason this control exists.
         const catalogId = `sb_${sport.toLowerCase()}`;
         const defaultCatalogName = `${sectionLabel} Live Games`;
         const canRenameCatalog = idPrefix === '' && !isGlobalSection;
@@ -2000,10 +1999,18 @@
           ? ((activeUser && activeUser.catalogNames && activeUser.catalogNames[catalogId]) || '')
           : '';
         const headerLabelId = `catlabel-${idPrefix}${sport}`;
-        const headerLabelText = customCatalogName || sectionLabel;
-        const escJs = s => s.replace(/'/g, "\\'");
+        // customCatalogName is arbitrary user-entered text (see the pencil
+        // rename control), unlike every other value interpolated into this
+        // section's innerHTML - it needs proper escaping for both the
+        // element content (escapeHtml) and the title attribute
+        // (escapeHtml alone leaves a literal " that would break out of a
+        // double-quoted attribute, since HTML text-node serialization only
+        // ever escapes &, < and > - not quotes).
+        const headerLabelTextRaw = isGlobalSection ? sectionLabel : (customCatalogName || defaultCatalogName);
+        const headerLabelText = escapeHtml(headerLabelTextRaw);
+        const headerLabelTitleAttr = headerLabelText.replace(/"/g, '&quot;');
         const renameCatalogBtn = canRenameCatalog
-          ? `<button type="button" onclick="startInlineRename('${headerLabelId}', '${catalogId}', '${escJs(defaultCatalogName)}', '${escJs(sectionLabel)}', false, event)" class="text-[#e6e6e6]/40 hover:text-[#5aa8d1] transition px-0.5" title="Rename this league's catalog (shown in Stremio)"><i class="fa-solid fa-pen text-[11px]"></i></button>`
+          ? `<button type="button" onclick="startInlineRename('${headerLabelId}', '${catalogId}', '${escapeJsAttr(defaultCatalogName)}', false, event)" class="text-[#e6e6e6]/40 hover:text-[#5aa8d1] transition px-0.5 shrink-0" title="Rename this league's catalog (shown in Stremio)"><i class="fa-solid fa-pen text-[11px]"></i></button>`
           : '';
 
         const section = document.createElement('div');
@@ -2048,13 +2055,13 @@
 
         section.innerHTML = `
           <div role="button" tabindex="0" onclick="toggleAccordionSection('${idPrefix}', '${sport}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleAccordionSection('${idPrefix}', '${sport}');}" class="w-full flex items-center justify-between px-4 py-3 hover:bg-[#3b4d58]/40 transition text-left cursor-pointer">
-            <div class="flex items-center gap-3">
+            <div class="flex items-center gap-3 min-w-0 flex-1">
               ${dragHandle}
-              <i class="fa-solid ${icon} text-[#5aa8d1] text-base w-5 text-center"></i>
-              <span id="${headerLabelId}" class="font-bold text-sm text-[#e6e6e6]">${headerLabelText}</span>
+              <i class="fa-solid ${icon} text-[#5aa8d1] text-base w-5 text-center shrink-0"></i>
+              <span id="${headerLabelId}" class="font-bold text-sm text-[#e6e6e6] truncate min-w-0" title="${headerLabelTitleAttr}">${headerLabelText}</span>
               ${renameCatalogBtn}
             </div>
-            <div class="flex items-center gap-3">
+            <div class="flex items-center gap-3 shrink-0">
               ${homeVisBtn}
               <i id="${idPrefix}chevron-${sport}" class="fa-solid fa-chevron-down text-[#e6e6e6]/55 text-xs transition-transform"></i>
               <span id="${idPrefix}badge-${sport}" class="text-xs font-semibold px-2 py-0.5 rounded-full ${badgeClass}">${effectiveCount} selected</span>
@@ -3927,25 +3934,27 @@
     // Shared by every rename-this-catalog pencil icon (the league accordion
     // headers and the "All Games Today" row) - swaps the label span for a
     // focused text input pre-filled with the catalog's current effective
-    // name, and on commit stores the trimmed value into
-    // activeUser.catalogNames keyed by catalog id (server-side, this is
-    // what the manifest route checks before falling back to the built-in
-    // default name). A value that's empty or matches the default is never
-    // persisted as a needless override, so clearing the field (or just
-    // retyping the default) cleanly reverts to the built-in name.
+    // name (which is always `defaultName` itself when there's no override,
+    // since the resting label is kept in sync with the real manifest name -
+    // see renderCategoryConfig), and on commit stores the trimmed value
+    // into activeUser.catalogNames keyed by catalog id (server-side, this
+    // is what the manifest route checks before falling back to the
+    // built-in default name). A value that's empty or matches the default
+    // is never persisted as a needless override, so clearing the field (or
+    // just retyping the default) cleanly reverts to the built-in name.
     //
     // `quoted` controls how the resting span renders the effective name:
-    // false for the compact league headers (bare label, matching every
-    // other league's look), true for the standalone "All Games Today" row
-    // (spelled out as a full sentence, since there's no icon/context
-    // otherwise identifying what's being named).
-    function startInlineRename(spanId, catalogId, defaultName, fallbackText, quoted, ev) {
+    // false for the compact league headers (bare label), true for the
+    // standalone "All Games Today" row (spelled out as a full sentence,
+    // since there's no icon/context otherwise identifying what's being
+    // named).
+    function startInlineRename(spanId, catalogId, defaultName, quoted, ev) {
       ev.stopPropagation();
       if (!activeUser) return;
       const span = document.getElementById(spanId);
       if (!span || span.tagName === 'INPUT') return;
 
-      const format = (custom) => quoted ? `"${custom || fallbackText}" catalog` : (custom || fallbackText);
+      const format = (custom) => quoted ? `"${custom || defaultName}" catalog` : (custom || defaultName);
 
       const current = (activeUser.catalogNames && activeUser.catalogNames[catalogId]) || '';
       const input = document.createElement('input');
@@ -3955,7 +3964,18 @@
       input.maxLength = 60;
       input.className = 'bg-[#2f3e47] border border-[#3b8fc4] rounded px-1.5 py-0.5 text-sm font-bold text-[#e6e6e6] outline-none w-44 max-w-[50vw] align-middle';
 
+      // Enter/Escape call this directly, but removing the still-focused
+      // input via replaceWith() below also fires a genuine native blur on
+      // it as part of that removal - which would otherwise call finish()
+      // a second time (via the onblur handler) for the same edit, trying
+      // to replaceWith() a node that's already been detached. Harmless in
+      // effect either way (the second pass computes the same commit and
+      // no-ops on an already-parentless node) but throws in the console,
+      // so guarded outright rather than relying on that being silent.
+      let finished = false;
       const finish = (commit) => {
+        if (finished) return;
+        finished = true;
         if (commit) {
           const trimmed = input.value.trim();
           activeUser.catalogNames = activeUser.catalogNames || {};
@@ -3967,11 +3987,21 @@
         const newSpan = document.createElement('span');
         newSpan.id = spanId;
         newSpan.className = span.className;
-        newSpan.textContent = format(custom);
+        newSpan.title = newSpan.textContent = format(custom);
         input.replaceWith(newSpan);
       };
 
       input.onclick = e => e.stopPropagation();
+      // The whole league row is a native HTML5 drag source (see `draggable`
+      // below, for reordering leagues) - without this, a mousedown here
+      // gets picked up by the browser as the start of a drag gesture on
+      // that ancestor, which yanks focus off the input practically
+      // instantly and fires blur (committing whatever was there before any
+      // typing could happen). Reported as "the editor closes before I can
+      // type anything" - stopping the mousedown from ever reaching the
+      // draggable row is what actually fixes it (stopping the later click/
+      // keydown events, which is all this already did, is not enough).
+      input.onmousedown = e => e.stopPropagation();
       input.onkeydown = e => {
         e.stopPropagation();
         if (e.key === 'Enter') { e.preventDefault(); finish(true); }
