@@ -3227,6 +3227,7 @@ app.post('/api/user/login', async (req, res) => {
     sportOrder: user.sportOrder || [],
     hiddenFromHomeSports: user.hiddenFromHomeSports || [],
     allGamesTodayEnabled: !!user.allGamesTodayEnabled,
+    catalogNames: user.catalogNames || {},
     nameFormat: user.nameFormat || DEFAULT_NAME_FORMAT,
     titleFormat: user.titleFormat || DEFAULT_TITLE_FORMAT,
     manifestUrl: `/user/${uuid}/manifest.json`
@@ -3234,7 +3235,7 @@ app.post('/api/user/login', async (req, res) => {
 });
 
 app.post('/api/user/update', async (req, res) => {
-  const { uuid, password, providers, timeZone, sportOrder, hiddenFromHomeSports, allGamesTodayEnabled, nameFormat, titleFormat } = req.body;
+  const { uuid, password, providers, timeZone, sportOrder, hiddenFromHomeSports, allGamesTodayEnabled, catalogNames, nameFormat, titleFormat } = req.body;
   const ip = req.ip;
 
   if (isRateLimited(ip)) {
@@ -3269,6 +3270,23 @@ app.post('/api/user/update', async (req, res) => {
       : [];
   }
   if (allGamesTodayEnabled !== undefined) user.allGamesTodayEnabled = !!allGamesTodayEnabled;
+  // Custom per-catalog display names, keyed by catalog id (e.g. "sb_nba",
+  // "sb_all_today") - only non-empty string values survive, everything
+  // else (wrong type, blank/whitespace-only) is dropped rather than saved,
+  // since the dashboard's own rename control already treats a
+  // cleared/default-matching value as "remove the override" before it
+  // ever reaches this request.
+  if (catalogNames !== undefined) {
+    const sanitized = {};
+    if (catalogNames && typeof catalogNames === 'object' && !Array.isArray(catalogNames)) {
+      for (const [id, name] of Object.entries(catalogNames)) {
+        if (typeof id === 'string' && typeof name === 'string' && name.trim()) {
+          sanitized[id] = name.trim().slice(0, 60);
+        }
+      }
+    }
+    user.catalogNames = sanitized;
+  }
   // Blank/whitespace-only is treated as "go back to default" rather than
   // saved literally - an empty template would otherwise render every
   // stream's name/title as a blank string, which is never actually what
@@ -4123,13 +4141,20 @@ app.get('/user/:uuid/manifest.json', (req, res) => {
   //    does honor this flag, going by AIOMetadata's real manifest, so it's
   //    included for that client specifically. Harmless no-op for any client
   //    that doesn't recognize it.
+  // Catalog display names default to a built-in name per catalog, but the
+  // dashboard lets a user override any of them (including the combined
+  // catalog below) - see /api/user/update. Keyed by catalog id rather than
+  // sport, so the combined catalog's override lives in the same map under
+  // its own id ("sb_all_today") with no special-casing needed here.
+  const catalogNames = user.catalogNames || {};
   const hiddenFromHome = new Set(user.hiddenFromHomeSports || []);
   const catalogs = orderedActiveSports.map(sport => {
     const isHidden = hiddenFromHome.has(sport);
+    const catalogId = `sb_${sport.toLowerCase()}`;
     const catalog = {
       type: 'sports',
-      id: `sb_${sport.toLowerCase()}`,
-      name: `${getSportDisplayName(sport)} Live Games`,
+      id: catalogId,
+      name: catalogNames[catalogId] || `${getSportDisplayName(sport)} Live Games`,
       showInHome: !isHidden
     };
     if (isHidden) {
@@ -4143,7 +4168,12 @@ app.get('/user/:uuid/manifest.json', (req, res) => {
   // rather than folded into the user's drag-and-drop sportOrder, since it
   // isn't itself a league and always belongs at the top when enabled.
   if (user.allGamesTodayEnabled) {
-    catalogs.unshift({ type: 'sports', id: 'sb_all_today', name: 'All Games Today', showInHome: true });
+    catalogs.unshift({
+      type: 'sports',
+      id: 'sb_all_today',
+      name: catalogNames.sb_all_today || 'Live Sports Today',
+      showInHome: true
+    });
   }
 
   res.setHeader('Content-Type', 'application/json');

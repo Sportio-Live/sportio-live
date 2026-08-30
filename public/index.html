@@ -348,14 +348,19 @@
         </div>
 
         <div class="flex items-center justify-between mb-2 gap-4">
-          <label class="flex items-center gap-2 cursor-pointer select-none">
-            <div class="relative shrink-0">
-              <input type="checkbox" id="all-games-today-toggle" onchange="toggleAllGamesToday()" class="sr-only peer">
-              <div class="w-9 h-5 bg-[#56707d] rounded-full peer-checked:bg-[#3b8fc4] transition"></div>
-              <div class="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full transition peer-checked:translate-x-4"></div>
-            </div>
-            <span class="text-xs font-semibold text-[#e6e6e6]/75">"All Games Today" catalog</span>
-          </label>
+          <div class="flex items-center gap-2">
+            <label class="flex items-center gap-2 cursor-pointer select-none">
+              <div class="relative shrink-0">
+                <input type="checkbox" id="all-games-today-toggle" onchange="toggleAllGamesToday()" class="sr-only peer">
+                <div class="w-9 h-5 bg-[#56707d] rounded-full peer-checked:bg-[#3b8fc4] transition"></div>
+                <div class="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full transition peer-checked:translate-x-4"></div>
+              </div>
+              <span id="all-games-today-label" class="text-xs font-semibold text-[#e6e6e6]/75">"Live Sports Today" catalog</span>
+            </label>
+            <button type="button" onclick="startInlineRename('all-games-today-label', 'sb_all_today', 'Live Sports Today', 'Live Sports Today', true, event)" class="text-[#e6e6e6]/40 hover:text-[#5aa8d1] transition px-0.5" title="Rename this catalog (shown in Stremio)">
+              <i class="fa-solid fa-pen text-[11px]"></i>
+            </button>
+          </div>
           <button id="expand-all-btn" onclick="toggleAllAccordions()" class="text-xs font-bold text-[#5aa8d1] hover:text-[#6bb5dd] flex items-center gap-1.5 transition">
             <i class="fa-solid fa-expand"></i>
             Expand All
@@ -1396,7 +1401,7 @@
         });
         const data = await res.json();
         if (data.success) {
-          activeUser = { uuid, password, providers: data.providers || [], timeZone: data.timeZone, sportOrder: data.sportOrder || [], hiddenFromHomeSports: data.hiddenFromHomeSports || [], allGamesTodayEnabled: !!data.allGamesTodayEnabled, nameFormat: data.nameFormat, titleFormat: data.titleFormat };
+          activeUser = { uuid, password, providers: data.providers || [], timeZone: data.timeZone, sportOrder: data.sportOrder || [], hiddenFromHomeSports: data.hiddenFromHomeSports || [], allGamesTodayEnabled: !!data.allGamesTodayEnabled, catalogNames: data.catalogNames || {}, nameFormat: data.nameFormat, titleFormat: data.titleFormat };
           activeProviderIndex = 0;
           document.getElementById('active-uuid-display').textContent = uuid;
           resetDashboardPanels();
@@ -1979,6 +1984,28 @@
         const icon = isGlobalSection ? 'fa-globe' : (SPORT_ICONS[sport] || 'fa-trophy');
         const sectionLabel = isGlobalSection ? 'Global' : (SPORT_LABELS[sport] || sport);
 
+        // Only the real dashboard has an account (and a real Stremio catalog
+        // behind it) to rename - the wizard's leagues step and the Global
+        // section (not a catalog at all) never get the pencil icon. The
+        // header itself keeps showing the short section label at rest
+        // (matching every other league, and staying compact next to the
+        // several icons already crammed into this row) - the full "X Live
+        // Games" catalog name only ever appears as the pre-filled starting
+        // point when actually editing, since that's the real default a
+        // renamed value is replacing.
+        const catalogId = `sb_${sport.toLowerCase()}`;
+        const defaultCatalogName = `${sectionLabel} Live Games`;
+        const canRenameCatalog = idPrefix === '' && !isGlobalSection;
+        const customCatalogName = canRenameCatalog
+          ? ((activeUser && activeUser.catalogNames && activeUser.catalogNames[catalogId]) || '')
+          : '';
+        const headerLabelId = `catlabel-${idPrefix}${sport}`;
+        const headerLabelText = customCatalogName || sectionLabel;
+        const escJs = s => s.replace(/'/g, "\\'");
+        const renameCatalogBtn = canRenameCatalog
+          ? `<button type="button" onclick="startInlineRename('${headerLabelId}', '${catalogId}', '${escJs(defaultCatalogName)}', '${escJs(sectionLabel)}', false, event)" class="text-[#e6e6e6]/40 hover:text-[#5aa8d1] transition px-0.5" title="Rename this league's catalog (shown in Stremio)"><i class="fa-solid fa-pen text-[11px]"></i></button>`
+          : '';
+
         const section = document.createElement('div');
         section.className = 'bg-[#3b4d58]/40 border border-[#e6e6e6]/15 rounded-lg overflow-hidden';
 
@@ -2024,7 +2051,8 @@
             <div class="flex items-center gap-3">
               ${dragHandle}
               <i class="fa-solid ${icon} text-[#5aa8d1] text-base w-5 text-center"></i>
-              <span class="font-bold text-sm text-[#e6e6e6]">${sectionLabel}</span>
+              <span id="${headerLabelId}" class="font-bold text-sm text-[#e6e6e6]">${headerLabelText}</span>
+              ${renameCatalogBtn}
             </div>
             <div class="flex items-center gap-3">
               ${homeVisBtn}
@@ -3875,6 +3903,16 @@
       updateExpandAllButton();
       updateAddLeagueButtonVisibility();
       document.getElementById('all-games-today-toggle').checked = !!(activeUser && activeUser.allGamesTodayEnabled);
+      // Only overwrite the label when it's currently the resting span, not
+      // mid-edit as a rename <input> (same id, swapped in by
+      // startInlineRename) - a re-render triggered while someone's
+      // actively typing a new name (e.g. a tab switch) must never clobber
+      // their in-progress edit.
+      const allTodayLabel = document.getElementById('all-games-today-label');
+      if (allTodayLabel && allTodayLabel.tagName !== 'INPUT') {
+        const customAllTodayName = activeUser && activeUser.catalogNames && activeUser.catalogNames.sb_all_today;
+        allTodayLabel.textContent = `"${customAllTodayName || 'Live Sports Today'}" catalog`;
+      }
     }
 
     // Account-wide (not per-provider) setting, so unlike the sport
@@ -3884,6 +3922,66 @@
       if (!activeUser) return;
       activeUser.allGamesTodayEnabled = document.getElementById('all-games-today-toggle').checked;
       markDashboardDirty();
+    }
+
+    // Shared by every rename-this-catalog pencil icon (the league accordion
+    // headers and the "All Games Today" row) - swaps the label span for a
+    // focused text input pre-filled with the catalog's current effective
+    // name, and on commit stores the trimmed value into
+    // activeUser.catalogNames keyed by catalog id (server-side, this is
+    // what the manifest route checks before falling back to the built-in
+    // default name). A value that's empty or matches the default is never
+    // persisted as a needless override, so clearing the field (or just
+    // retyping the default) cleanly reverts to the built-in name.
+    //
+    // `quoted` controls how the resting span renders the effective name:
+    // false for the compact league headers (bare label, matching every
+    // other league's look), true for the standalone "All Games Today" row
+    // (spelled out as a full sentence, since there's no icon/context
+    // otherwise identifying what's being named).
+    function startInlineRename(spanId, catalogId, defaultName, fallbackText, quoted, ev) {
+      ev.stopPropagation();
+      if (!activeUser) return;
+      const span = document.getElementById(spanId);
+      if (!span || span.tagName === 'INPUT') return;
+
+      const format = (custom) => quoted ? `"${custom || fallbackText}" catalog` : (custom || fallbackText);
+
+      const current = (activeUser.catalogNames && activeUser.catalogNames[catalogId]) || '';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.id = spanId;
+      input.value = current || defaultName;
+      input.maxLength = 60;
+      input.className = 'bg-[#2f3e47] border border-[#3b8fc4] rounded px-1.5 py-0.5 text-sm font-bold text-[#e6e6e6] outline-none w-44 max-w-[50vw] align-middle';
+
+      const finish = (commit) => {
+        if (commit) {
+          const trimmed = input.value.trim();
+          activeUser.catalogNames = activeUser.catalogNames || {};
+          if (!trimmed || trimmed === defaultName) delete activeUser.catalogNames[catalogId];
+          else activeUser.catalogNames[catalogId] = trimmed;
+          markDashboardDirty();
+        }
+        const custom = activeUser.catalogNames && activeUser.catalogNames[catalogId];
+        const newSpan = document.createElement('span');
+        newSpan.id = spanId;
+        newSpan.className = span.className;
+        newSpan.textContent = format(custom);
+        input.replaceWith(newSpan);
+      };
+
+      input.onclick = e => e.stopPropagation();
+      input.onkeydown = e => {
+        e.stopPropagation();
+        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+        else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+      };
+      input.onblur = () => finish(true);
+
+      span.replaceWith(input);
+      input.focus();
+      input.select();
     }
 
     // Clears the unsaved-changes indicator - only ever called right after
@@ -4091,6 +4189,7 @@
             sportOrder: activeUser.sportOrder,
             hiddenFromHomeSports: activeUser.hiddenFromHomeSports,
             allGamesTodayEnabled: activeUser.allGamesTodayEnabled,
+            catalogNames: activeUser.catalogNames,
             nameFormat: activeUser.nameFormat,
             titleFormat: activeUser.titleFormat
           })
