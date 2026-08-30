@@ -3505,7 +3505,7 @@ app.post('/api/admin/m3u-cache/recache', async (req, res) => {
   // enabledSources list (the default) means this is just a no-op loop,
   // not a skipped step, so no separate "is EPGShare enabled" branch is
   // needed here.
-  epgshare.clearEpgShareCache();
+  await epgshare.clearEpgShareCache();
   const epgShareResults = await epgshare.refreshEnabledSources(epgShareSettings.enabledSources);
   const epgShareRefreshedCount = epgShareResults.filter(r => r.success).length;
 
@@ -4206,10 +4206,10 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
   // admin-enabled source, passes through completely unchanged - this never
   // blanks out a description that would otherwise have come from the
   // provider's own EPG.
-  const applyChannelEpgOverrides = (streams, provider) => {
+  const applyChannelEpgOverrides = async (streams, provider) => {
     const overrides = provider.epgOverrides;
     if (!overrides || Object.keys(overrides).length === 0) return streams;
-    return streams.map(s => {
+    return Promise.all(streams.map(async s => {
       const targetChannelId = overrides[s.channelId];
       if (!targetChannelId) return s;
       // No external source involved at all - reads the channel's current
@@ -4218,13 +4218,13 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
       if (targetChannelId === EPG_OVERRIDE_SELF_NAME) {
         return { ...s, description: s.name };
       }
-      const override = epgshare.findOverrideProgramme(targetChannelId, epgShareSettings.enabledSources, gameTimestamp);
+      const override = await epgshare.findOverrideProgramme(targetChannelId, epgShareSettings.enabledSources, gameTimestamp);
       if (!override) return s;
       // description, not title - findOverrideProgramme already falls back
       // to the EPGShare01 entry's title when that specific entry has no
       // <desc> of its own, so this is never blanked out even then.
       return { ...s, description: override.description, startTimestamp: override.startTimestamp };
-    });
+    }));
   };
 
   const perProviderResults = await Promise.allSettled(
@@ -4233,7 +4233,7 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
         if (!provider.m3u || !provider.m3u.playlistUrl) return [];
         const m3uSource = m3u.getCachedM3USource(provider.m3u.playlistUrl);
         if (!m3uSource) return [];
-        const streams = applyChannelEpgOverrides(m3u.getCandidateStreamsForGame(m3uSource, configuredCategoryIds, gameTimestamp), provider);
+        const streams = await applyChannelEpgOverrides(m3u.getCandidateStreamsForGame(m3uSource, configuredCategoryIds, gameTimestamp), provider);
         return showProviderLabel ? streams.map(s => ({ ...s, providerLabel: provider.label })) : streams;
       }
 
@@ -4268,7 +4268,7 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
           ...(showProviderLabel ? { providerLabel: provider.label } : {})
         };
       });
-      return applyChannelEpgOverrides(xtreamCandidates, provider);
+      return await applyChannelEpgOverrides(xtreamCandidates, provider);
     })
   );
 
