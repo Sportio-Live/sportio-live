@@ -1372,6 +1372,18 @@ async function warmTodaysArt() {
     imagesFailed: renderResult.bad
   };
   console.log(`[ArtWarmup] Checked ${result.sportsChecked} leagues, ${result.gamesChecked} game(s) today across ${timeZones.length} timezone(s): ${result.teamsWarmed} logo(s) warmed (${result.teamsFailed} failed), ${result.imagesRendered} image(s) pre-rendered (${result.imagesFailed} failed).`);
+
+  // Confirmed via /api/admin/diagnostics: this pass's sharp/libvips
+  // renders balloon Node's "external" native memory by hundreds of MB,
+  // but V8's own GC scheduling is driven by JS heap pressure - which this
+  // app's JS heap barely generates even during a huge render burst - so
+  // that memory can sit around fully reclaimable but uncollected
+  // indefinitely. Forcing a collection right here, once the burst is
+  // over, reclaims it immediately instead of leaving it to chance. A
+  // no-op unless the process was started with --expose-gc (see
+  // package.json's start script).
+  if (typeof global.gc === 'function') global.gc();
+
   return result;
 }
 
@@ -3529,7 +3541,7 @@ app.post('/api/admin/m3u-cache/recache', async (req, res) => {
 // (render-cache, epg-cache), so a high RSS number from `docker stats` can
 // actually be traced to a specific cache instead of guessed at.
 app.post('/api/admin/diagnostics', async (req, res) => {
-  const { username, password } = req.body;
+  const { username, password, forceGc } = req.body;
   const ip = req.ip;
 
   if (isRateLimited(ip)) {
@@ -3544,6 +3556,30 @@ app.post('/api/admin/diagnostics', async (req, res) => {
   clearFailedAttempts(ip);
 
   const mb = (bytes) => Math.round(bytes / 1024 / 1024 * 10) / 10;
+  const memToMB = (mem) => ({
+    rss: mb(mem.rss),
+    heapUsed: mb(mem.heapUsed),
+    heapTotal: mb(mem.heapTotal),
+    external: mb(mem.external),
+    arrayBuffers: mb(mem.arrayBuffers)
+  });
+
+  // Only present when the process was started with --expose-gc (see the
+  // Dockerfile's CMD) - global.gc() forces a full V8 garbage collection
+  // pass on demand, used here purely as a diagnostic: comparing memory
+  // immediately before and after tells us whether high `external` memory
+  // (native memory tied to still-referenced objects - Buffers, sharp's own
+  // native objects) is genuinely still in use, or just hasn't been
+  // collected yet because nothing has pressured V8's GC scheduler to run
+  // - two very different problems that look identical from the outside.
+  const gcAvailable = typeof global.gc === 'function';
+  let gcRan = false;
+  let processMemoryBeforeGcMB = null;
+  if (forceGc && gcAvailable) {
+    processMemoryBeforeGcMB = memToMB(process.memoryUsage());
+    global.gc();
+    gcRan = true;
+  }
 
   // Walks a disk cache directory (recursively, for epg-cache's per-source
   // subdirectories) summing file sizes - approximate is fine here, this is
@@ -3577,15 +3613,12 @@ app.post('/api/admin/diagnostics', async (req, res) => {
     dirStats(path.join(DATA_DIR, 'epg-cache'))
   ]);
 
-  const mem = process.memoryUsage();
   return res.json({
-    processMemoryMB: {
-      rss: mb(mem.rss),
-      heapUsed: mb(mem.heapUsed),
-      heapTotal: mb(mem.heapTotal),
-      external: mb(mem.external),
-      arrayBuffers: mb(mem.arrayBuffers)
-    },
+    gcAvailable,
+    gcRequested: !!forceGc,
+    gcRan,
+    processMemoryBeforeGcMB,
+    processMemoryMB: memToMB(process.memoryUsage()),
     inMemoryCaches: {
       imageBytesCache: imageBytesCache.size,
       gamesCache: gamesCache.size,

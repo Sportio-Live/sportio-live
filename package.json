@@ -4,7 +4,7 @@
   "description": "Sportio Live - Live sports, powered by your own IPTV",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node --expose-gc server.js"
   },
   "dependencies": {
     "axios": "^1.6.0",

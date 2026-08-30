@@ -351,7 +351,7 @@ async function refreshEnabledSources(files) {
   const settled = await Promise.allSettled(
     validFiles.map(file => refreshEpgShareSource(sourceFileToUrl(file)))
   );
-  return settled.map((result, i) => {
+  const results = settled.map((result, i) => {
     const file = validFiles[i];
     if (result.status === 'rejected') {
       console.error(`[EPGShare01] Failed to refresh ${file}:`, result.reason.message);
@@ -360,6 +360,19 @@ async function refreshEnabledSources(files) {
     console.log(`[EPGShare01] Refreshed ${file}: ${result.value.channelIds.length} channels`);
     return { file, success: true, channelCount: result.value.channelIds.length };
   });
+
+  // Confirmed via /api/admin/diagnostics: parsing a source (gunzipping a
+  // file that can decompress to 700MB-1.8GB, then regex-scanning it - see
+  // fetchAndParseEpgShareSource) balloons Node's "external" native memory
+  // far more than it grows the actual JS heap, so V8's heap-pressure-driven
+  // GC scheduling has little reason to collect it - it can sit around
+  // fully reclaimable but uncollected indefinitely. Forcing a collection
+  // right here, once every source in this batch has finished, reclaims it
+  // immediately. A no-op unless the process was started with --expose-gc
+  // (see package.json's start script).
+  if (typeof global.gc === 'function') global.gc();
+
+  return results;
 }
 
 // ---------------------------------------------------------------------
