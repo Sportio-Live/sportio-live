@@ -3520,6 +3520,89 @@ app.post('/api/admin/m3u-cache/recache', async (req, res) => {
   });
 });
 
+// Read-only memory diagnostics for an admin to see what's actually using
+// RAM on THIS running process right now - process.memoryUsage() straight
+// from the live server, not a new one (unlike `docker exec node -e ...`,
+// which only ever reports on a freshly-spawned process and tells you
+// nothing about the one actually serving traffic). Pairs a size for every
+// cache still held in memory with a byte count for the ones now on disk
+// (render-cache, epg-cache), so a high RSS number from `docker stats` can
+// actually be traced to a specific cache instead of guessed at.
+app.post('/api/admin/diagnostics', async (req, res) => {
+  const { username, password } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  const mb = (bytes) => Math.round(bytes / 1024 / 1024 * 10) / 10;
+
+  // Walks a disk cache directory (recursively, for epg-cache's per-source
+  // subdirectories) summing file sizes - approximate is fine here, this is
+  // an on-demand diagnostic hit, not something called per-request.
+  async function dirStats(dir) {
+    let files = 0;
+    let bytes = 0;
+    async function walk(current) {
+      let entries;
+      try {
+        entries = await fs.promises.readdir(current, { withFileTypes: true });
+      } catch (err) {
+        return;
+      }
+      for (const entry of entries) {
+        const full = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          await walk(full);
+        } else {
+          files++;
+          bytes += (await fs.promises.stat(full)).size;
+        }
+      }
+    }
+    await walk(dir);
+    return { files, megabytes: mb(bytes) };
+  }
+
+  const [renderCacheStats, epgCacheStats] = await Promise.all([
+    dirStats(RENDER_CACHE_DIR),
+    dirStats(path.join(DATA_DIR, 'epg-cache'))
+  ]);
+
+  const mem = process.memoryUsage();
+  return res.json({
+    processMemoryMB: {
+      rss: mb(mem.rss),
+      heapUsed: mb(mem.heapUsed),
+      heapTotal: mb(mem.heapTotal),
+      external: mb(mem.external),
+      arrayBuffers: mb(mem.arrayBuffers)
+    },
+    inMemoryCaches: {
+      imageBytesCache: imageBytesCache.size,
+      gamesCache: gamesCache.size,
+      teamNameCache: teamNameCache.size,
+      realLeagueLogoCache: Object.keys(realLeagueLogoCache).length,
+      scheduleBackgroundCache: Object.keys(scheduleBackgroundCache).length,
+      inlineSvgOverlayCache: Object.keys(inlineSvgOverlayCache).length,
+      m3uSourceCache: m3u.m3uSourceCache.size,
+      epgShareCache: epgshare.epgShareCache.size
+    },
+    onDiskCaches: {
+      renderCache: renderCacheStats,
+      epgCache: epgCacheStats
+    }
+  });
+});
+
 // Manual counterpart to the daily art warm-up (see startArtWarmupScheduler)
 // - runs the exact same warmTodaysArt() the automatic daily job runs,
 // on demand. Deliberately re-pulls a LIVE schedule per league rather than
