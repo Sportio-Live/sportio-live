@@ -4093,23 +4093,36 @@ app.get('/user/:uuid/manifest.json', (req, res) => {
     return idxA - idxB;
   });
 
-  // Stremio/Nuvio's Home board requests every catalog with zero extra
-  // params - a catalog that declares a *required* extra can never satisfy
-  // that request, so it's silently skipped from Home while remaining a
-  // completely normal, fully loadable catalog everywhere else (Discover
-  // prompts for the required value same as any addon's genre-filtered
-  // catalog, using the first/only option as its default). This is the same
-  // technique AIOMetadata uses for its own per-catalog "show in home"
-  // toggle. The genre value itself is never read by the catalog route
-  // below - it exists purely to make the parameter "required".
+  // Two mechanisms layered together, both lifted from AIOMetadata's own
+  // manifest (compared side by side against a real AIOMetadata export where
+  // one catalog is hidden from Home and one isn't):
+  //
+  // 1. Spec-correct: Stremio/Nuvio's Home board requests every catalog with
+  //    zero extra params - a catalog that declares a *required* extra can
+  //    never satisfy that request, so spec-compliant clients (Stremio Web,
+  //    Nuvio Mobile/Desktop/iOS - all confirmed working) silently skip it
+  //    from Home while it stays a completely normal, fully loadable catalog
+  //    everywhere else (Discover prompts for the value, same as any addon's
+  //    genre-filtered catalog, using the first/only option as its default).
+  //    The genre value itself is never read by the catalog route below - it
+  //    exists purely to make the parameter "required".
+  // 2. Non-spec fallback: a plain `showInHome: false` on the catalog object
+  //    itself. Nuvio Android TV runs on an entirely different codebase from
+  //    Nuvio's other platforms (forked from CloudStream3, no Stremio-extra
+  //    handling found in its source) and doesn't honor #1 at all - but it
+  //    does honor this flag, going by AIOMetadata's real manifest, so it's
+  //    included for that client specifically. Harmless no-op for any client
+  //    that doesn't recognize it.
   const hiddenFromHome = new Set(user.hiddenFromHomeSports || []);
   const catalogs = orderedActiveSports.map(sport => {
+    const isHidden = hiddenFromHome.has(sport);
     const catalog = {
       type: 'sports',
       id: `sb_${sport.toLowerCase()}`,
-      name: `${getSportDisplayName(sport)} Live Games`
+      name: `${getSportDisplayName(sport)} Live Games`,
+      showInHome: !isHidden
     };
-    if (hiddenFromHome.has(sport)) {
+    if (isHidden) {
       catalog.extra = [{ name: 'genre', options: ['All'], default: 'All', isRequired: true }];
     }
     return catalog;
