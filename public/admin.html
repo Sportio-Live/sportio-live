@@ -223,6 +223,9 @@
           <table class="w-full text-sm">
             <thead>
               <tr class="border-b border-[#e6e6e6]/15 text-left">
+                <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55 cursor-pointer hover:text-[#e6e6e6] select-none" onclick="sortBy('nickname')">
+                  Nickname <i id="sort-icon-nickname" class="fa-solid fa-sort ml-1"></i>
+                </th>
                 <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55">UUID</th>
                 <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55">Type</th>
                 <th class="px-4 py-3 font-semibold text-xs uppercase text-[#e6e6e6]/55 cursor-pointer hover:text-[#e6e6e6] select-none" onclick="sortBy('createdAt')">
@@ -744,6 +747,9 @@
         const badge = buildConnectionBadges(user.connectionTypes);
         return `
         <tr class="border-b border-[#e6e6e6]/10 hover:bg-[#3b4d58]/40">
+          <td class="px-4 py-3 text-xs">
+            <span id="nickname-${user.uuid}" onclick="startNicknameEdit('${user.uuid}', event)" class="cursor-pointer hover:text-[#5aa8d1] transition ${user.nickname ? '' : 'italic text-[#e6e6e6]/40'}" title="Click to edit">${user.nickname ? escapeHtml(user.nickname) : 'Add nickname'}</span>
+          </td>
           <td class="px-4 py-3 font-mono text-xs text-[#e6e6e6]/75">${user.uuid}</td>
           <td class="px-4 py-3 text-xs">${badge}</td>
           <td class="px-4 py-3 text-xs text-[#e6e6e6]/75">${formatDate(user.createdAt)}</td>
@@ -767,27 +773,94 @@
         currentSort.direction = 'asc';
       }
 
-      ['createdAt', 'lastAccessedAt'].forEach(f => {
+      ['nickname', 'createdAt', 'lastAccessedAt'].forEach(f => {
         document.getElementById(`sort-icon-${f}`).className = 'fa-solid fa-sort ml-1';
       });
       document.getElementById(`sort-icon-${field}`).className = currentSort.direction === 'asc'
         ? 'fa-solid fa-sort-up ml-1'
         : 'fa-solid fa-sort-down ml-1';
 
-      // Accounts with no recorded date (pre-existing accounts from before
-      // this feature, or ones never yet accessed) always sort last,
-      // regardless of direction - "unknown" isn't meaningfully the
-      // earliest or the latest.
+      const isDateField = field === 'createdAt' || field === 'lastAccessedAt';
+
+      // Accounts with no recorded value for the field (no date yet, or no
+      // nickname set) always sort last, regardless of direction - "unknown"
+      // isn't meaningfully the earliest/latest or the alphabetically first.
       visibleUsers.sort((a, b) => {
         const aVal = a[field];
         const bVal = b[field];
         if (!aVal && !bVal) return 0;
         if (!aVal) return 1;
         if (!bVal) return -1;
-        const cmp = new Date(aVal) - new Date(bVal);
+        const cmp = isDateField
+          ? (new Date(aVal) - new Date(bVal))
+          : aVal.localeCompare(bVal, undefined, { sensitivity: 'base' });
         return currentSort.direction === 'asc' ? cmp : -cmp;
       });
       renderTable();
+    }
+
+    // Click-to-edit, mirroring the catalog rename pattern in index.html's
+    // startInlineRename - swap the span for a text input in place, commit
+    // on blur/Enter, cancel on Escape. Saved immediately via its own
+    // endpoint (not staged/dirty) since every other admin-page action here
+    // (delete, EPG settings, etc.) already saves immediately too.
+    function startNicknameEdit(uuid, ev) {
+      ev.stopPropagation();
+      const span = document.getElementById(`nickname-${uuid}`);
+      if (!span || span.tagName === 'INPUT') return;
+
+      const user = allUsers.find(u => u.uuid === uuid);
+      const current = (user && user.nickname) || '';
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.id = `nickname-${uuid}`;
+      input.value = current;
+      input.maxLength = 60;
+      input.placeholder = 'Add nickname...';
+      input.className = 'bg-[#2f3e47] border border-[#3b8fc4] rounded px-1.5 py-0.5 text-xs text-[#e6e6e6] outline-none w-32 max-w-[40vw]';
+
+      let finished = false;
+      const finish = async (commit) => {
+        if (finished) return;
+        finished = true;
+        const trimmed = input.value.trim();
+        if (commit && trimmed !== current) {
+          await saveNickname(uuid, trimmed);
+        }
+        renderTable();
+      };
+
+      input.onblur = () => finish(true);
+      input.onkeydown = (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+        if (e.key === 'Escape') { e.preventDefault(); finished = true; renderTable(); }
+      };
+
+      span.replaceWith(input);
+      input.focus();
+      input.select();
+    }
+
+    async function saveNickname(uuid, nickname) {
+      try {
+        const res = await fetch('/api/admin/user/nickname', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...adminCreds, targetUuid: uuid, nickname })
+        });
+        const data = await res.json();
+        if (data.success) {
+          [allUsers, visibleUsers].forEach(list => {
+            const user = list.find(u => u.uuid === uuid);
+            if (user) user.nickname = data.nickname;
+          });
+        } else {
+          showAdminStatus(data.error || 'Failed to save nickname.', true);
+        }
+      } catch (err) {
+        showAdminStatus('Network error while saving nickname.', true);
+      }
     }
 
     function applyDateFilter() {

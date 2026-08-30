@@ -3454,6 +3454,7 @@ app.post('/api/admin/users', async (req, res) => {
   // of account this is.
   const users = Object.values(userConfigs).map(user => ({
     uuid: user.uuid,
+    nickname: user.nickname || null,
     connectionTypes: (user.providers || []).map(p => p.connectionType || 'xtream'),
     createdAt: user.createdAt || null,
     lastAccessedAt: user.lastAccessedAt || null
@@ -4067,6 +4068,41 @@ app.post('/api/admin/user/delete', async (req, res) => {
   saveUserConfigs();
 
   return res.json({ success: true });
+});
+
+// Lets the admin label an account with something more memorable than its
+// raw UUID (e.g. a customer's name) - purely a display/sort convenience on
+// the admin page, never used to authenticate or look up the account
+// anywhere else.
+app.post('/api/admin/user/nickname', async (req, res) => {
+  const { username, password, targetUuid, nickname } = req.body;
+  const ip = req.ip;
+
+  if (isRateLimited(ip)) {
+    const retryAfterSec = getRetryAfterSeconds(ip);
+    res.setHeader('Retry-After', retryAfterSec);
+    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  }
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(ip);
+    return res.status(401).json({ error: 'Invalid admin credentials.' });
+  }
+  clearFailedAttempts(ip);
+
+  const user = userConfigs[targetUuid];
+  if (!user) {
+    return res.status(404).json({ error: 'No account found with that UUID.' });
+  }
+
+  const trimmed = typeof nickname === 'string' ? nickname.trim().slice(0, 60) : '';
+  if (trimmed) {
+    user.nickname = trimmed;
+  } else {
+    delete user.nickname;
+  }
+  saveUserConfigs();
+
+  return res.json({ success: true, nickname: user.nickname || null });
 });
 
 // A sport only counts as active if at least one category folder has been
