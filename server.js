@@ -749,6 +749,70 @@ const NCAA_QUERY_PARAMS = {
   NCAAFB: '&limit=500'
 };
 
+// College football's scoreboard mixes real FBS (Division I-A) matchups with
+// early-season FBS-vs-FCS "buy games" - the FCS side of those is essentially
+// never available on our providers, so they just clutter the catalog. FBS
+// membership only changes at conference realignment, so a full day's cache
+// is safe. Confirmed by direct testing that the site API's own `groups=80`
+// filter is a no-op for football on both the scoreboard and teams endpoints
+// (returns the same unfiltered results with or without it) - the Core API's
+// actual FBS group node is the only reliable source for this roster.
+const fbsTeamIdsCache = { fetchedAt: 0, ids: null };
+const FBS_TEAM_IDS_CACHE_MS = 24 * 60 * 60 * 1000;
+
+async function fetchFbsTeamIds() {
+  if (fbsTeamIdsCache.ids && (Date.now() - fbsTeamIdsCache.fetchedAt) < FBS_TEAM_IDS_CACHE_MS) {
+    return fbsTeamIdsCache.ids;
+  }
+
+  try {
+    // The postseason National Championship falls in January but belongs to
+    // the previous fall's season, so January still needs last year's group.
+    const now = new Date();
+    const seasonYear = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
+
+    const res = await axios.get(
+      `https://sports.core.api.espn.com/v2/sports/football/leagues/college-football/seasons/${seasonYear}/types/2/groups/80/teams?limit=300`,
+      { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }, timeout: 8000 }
+    );
+    const items = res.data?.items || [];
+    const ids = new Set(
+      items.map(item => (item['$ref'] || '').match(/\/teams\/(\d+)\?/)?.[1]).filter(Boolean)
+    );
+
+    if (ids.size > 0) {
+      fbsTeamIdsCache.fetchedAt = Date.now();
+      fbsTeamIdsCache.ids = ids;
+      return ids;
+    }
+    // An empty result is far more likely a transient/shape issue than an
+    // actual empty FBS - keep serving the last good list rather than one
+    // that would filter every single game out.
+    return fbsTeamIdsCache.ids;
+  } catch (err) {
+    console.error('[ESPN] Failed to fetch FBS team list:', err.message);
+    return fbsTeamIdsCache.ids;
+  }
+}
+
+// Drops any college football game where either team isn't in the current
+// FBS roster. A missing/failed FBS lookup fails open (returns every game
+// unfiltered) rather than risking an empty catalog. Every other sport is
+// returned untouched.
+async function filterToFbsGames(sport, events) {
+  if (sport.toUpperCase() !== 'NCAAFB') return events;
+
+  const fbsIds = await fetchFbsTeamIds();
+  if (!fbsIds || fbsIds.size === 0) return events;
+
+  return events.filter(event => {
+    const competitors = event.competitions?.[0]?.competitors || [];
+    const home = competitors.find(c => c.homeAway === 'home')?.team;
+    const away = competitors.find(c => c.homeAway === 'away')?.team;
+    return !!home && !!away && fbsIds.has(String(home.id)) && fbsIds.has(String(away.id));
+  });
+}
+
 const ESPN_LEAGUES = {
   NBA: 'nba',
   NFL: 'nfl',
@@ -1820,8 +1884,8 @@ async function fetchUpcomingGames(sport, userTimeZone = 'America/New_York', limi
       timeout: 8000
     });
 
-    const events = res.data?.events || [];
-    const sorted = [...events].sort((a, b) => new Date(a.date) - new Date(b.date));
+    const rawEvents = await filterToFbsGames(sport, res.data?.events || []);
+    const sorted = [...rawEvents].sort((a, b) => new Date(a.date) - new Date(b.date));
 
     return sorted.slice(0, limit).map(event => {
       const competition = event.competitions?.[0] || {};
@@ -2439,13 +2503,15 @@ async function fetchTodayGames(sport, hostUrl, userTimeZone = 'America/New_York'
       timeout: 7000
     });
 
+    const fbsFiltered = await filterToFbsGames(sport, res.data?.events || []);
+
     // ESPN doesn't return events in kickoff order - without a 'groups' filter
     // (dropped for NCAAFB above, since groups=50 was the Patriot League bug)
     // events come back bunched in ESPN's own internal order rather than
     // chronologically, so every sport's "today" catalog needs an explicit
     // sort. Games with a missing/invalid date sort last rather than
     // crashing the comparator or landing in an arbitrary spot.
-    const events = [...(res.data?.events || [])].sort((a, b) => {
+    const events = [...fbsFiltered].sort((a, b) => {
       const timeA = new Date(a.date).getTime();
       const timeB = new Date(b.date).getTime();
       return (Number.isFinite(timeA) ? timeA : Infinity) - (Number.isFinite(timeB) ? timeB : Infinity);
