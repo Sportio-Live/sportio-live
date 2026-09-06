@@ -755,12 +755,13 @@ const NCAA_QUERY_PARAMS = {
 // FCS games (e.g. VMI @ Virginia Tech) air on a real cable network. The
 // actual signal is the broadcast itself: a handful of conferences run their
 // own secondary streaming apps for games that don't get real TV/cable
-// coverage, and those aren't available through our providers - unlike
-// ESPN+, which is broadly carried and kept deliberately. A game is dropped
+// coverage, and those aren't available through our providers. ESPN+ was
+// kept at first since it's broadly carried, but proved unreliable enough on
+// our providers in practice that it's excluded too now. A game is dropped
 // only when every single listed broadcast falls in this excluded set; a
-// missing broadcast list, or any broadcast name not in the set (including
-// every real cable/network channel), keeps the game.
-const NCAAFB_EXCLUDED_BROADCASTS = new Set(['ACCNX', 'SECN+', 'MW+', 'UConn+', 'Disney+', 'Peacock']);
+// missing broadcast list, or any broadcast name not in the set (i.e. every
+// real cable/network channel), keeps the game.
+const NCAAFB_EXCLUDED_BROADCASTS = new Set(['ACCNX', 'SECN+', 'MW+', 'UConn+', 'Disney+', 'Peacock', 'ESPN+']);
 
 function filterToStreamableGames(sport, events) {
   if (sport.toUpperCase() !== 'NCAAFB') return events;
@@ -4624,10 +4625,20 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
   // doesn't count. Kept separate from homeKw/awayKw above, which stay
   // city-inclusive for tiers 1-3 (a much stronger "both teams" signal
   // where a city match is far less likely to be a coincidence).
+  //
+  // Deliberately NOT including the abbreviation here (unlike homeKw/awayKw
+  // above) - suspected source of false-positive matches reported against
+  // Arizona State's "ASU" (not directly confirmed against provider data,
+  // since that requires live credentials this investigation couldn't
+  // access). A short abbreviation is generic enough to show up by
+  // coincidence, and unlike a full nickname word it isn't covered by
+  // mentionsForeignTeam below - that exclusion set is built from other
+  // teams' full display names, not their abbreviations, so a coincidental
+  // "asu" hit has no cross-check the way a coincidental "suns" hit would.
+  // Tiers 1-3 stay safe keeping the abbreviation since they require both
+  // teams' identifiers to co-occur.
   const homeNickKw = (game.homeNick || '').toLowerCase().split(' ').filter(w => w.length > 2);
   const awayNickKw = (game.awayNick || '').toLowerCase().split(' ').filter(w => w.length > 2);
-  if (homeAbbr.length > 2) homeNickKw.push(homeAbbr);
-  if (awayAbbr.length > 2) awayNickKw.push(awayAbbr);
 
   // Every team in the league, not just teams playing today - so a channel
   // whose EPG mentions a team that isn't even playing today (a genuinely
