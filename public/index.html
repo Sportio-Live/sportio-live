@@ -2092,6 +2092,10 @@
               </button>
             </div>
             <div class="channel-list-wrap pl-6 ${isExpanded ? '' : 'hidden'}">
+              <div class="flex items-center gap-3 pb-1.5 mb-1 border-b border-[#e6e6e6]/10">
+                <button type="button" onclick="setCategoryChannelsChecked(this, true)" class="text-[10px] font-bold text-[#5aa8d1] hover:text-[#6bb5dd] transition">Select All</button>
+                <button type="button" onclick="setCategoryChannelsChecked(this, false)" class="text-[10px] font-bold text-[#5aa8d1] hover:text-[#6bb5dd] transition">Select None</button>
+              </div>
               ${channelRows}
             </div>
           </div>
@@ -2361,13 +2365,28 @@
     // affects which categories are selected, only which of an already-
     // selected category's channels are pruned.
     function updateCategoryChannelBadge(checkboxEl) {
-      const row = checkboxEl.closest('.catrow');
-      if (row) {
-        const all = row.querySelectorAll('input[data-excl-key]');
-        const included = row.querySelectorAll('input[data-excl-key]:checked');
-        const badge = row.querySelector('.channel-count-badge');
-        if (badge) badge.textContent = `${included.length} of ${all.length}`;
-      }
+      refreshCatrowBadge(checkboxEl.closest('.catrow'));
+      markDashboardDirty();
+    }
+
+    function refreshCatrowBadge(row) {
+      if (!row) return;
+      const all = row.querySelectorAll('input[data-excl-key]');
+      const included = row.querySelectorAll('input[data-excl-key]:checked');
+      const badge = row.querySelector('.channel-count-badge');
+      if (badge) badge.textContent = `${included.length} of ${all.length}`;
+    }
+
+    // "Select All"/"Select None" for one category's channel list - flips
+    // every checkbox in that category at once (never a rebuild, same
+    // non-destructive DOM update as an individual checkbox toggle), so
+    // picking just a couple of channels out of a category with hundreds is
+    // "Select None, then check the couple you want" instead of unchecking
+    // everything else one at a time.
+    function setCategoryChannelsChecked(btn, checked) {
+      const row = btn.closest('.catrow');
+      row.querySelectorAll('input[data-excl-key]').forEach(cb => { cb.checked = checked; });
+      refreshCatrowBadge(row);
       markDashboardDirty();
     }
 
