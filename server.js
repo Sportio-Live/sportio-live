@@ -482,7 +482,16 @@ function isValidStoredPreset(p) {
     && Object.values(p.sportCategories).every(names => Array.isArray(names) && names.every(n => typeof n === 'string'))
     && typeof p.epgOverrides === 'object' && p.epgOverrides !== null
     && Object.values(p.epgOverrides).every(v => typeof v === 'string')
-    && (p.epgSources === undefined || (Array.isArray(p.epgSources) && p.epgSources.every(f => typeof f === 'string')));
+    && (p.epgSources === undefined || (Array.isArray(p.epgSources) && p.epgSources.every(f => typeof f === 'string')))
+    && (p.excludedChannels === undefined || (typeof p.excludedChannels === 'object' && p.excludedChannels !== null
+      && Object.values(p.excludedChannels).every(names => Array.isArray(names) && names.every(n => typeof n === 'string'))))
+    && (p.hiddenFromHomeSports === undefined || (Array.isArray(p.hiddenFromHomeSports) && p.hiddenFromHomeSports.every(s => typeof s === 'string')))
+    && (p.sportOrder === undefined || (Array.isArray(p.sportOrder) && p.sportOrder.every(s => typeof s === 'string')))
+    && (p.allGamesTodayEnabled === undefined || typeof p.allGamesTodayEnabled === 'boolean')
+    && (p.catalogNames === undefined || (typeof p.catalogNames === 'object' && p.catalogNames !== null
+      && Object.values(p.catalogNames).every(v => typeof v === 'string')))
+    && (p.nameFormat === undefined || typeof p.nameFormat === 'string')
+    && (p.titleFormat === undefined || typeof p.titleFormat === 'string');
 }
 
 function loadPresets(file, label) {
@@ -605,7 +614,14 @@ function hashPresetContent(preset) {
     selectedSports: preset.selectedSports,
     sportCategories: preset.sportCategories,
     epgOverrides: preset.epgOverrides,
-    epgSources: preset.epgSources || []
+    epgSources: preset.epgSources || [],
+    excludedChannels: preset.excludedChannels || {},
+    hiddenFromHomeSports: preset.hiddenFromHomeSports || [],
+    sportOrder: preset.sportOrder || [],
+    allGamesTodayEnabled: !!preset.allGamesTodayEnabled,
+    catalogNames: preset.catalogNames || {},
+    nameFormat: preset.nameFormat || '',
+    titleFormat: preset.titleFormat || ''
   };
   return crypto.createHash('sha256').update(stableStringify(content)).digest('hex');
 }
@@ -3101,6 +3117,33 @@ app.post('/api/m3u/channels', async (req, res) => {
   });
 });
 
+// M3U's equivalent of /api/xtream/streams below - takes the playlist URL
+// directly rather than an account lookup, for the same reason: the setup
+// wizard needs to resolve a preset's channel exclusions against the
+// playlist just tested/imported, before an account (and its uuid/password)
+// exists. No separate auth to check here, same as /api/m3u/import - the
+// URL itself is already this connection's only "credential", and it's
+// never persisted by this route.
+app.post('/api/m3u/channels-by-url', (req, res) => {
+  const { playlistUrl, categoryIds } = req.body;
+  if (!playlistUrl) return res.status(400).json({ error: 'Missing playlist URL' });
+
+  const source = m3u.getCachedM3USource(playlistUrl);
+  if (!source) {
+    return res.json({ success: true, channels: [], notReady: true });
+  }
+
+  const categorySet = new Set(Array.isArray(categoryIds) ? categoryIds : []);
+  const channels = categorySet.size > 0
+    ? source.channels.filter(ch => ch.categories.some(c => categorySet.has(c)))
+    : source.channels;
+
+  return res.json({
+    success: true,
+    channels: channels.map(ch => ({ id: ch.id, name: ch.name, logo: ch.logo, streamUrl: ch.streamUrl, categories: ch.categories }))
+  });
+});
+
 // Xtream's equivalent of /api/m3u/channels above - there's no cached
 // source to read here (Xtream is always a live API call), so this takes
 // the category ids to fetch directly rather than looking them up from a
@@ -3200,11 +3243,30 @@ app.post('/api/presets/public', (req, res) => {
   return res.json({ success: true, presets: getAllPresets().filter(isPresetAvailable) });
 });
 
+// Shared by /api/user/register and /api/user/update (a user's own custom
+// catalog names) and /api/admin/presets/create (seeding those same names
+// from an export) - drops anything malformed rather than saving it, since
+// none of these three callers otherwise validate this shape themselves.
+function sanitizeCatalogNames(catalogNames) {
+  const sanitized = {};
+  if (catalogNames && typeof catalogNames === 'object' && !Array.isArray(catalogNames)) {
+    for (const [id, name] of Object.entries(catalogNames)) {
+      if (typeof id === 'string' && typeof name === 'string' && name.trim()) {
+        sanitized[id] = name.trim().slice(0, 60);
+      }
+    }
+  }
+  return sanitized;
+}
+
 app.post('/api/user/register', async (req, res) => {
   if (!ENCRYPTION_KEY_CONFIGURED) {
     return res.status(503).json({ error: 'Encryption key not configured yet. See the homepage for setup instructions.' });
   }
-  const { xtream, m3u, connectionType, selectedSports, sportCategories, epgOverrides, password, timeZone, sportOrder } = req.body;
+  const {
+    xtream, m3u, connectionType, selectedSports, sportCategories, epgOverrides, excludedChannels,
+    password, timeZone, sportOrder, hiddenFromHomeSports, allGamesTodayEnabled, catalogNames, nameFormat, titleFormat
+  } = req.body;
   if (!password || typeof password !== 'string' || password.length === 0) {
     return res.status(400).json({ error: 'A password is required.' });
   }
@@ -3229,12 +3291,23 @@ app.post('/api/user/register', async (req, res) => {
       selectedSports,
       sportCategories,
       // Only ever populated when the wizard's preset step resolved one -
-      // the manual leagues/categories path never sets this at registration,
-      // same as before this field existed.
-      epgOverrides: epgOverrides && typeof epgOverrides === 'object' ? epgOverrides : {}
+      // the manual leagues/categories path never sets these at
+      // registration, same as before these fields existed. Already
+      // resolved to this account's own channel keys client-side (see
+      // applyWizardPreset in index.html) before reaching here, same as
+      // epgOverrides.
+      epgOverrides: epgOverrides && typeof epgOverrides === 'object' ? epgOverrides : {},
+      excludedChannels: excludedChannels && typeof excludedChannels === 'object' ? excludedChannels : {}
     }],
     timeZone: timeZone || 'America/New_York',
     sportOrder,
+    // Only ever populated via a wizard preset - the manual setup path
+    // leaves these undefined/default, same as sportOrder always has.
+    hiddenFromHomeSports: Array.isArray(hiddenFromHomeSports) ? hiddenFromHomeSports.filter(s => typeof s === 'string') : [],
+    allGamesTodayEnabled: !!allGamesTodayEnabled,
+    catalogNames: sanitizeCatalogNames(catalogNames),
+    nameFormat: typeof nameFormat === 'string' ? (nameFormat.trim() || undefined) : undefined,
+    titleFormat: typeof titleFormat === 'string' ? (titleFormat.trim() || undefined) : undefined,
     createdAt: new Date().toISOString()
   };
   saveUserConfigs();
@@ -3321,17 +3394,7 @@ app.post('/api/user/update', async (req, res) => {
   // since the dashboard's own rename control already treats a
   // cleared/default-matching value as "remove the override" before it
   // ever reaches this request.
-  if (catalogNames !== undefined) {
-    const sanitized = {};
-    if (catalogNames && typeof catalogNames === 'object' && !Array.isArray(catalogNames)) {
-      for (const [id, name] of Object.entries(catalogNames)) {
-        if (typeof id === 'string' && typeof name === 'string' && name.trim()) {
-          sanitized[id] = name.trim().slice(0, 60);
-        }
-      }
-    }
-    user.catalogNames = sanitized;
-  }
+  if (catalogNames !== undefined) user.catalogNames = sanitizeCatalogNames(catalogNames);
   // Blank/whitespace-only is treated as "go back to default" rather than
   // saved literally - an empty template would otherwise render every
   // stream's name/title as a blank string, which is never actually what
@@ -3936,6 +3999,24 @@ app.post('/api/admin/presets/create', async (req, res) => {
       Object.entries(config.epgOverrides).filter(([, v]) => typeof v === 'string')
     ),
     epgSources: validEpgSources,
+    // Everything below is additive (undefined on an export/preset built
+    // before these fields existed) and, like sportCategories/epgOverrides
+    // above, arrives as portable NAMES/ids rather than raw per-account ids
+    // - see exportProviderSettings's own comment in index.html for why.
+    excludedChannels: (config.excludedChannels && typeof config.excludedChannels === 'object')
+      ? Object.fromEntries(
+          Object.entries(config.excludedChannels).filter(([, names]) => Array.isArray(names))
+            .map(([sport, names]) => [sport, names.filter(n => typeof n === 'string')])
+        )
+      : {},
+    hiddenFromHomeSports: Array.isArray(config.hiddenFromHomeSports)
+      ? config.hiddenFromHomeSports.filter(s => typeof s === 'string')
+      : [],
+    sportOrder: Array.isArray(config.sportOrder) ? config.sportOrder.filter(s => typeof s === 'string') : [],
+    allGamesTodayEnabled: !!config.allGamesTodayEnabled,
+    catalogNames: sanitizeCatalogNames(config.catalogNames),
+    nameFormat: typeof config.nameFormat === 'string' ? config.nameFormat.trim() : '',
+    titleFormat: typeof config.titleFormat === 'string' ? config.titleFormat.trim() : '',
     createdAt: new Date().toISOString()
   };
 

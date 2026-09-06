@@ -533,7 +533,7 @@
                   <i class="fa-solid fa-plug text-[9px]"></i><span></span>
                 </span>
               </div>
-              <p class="text-xs text-[#e6e6e6]/55 mb-3">Export your currently selected Leagues/sources and EPG overrides to a configuration file.</p>
+              <p class="text-xs text-[#e6e6e6]/55 mb-3">Export your currently selected Leagues/sources, EPG overrides, channel exclusions, and dashboard preferences to a configuration file. Never includes credentials or your timezone.</p>
               <button id="export-config-btn" onclick="exportProviderSettings()" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2">
                 <i class="fa-solid fa-upload"></i>
                 Export Config
@@ -547,7 +547,7 @@
                   <i class="fa-solid fa-plug text-[9px]"></i><span></span>
                 </span>
               </div>
-              <p class="text-xs text-[#e6e6e6]/55 mb-3">Import a configuration file. This will overwrite your current Leagues/sources and EPG overrides.</p>
+              <p class="text-xs text-[#e6e6e6]/55 mb-3">Import a configuration file. This will overwrite your current Leagues/sources, EPG overrides, channel exclusions, and dashboard preferences.</p>
               <input type="file" id="export-import-file-input" accept="application/json" class="hidden" onchange="handleImportFileSelected(event)">
               <button id="import-config-btn" onclick="document.getElementById('export-import-file-input').click()" class="bg-[#56707d] hover:bg-[#66818f] active:scale-95 transition-all duration-150 font-bold py-2.5 px-4 rounded-lg text-xs flex items-center gap-2">
                 <i class="fa-solid fa-download"></i>
@@ -735,6 +735,18 @@
     let wizardCategories = {};
     let wizardEpgOverrides = {};
     let wizardSportOrder = [];
+    // Everything below is only ever populated by applyWizardPreset() - the
+    // wizard itself has no UI for any of these (channel-level pruning,
+    // home-catalog visibility, catalog renaming, name/title formatting are
+    // all dashboard-only concepts), but a preset can still seed them
+    // silently so they're already in place once the new account lands on
+    // the dashboard - see applyWizardPreset's own comment.
+    let wizardExcludedChannels = {};
+    let wizardHiddenFromHomeSports = [];
+    let wizardAllGamesTodayEnabled = false;
+    let wizardCatalogNames = {};
+    let wizardNameFormat = undefined;
+    let wizardTitleFormat = undefined;
 
     // Views that should sit vertically centered in the space below the header.
     // Single source of truth for every view showView() can switch to - id
@@ -820,6 +832,12 @@
       wizardCategories = {};
       wizardEpgOverrides = {};
       wizardSportOrder = [];
+      wizardExcludedChannels = {};
+      wizardHiddenFromHomeSports = [];
+      wizardAllGamesTodayEnabled = false;
+      wizardCatalogNames = {};
+      wizardNameFormat = undefined;
+      wizardTitleFormat = undefined;
       wizardAvailablePresets = [];
       selectedWizardPresetId = null;
 
@@ -1251,9 +1269,13 @@
       });
 
       wizardEpgOverrides = {};
+      wizardExcludedChannels = {};
       let overridesApplied = 0;
       let overridesSkipped = 0;
+      let exclusionsApplied = 0;
+      let exclusionsSkipped = 0;
       const importedOverrides = preset.epgOverrides || {};
+      const importedExclusions = preset.excludedChannels || {};
 
       if (wizardM3u) {
         // tvg-id is already local-compatible - apply directly.
@@ -1261,33 +1283,105 @@
           wizardEpgOverrides[tvgId] = epgShareId;
           overridesApplied++;
         });
-      } else if (Object.keys(importedOverrides).length > 0) {
-        const usedCategoryIds = [...new Set(Object.values(wizardCategories).flat().map(String))];
-        const channels = await fetchXtreamChannelsForCategories(wizardXtream, usedCategoryIds);
+      }
+
+      // Channel exclusions need a name -> channel lookup regardless of
+      // connection type (excludedChannels' key is a raw per-account
+      // channel id/stream URL, never portable - see importProviderSettings'
+      // own comment on the dashboard for the same reasoning). EPG
+      // overrides only need this lookup on the Xtream side, since M3U's
+      // tvg-id is already portable and handled directly above - both are
+      // resolved off one shared fetch rather than two.
+      const usedCategoryIds = [...new Set(Object.values(wizardCategories).flat().map(String))];
+      const needsChannelLookup = Object.keys(importedExclusions).length > 0
+        || (!wizardM3u && Object.keys(importedOverrides).length > 0);
+      if (needsChannelLookup) {
+        const channels = await fetchWizardChannelsForCategories(usedCategoryIds);
         const idsByName = {};
-        channels.forEach(ch => { (idsByName[ch.name] = idsByName[ch.name] || []).push(ch.id); });
-        Object.entries(importedOverrides).forEach(([channelName, epgShareId]) => {
-          const matches = idsByName[channelName] || [];
-          if (matches.length === 1) {
-            wizardEpgOverrides[matches[0]] = epgShareId;
-            overridesApplied++;
-          } else {
-            // Not found, or the name matched more than one channel - either
-            // way a guess would risk a wrong EPG assignment, so it's left
-            // for the user to set by hand later.
-            overridesSkipped++;
-          }
+        const keysByName = {};
+        channels.forEach(ch => {
+          (idsByName[ch.name] = idsByName[ch.name] || []).push(ch.id);
+          (keysByName[ch.name] = keysByName[ch.name] || []).push(ch.key);
+        });
+
+        if (!wizardM3u) {
+          Object.entries(importedOverrides).forEach(([channelName, epgShareId]) => {
+            const matches = idsByName[channelName] || [];
+            if (matches.length === 1) {
+              wizardEpgOverrides[matches[0]] = epgShareId;
+              overridesApplied++;
+            } else {
+              // Not found, or the name matched more than one channel -
+              // either way a guess would risk a wrong EPG assignment, so
+              // it's left for the user to set by hand later.
+              overridesSkipped++;
+            }
+          });
+        }
+
+        Object.entries(importedExclusions).forEach(([sport, names]) => {
+          if (!allowedSports.has(sport) || !Array.isArray(names)) return;
+          const keys = [];
+          names.forEach(name => {
+            const matches = keysByName[name] || [];
+            if (matches.length === 1) { keys.push(matches[0]); exclusionsApplied++; }
+            else exclusionsSkipped++;
+          });
+          wizardExcludedChannels[sport] = keys;
         });
       }
 
+      // Everything below is account-level (not tied to this one
+      // provider/connection) and already portable as-is - no lookup
+      // needed, same reasoning as exportProviderSettings' own comment on
+      // the dashboard. Silently carried into wizardPassword -> registration
+      // (see finishWizardSetup) - there's no wizard UI for any of this, the
+      // user only sees the result once they land on the dashboard.
+      wizardHiddenFromHomeSports = Array.isArray(preset.hiddenFromHomeSports)
+        ? preset.hiddenFromHomeSports.filter(s => SPORTS.includes(s))
+        : [];
+      if (Array.isArray(preset.sportOrder)) {
+        wizardSportOrder = preset.sportOrder.filter(s => SPORTS.includes(s));
+      }
+      wizardAllGamesTodayEnabled = !!preset.allGamesTodayEnabled;
+      wizardCatalogNames = (preset.catalogNames && typeof preset.catalogNames === 'object') ? preset.catalogNames : {};
+      wizardNameFormat = (typeof preset.nameFormat === 'string' && preset.nameFormat.trim()) ? preset.nameFormat.trim() : undefined;
+      wizardTitleFormat = (typeof preset.titleFormat === 'string' && preset.titleFormat.trim()) ? preset.titleFormat.trim() : undefined;
+
       const leagueCount = wizardSelectedSports.length;
-      let msg = `Applied preset "${preset.name}": ${categoriesApplied} categor${categoriesApplied === 1 ? 'y' : 'ies'} across ${leagueCount} league${leagueCount === 1 ? '' : 's'}, ${overridesApplied} EPG override${overridesApplied === 1 ? '' : 's'}.`;
-      if (categoriesSkipped > 0 || overridesSkipped > 0) {
-        msg += ` (${categoriesSkipped + overridesSkipped} skipped - not found on your provider.)`;
+      let msg = `Applied preset "${preset.name}": ${categoriesApplied} categor${categoriesApplied === 1 ? 'y' : 'ies'} across ${leagueCount} league${leagueCount === 1 ? '' : 's'}, ${overridesApplied} EPG override${overridesApplied === 1 ? '' : 's'}, ${exclusionsApplied} channel exclusion${exclusionsApplied === 1 ? '' : 's'}, plus dashboard preferences.`;
+      if (categoriesSkipped > 0 || overridesSkipped > 0 || exclusionsSkipped > 0) {
+        msg += ` (${categoriesSkipped + overridesSkipped + exclusionsSkipped} skipped - not found on your provider.)`;
       }
       showStatus(msg);
 
       showView('wizard-password');
+    }
+
+    // Same {id, key, name} shape categorySearchChannels uses on the
+    // dashboard, just fetched against the wizard's in-progress connection
+    // (no account/uuid yet) rather than a saved provider. id and key are
+    // the same value for Xtream (stream_id is already the unique identity),
+    // but distinct for M3U - id is tvg-id, key is the actual stream URL,
+    // the only truly unique per-row identity post-dedup (see
+    // m3u.js/parseM3UPlaylist and /api/m3u/channels-by-url's own comment).
+    async function fetchWizardChannelsForCategories(categoryIds) {
+      if (!categoryIds || categoryIds.length === 0) return [];
+      if (wizardM3u) {
+        try {
+          const res = await fetch('/api/m3u/channels-by-url', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ playlistUrl: wizardM3u.playlistUrl, categoryIds })
+          });
+          const data = await res.json();
+          return data.success ? data.channels.map(ch => ({ id: ch.id, key: ch.streamUrl, name: ch.name })) : [];
+        } catch (err) {
+          return [];
+        }
+      }
+      const channels = await fetchXtreamChannelsForCategories(wizardXtream, categoryIds);
+      return channels.map(ch => ({ id: ch.id, key: ch.id, name: ch.name }));
     }
 
     // --- Setup Wizard: Step 4b, category folder selection (manual path, filtered) ---
@@ -1366,9 +1460,15 @@
             selectedSports: wizardSelectedSports,
             sportCategories: wizardCategories,
             // Only ever non-empty if the preset step resolved one - the
-            // manual leagues/categories path never touches EPG overrides.
+            // manual leagues/categories path never touches these.
             epgOverrides: wizardEpgOverrides,
-            sportOrder: wizardSportOrder
+            excludedChannels: wizardExcludedChannels,
+            sportOrder: wizardSportOrder,
+            hiddenFromHomeSports: wizardHiddenFromHomeSports,
+            allGamesTodayEnabled: wizardAllGamesTodayEnabled,
+            catalogNames: wizardCatalogNames,
+            nameFormat: wizardNameFormat,
+            titleFormat: wizardTitleFormat
           })
         });
         const data = await res.json();
@@ -1387,10 +1487,16 @@
               m3u: connectionType === 'm3u' ? wizardM3u : undefined,
               selectedSports: wizardSelectedSports,
               sportCategories: wizardCategories,
-              epgOverrides: wizardEpgOverrides
+              epgOverrides: wizardEpgOverrides,
+              excludedChannels: wizardExcludedChannels
             }],
             timeZone: wizardTimezone,
-            sportOrder: wizardSportOrder
+            sportOrder: wizardSportOrder,
+            hiddenFromHomeSports: wizardHiddenFromHomeSports,
+            allGamesTodayEnabled: wizardAllGamesTodayEnabled,
+            catalogNames: wizardCatalogNames,
+            nameFormat: wizardNameFormat,
+            titleFormat: wizardTitleFormat
           };
           activeProviderIndex = 0;
           document.getElementById('active-uuid-display').textContent = data.uuid;
@@ -2839,6 +2945,27 @@
           });
         }
 
+        // Channel exclusions, keyed the same way sportCategories is above -
+        // provider.excludedChannels stores raw per-account channel keys
+        // (Xtream stream_id, M3U stream URL), neither portable, so this
+        // translates through the channel NAME instead, same as everything
+        // else here. categorySearchChannels was just repopulated by
+        // refreshCategoriesForActiveProvider() above, scoped to exactly the
+        // categories this export's sportCategories covers.
+        const excludedChannelsOut = {};
+        let exclusionsSkipped = 0;
+        const nameByKey = {};
+        (categorySearchChannels || []).forEach(ch => { nameByKey[ch.key] = ch.name; });
+        Object.entries(provider.excludedChannels || {}).forEach(([sport, keys]) => {
+          const names = [];
+          (keys || []).forEach(key => {
+            const name = nameByKey[String(key)];
+            if (name) names.push(name);
+            else exclusionsSkipped++;
+          });
+          if (names.length > 0) excludedChannelsOut[sport] = names;
+        });
+
         // Purely informational, additive metadata - lets whoever imports this
         // (in practice, an admin building a preset from it) know which
         // EPGShare01 source file(s) these overrides actually need enabled to
@@ -2876,7 +3003,21 @@
           selectedSports: provider.selectedSports || [],
           sportCategories: sportCategoriesByName,
           epgOverrides: epgOverridesOut,
-          epgSources: epgSourcesOut
+          epgSources: epgSourcesOut,
+          excludedChannels: excludedChannelsOut,
+          // Everything below is account-level, not provider-level (shared
+          // across every provider on this account) - included anyway since
+          // an export/preset is meant to capture someone's whole setup, not
+          // just this one provider. Already portable as-is: sport codes and
+          // "sb_<sport>"/"sb_all_today" catalog ids aren't account-specific,
+          // and nameFormat/titleFormat are just template strings. Never
+          // includes timeZone or credentials - see the panel's own copy.
+          hiddenFromHomeSports: activeUser.hiddenFromHomeSports || [],
+          sportOrder: activeUser.sportOrder || [],
+          allGamesTodayEnabled: !!activeUser.allGamesTodayEnabled,
+          catalogNames: activeUser.catalogNames || {},
+          nameFormat: activeUser.nameFormat || '',
+          titleFormat: activeUser.titleFormat || ''
         };
 
         const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
@@ -2892,9 +3033,10 @@
 
         const categoryCount = Object.values(sportCategoriesByName).reduce((sum, arr) => sum + arr.length, 0);
         const overrideCount = Object.keys(epgOverridesOut).length;
-        const lines = [`<div class="text-[#a8e0ac] font-semibold">Exported ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'} and ${overrideCount} EPG override${overrideCount === 1 ? '' : 's'}.</div>`];
-        if (categoriesSkipped > 0 || overridesSkipped > 0) {
-          lines.push(`<div class="text-[#e6e6e6]/55">${categoriesSkipped} categor${categoriesSkipped === 1 ? 'y' : 'ies'} and ${overridesSkipped} override${overridesSkipped === 1 ? '' : 's'} couldn't be named and were left out.</div>`);
+        const exclusionCount = Object.values(excludedChannelsOut).reduce((sum, arr) => sum + arr.length, 0);
+        const lines = [`<div class="text-[#a8e0ac] font-semibold">Exported ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'}, ${overrideCount} EPG override${overrideCount === 1 ? '' : 's'}, and ${exclusionCount} channel exclusion${exclusionCount === 1 ? '' : 's'} - plus your dashboard preferences (home visibility, sport order, catalog names, name/title format).</div>`];
+        if (categoriesSkipped > 0 || overridesSkipped > 0 || exclusionsSkipped > 0) {
+          lines.push(`<div class="text-[#e6e6e6]/55">${categoriesSkipped} categor${categoriesSkipped === 1 ? 'y' : 'ies'}, ${overridesSkipped} override${overridesSkipped === 1 ? '' : 's'}, and ${exclusionsSkipped} exclusion${exclusionsSkipped === 1 ? '' : 's'} couldn't be named and were left out.</div>`);
         }
         showExportImportResult(lines.join(''));
       } finally {
@@ -3037,18 +3179,83 @@
         });
       }
 
+      // Channel exclusions - same "replace, not merge" and same name-based
+      // resolution as sportCategories/epgOverrides above. categorySearchChannels
+      // needs reloading here (not the copy refreshCategoriesForActiveProvider
+      // populated earlier) since it's scoped to whatever categories are
+      // currently selected, and sportCategories was just rewritten above.
+      provider.excludedChannels = {};
+      let exclusionsApplied = 0;
+      let exclusionsNotFound = 0;
+      let exclusionsAmbiguous = 0;
+      const importedExclusions = data.excludedChannels || {};
+      if (Object.keys(importedExclusions).length > 0) {
+        await loadCategorySearchChannels(provider);
+        const keysByName = {};
+        (categorySearchChannels || []).forEach(ch => { (keysByName[ch.name] = keysByName[ch.name] || []).push(ch.key); });
+        Object.entries(importedExclusions).forEach(([sport, names]) => {
+          if (!allowedSports.has(sport) || !Array.isArray(names)) return;
+          const keys = [];
+          names.forEach(name => {
+            const matches = keysByName[name] || [];
+            if (matches.length === 1) {
+              keys.push(matches[0]);
+              exclusionsApplied++;
+            } else if (matches.length === 0) {
+              exclusionsNotFound++;
+            } else {
+              // Multiple channels share this name - excluding either would
+              // be a guess, so this is left for the user to set by hand.
+              exclusionsAmbiguous++;
+            }
+          });
+          provider.excludedChannels[sport] = keys;
+        });
+      }
+
+      // Account-level (not provider-level) preferences - applied to the
+      // whole account regardless of which provider tab this import ran
+      // from, same as they're shared across every provider once saved.
+      // Always a full replacement when present, same reasoning as
+      // categories/overrides/exclusions above. Never touches timeZone -
+      // that's deliberately excluded from every export/preset.
+      if (Array.isArray(data.hiddenFromHomeSports)) {
+        activeUser.hiddenFromHomeSports = data.hiddenFromHomeSports.filter(s => SPORTS.includes(s));
+      }
+      if (Array.isArray(data.sportOrder)) {
+        activeUser.sportOrder = data.sportOrder.filter(s => SPORTS.includes(s));
+      }
+      if (typeof data.allGamesTodayEnabled === 'boolean') {
+        activeUser.allGamesTodayEnabled = data.allGamesTodayEnabled;
+      }
+      if (data.catalogNames && typeof data.catalogNames === 'object') {
+        const sanitizedCatalogNames = {};
+        Object.entries(data.catalogNames).forEach(([id, catalogName]) => {
+          if (typeof id === 'string' && typeof catalogName === 'string' && catalogName.trim()) {
+            sanitizedCatalogNames[id] = catalogName.trim().slice(0, 60);
+          }
+        });
+        activeUser.catalogNames = sanitizedCatalogNames;
+      }
+      if (typeof data.nameFormat === 'string' && data.nameFormat.trim()) activeUser.nameFormat = data.nameFormat.trim();
+      if (typeof data.titleFormat === 'string' && data.titleFormat.trim()) activeUser.titleFormat = data.titleFormat.trim();
+
       renderActiveProviderPanel();
       markDashboardDirty();
 
       const leagueCount = provider.selectedSports.length;
       const lines = [
         `<div class="text-[#a8e0ac] font-semibold">Applied ${categoriesApplied} categor${categoriesApplied === 1 ? 'y' : 'ies'} across ${leagueCount} league${leagueCount === 1 ? '' : 's'} - this replaced your previous league/category selections for this provider.</div>`,
-        `<div class="text-[#a8e0ac]">Applied ${overridesApplied} EPG override${overridesApplied === 1 ? '' : 's'} - this replaced your previous EPG overrides for this provider.</div>`
+        `<div class="text-[#a8e0ac]">Applied ${overridesApplied} EPG override${overridesApplied === 1 ? '' : 's'} - this replaced your previous EPG overrides for this provider.</div>`,
+        `<div class="text-[#a8e0ac]">Applied ${exclusionsApplied} channel exclusion${exclusionsApplied === 1 ? '' : 's'} - this replaced your previous exclusions for this provider.</div>`,
+        `<div class="text-[#a8e0ac]">Applied your dashboard preferences (home visibility, sport order, catalog names, name/title format).</div>`
       ];
       const skippedParts = [];
       if (categoriesSkipped > 0) skippedParts.push(`${categoriesSkipped} categor${categoriesSkipped === 1 ? 'y' : 'ies'} not found`);
-      if (overridesNotFound > 0) skippedParts.push(`${overridesNotFound} channel${overridesNotFound === 1 ? '' : 's'} not found`);
-      if (overridesAmbiguous > 0) skippedParts.push(`${overridesAmbiguous} channel${overridesAmbiguous === 1 ? '' : 's'} ambiguous (multiple matches)`);
+      if (overridesNotFound > 0) skippedParts.push(`${overridesNotFound} EPG override channel${overridesNotFound === 1 ? '' : 's'} not found`);
+      if (overridesAmbiguous > 0) skippedParts.push(`${overridesAmbiguous} EPG override channel${overridesAmbiguous === 1 ? '' : 's'} ambiguous (multiple matches)`);
+      if (exclusionsNotFound > 0) skippedParts.push(`${exclusionsNotFound} excluded channel${exclusionsNotFound === 1 ? '' : 's'} not found`);
+      if (exclusionsAmbiguous > 0) skippedParts.push(`${exclusionsAmbiguous} excluded channel${exclusionsAmbiguous === 1 ? '' : 's'} ambiguous (multiple matches)`);
       if (skippedParts.length > 0) {
         lines.push(`<div class="text-[#e6e6e6]/55">Skipped: ${skippedParts.join(', ')}.</div>`);
       }
