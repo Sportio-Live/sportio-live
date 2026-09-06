@@ -705,6 +705,29 @@
     // that for free).
     const EPG_OVERRIDE_SELF_NAME = '__CHANNEL_NAME__';
 
+    // --- Category Search channel-exclusion state (dashboard only, never
+    // the wizard). categorySearchChannels holds every channel across every
+    // category the active provider currently has selected ({id, key, name,
+    // categoryIds} - same shape channelEpgChannels uses, fetched the same
+    // way, but kept as its own variable so neither panel's refresh timing
+    // affects the other), refreshed as part of refreshCategoriesForActiveProvider
+    // so it's always populated by the time Category Search renders - see
+    // buildCategoryCheckboxesHtml, which reads it synchronously to decide
+    // whether a checked category gets an expand-to-channels affordance.
+    // null (not []) specifically means "not loaded yet for this provider",
+    // distinct from a real empty result.
+    let categorySearchChannels = null;
+
+    // Which categories currently have their channel list expanded, keyed
+    // `${sport}::${categoryId}` (a category can independently be expanded
+    // in one league's section but not another, or in Global vs a league,
+    // if it somehow appears in both - unlikely today but keeps sections
+    // fully independent regardless). Purely cosmetic memory carried across
+    // a resort/rebuild - correctness never depends on it, since channel
+    // checkboxes are always rendered into the DOM for a checked category
+    // regardless of expand state (see buildCategoryCheckboxesHtml).
+    let categoryChannelsExpanded = new Set();
+
     // Setup wizard state (new-account creation only)
     let wizardSelectedSports = [];
     let wizardTimezone = 'America/New_York';
@@ -1427,6 +1450,12 @@
     // what the wizard's own Xtream/M3U steps already do.
     async function refreshCategoriesForActiveProvider() {
       const provider = activeUser && activeUser.providers[activeProviderIndex];
+      // Cleared unconditionally up front (not just reassigned inside each
+      // branch below) so a provider switch never briefly shows a stale
+      // channel list belonging to the previously-active provider - same
+      // "clear, then repopulate" reasoning fetchedCategories already
+      // follows in the branches below.
+      categorySearchChannels = null;
       if (!provider) return;
 
       if (provider.connectionType === 'm3u') {
@@ -1473,6 +1502,62 @@
         } catch (err) {
           showStatus('Network error while connecting to Xtream API.', true);
         }
+      }
+
+      await loadCategorySearchChannels(provider);
+    }
+
+    // Fetches every channel across every category this provider currently
+    // has selected (Global + every league - same union getSelectedCategoryIds
+    // already computes for the Channel EPG picker below), normalized into
+    // the same {id, key, name, categoryIds} shape channelEpgChannels uses.
+    // Populates categorySearchChannels so buildCategoryCheckboxesHtml can
+    // render each checked category's channel-exclusion checkboxes
+    // synchronously - see that function's own comment for why this needs
+    // to already be loaded by render time rather than fetched lazily on
+    // first expand. Any failure (network error, provider not configured,
+    // nothing currently selected) just leaves it as an empty array rather
+    // than null - "loaded, found nothing" - so callers never mistake a
+    // failure for "hasn't tried yet".
+    async function loadCategorySearchChannels(provider) {
+      const categoryIds = getSelectedCategoryIds(provider);
+      if (categoryIds.length === 0) { categorySearchChannels = []; return; }
+
+      try {
+        if (provider.connectionType === 'm3u') {
+          if (!provider.m3u || !provider.m3u.playlistUrl) { categorySearchChannels = []; return; }
+          const res = await fetch('/api/m3u/channels', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ uuid: activeUser.uuid, password: activeUser.password, providerId: provider.id })
+          });
+          const data = await res.json();
+          categorySearchChannels = data.success
+            ? data.channels.map(ch => ({ id: ch.id, key: ch.streamUrl, name: ch.name, categoryIds: (ch.categories || []).map(String) }))
+            : [];
+        } else {
+          if (!provider.xtream || !provider.xtream.url) { categorySearchChannels = []; return; }
+          const { url, username, password } = provider.xtream;
+          const res = await fetch('/api/xtream/streams', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url, username, password, categoryIds })
+          });
+          const data = await res.json();
+          categorySearchChannels = data.success
+            ? data.streams.map(s => ({
+                id: String(s.stream_id),
+                key: String(s.stream_id),
+                name: s.name,
+                categoryIds: (s.category_ids && s.category_ids.length > 0
+                  ? s.category_ids
+                  : (s.category_id != null ? [s.category_id] : [])
+                ).map(String)
+              }))
+            : [];
+        }
+      } catch (err) {
+        categorySearchChannels = [];
       }
     }
 
@@ -1922,17 +2007,94 @@
         return aChecked ? -1 : 1;
       });
 
+      // Snapshot whatever channel-exclusion checkboxes already exist in
+      // THIS section's OLD DOM, before the caller (resortCategorySection)
+      // replaces its contents with the string this function returns. A
+      // resort triggered by toggling one category shouldn't discard
+      // not-yet-saved channel-checkbox edits made under a DIFFERENT
+      // category in the same section - reading current DOM state first
+      // (same trick checkedIds/globalCheckedIds already rely on, just
+      // extended to channels) means the rebuild reflects in-progress state
+      // rather than stale provider.excludedChannels. Empty on a full fresh
+      // render (login, provider switch, Refresh Categories all clear the
+      // whole container first) - exactly when every channel SHOULD fall
+      // back to its provider-derived default instead.
+      const existingChannelChecked = new Map();
+      document.querySelectorAll(`#${idPrefix}checklist-${sport} input[data-excl-key]`).forEach(cb => {
+        existingChannelChecked.set(cb.getAttribute('data-excl-key'), cb.checked);
+      });
+
+      // Channel-level pruning is a dashboard-only feature (idPrefix === ''
+      // - the wizard's category step stays exactly as it was, category-only,
+      // matching that channel pruning only makes sense once you can already
+      // see what's actually noisy in your line-up).
+      const provider = idPrefix === '' ? (activeUser && activeUser.providers[activeProviderIndex]) : null;
+
       return sorted.map(cat => {
         const isGloballyForced = !isGlobalSection && globalCheckedIds.includes(cat.category_id);
         const isChecked = isGloballyForced || checkedIds.includes(cat.category_id);
         const disabledAttr = isGloballyForced ? 'disabled' : '';
         const globeMarker = isGloballyForced ? ' <i class="fa-solid fa-globe text-[10px] opacity-60" title="Applied to every league via Global"></i>' : '';
         const textClass = isGloballyForced ? 'text-[#e6e6e6]/45' : 'text-[#e6e6e6]/75 hover:text-[#e6e6e6]';
-        return `
-          <label class="${idPrefix}category-item-${sport} flex items-center space-x-2 text-xs ${textClass} cursor-pointer py-1" data-name="${escapeHtml(cat.category_name)}">
+
+        const categoryLabel = `
+          <label class="flex items-center space-x-2 text-xs ${textClass} cursor-pointer py-1">
             <input type="checkbox" data-sport="${sport}" value="${cat.category_id}" ${isChecked ? 'checked' : ''} ${disabledAttr} onchange="handleCategoryToggle('${idPrefix}', '${sport}')" class="rounded bg-[#3b4d58] border-[#e6e6e6]/15 text-[#3b8fc4] focus:ring-0">
             <span>${escapeHtml(cat.category_name)}</span>${globeMarker}
           </label>
+        `;
+
+        // Only for a category that's actually checked and not Global-forced
+        // (a Global-forced category's channels are managed from the Global
+        // section itself, not from inside a league's disabled view - see
+        // isGloballyForced above), and only once this provider's channel
+        // list has actually loaded (categorySearchChannels stays null until
+        // refreshCategoriesForActiveProvider's fetch resolves - see its
+        // comment for why this needs to be eager, not fetched lazily here).
+        const canManageChannels = provider && isChecked && !isGloballyForced && Array.isArray(categorySearchChannels);
+        const channelsInCategory = canManageChannels
+          ? categorySearchChannels.filter(ch => ch.categoryIds.includes(String(cat.category_id))).sort((a, b) => a.name.localeCompare(b.name))
+          : [];
+
+        if (channelsInCategory.length === 0) {
+          return `<div class="${idPrefix}category-item-${sport}" data-name="${escapeHtml(cat.category_name)}">${categoryLabel}</div>`;
+        }
+
+        const excludedKeys = new Set(((provider.excludedChannels && provider.excludedChannels[sport]) || []).map(String));
+        const expandKey = `${sport}::${cat.category_id}`;
+        const isExpanded = categoryChannelsExpanded.has(expandKey);
+
+        // A channel's checked state comes from the live DOM snapshot above
+        // when this exact channel already had a checkbox rendered a moment
+        // ago (an in-progress, not-yet-saved toggle), and only falls back
+        // to provider.excludedChannels for a channel this section hasn't
+        // rendered before this call.
+        const isChannelChecked = (ch) => {
+          const existing = existingChannelChecked.get(ch.key);
+          return existing !== undefined ? existing : !excludedKeys.has(ch.key);
+        };
+        const includedCount = channelsInCategory.filter(isChannelChecked).length;
+
+        const channelRows = channelsInCategory.map(ch => `
+          <label class="flex items-center space-x-2 text-xs text-[#e6e6e6]/70 hover:text-[#e6e6e6] cursor-pointer py-1">
+            <input type="checkbox" data-excl-sport="${sport}" data-excl-key="${escapeHtml(ch.key)}" ${isChannelChecked(ch) ? 'checked' : ''} onchange="updateCategoryChannelBadge(this)" class="rounded bg-[#3b4d58] border-[#e6e6e6]/15 text-[#3b8fc4] focus:ring-0">
+            <span>${escapeHtml(ch.name)}</span>
+          </label>
+        `).join('');
+
+        return `
+          <div class="${idPrefix}category-item-${sport} catrow" data-name="${escapeHtml(cat.category_name)}">
+            <div class="flex items-center justify-between gap-2">
+              ${categoryLabel}
+              <button type="button" onclick="toggleCategoryChannelsExpand(this)" data-expand-key="${escapeHtml(expandKey)}" class="shrink-0 flex items-center gap-1.5 text-[10px] text-[#e6e6e6]/45 hover:text-[#e6e6e6]/80 pr-1" title="Show channels in this category">
+                <span class="channel-count-badge">${includedCount} of ${channelsInCategory.length}</span>
+                <i class="fa-solid fa-chevron-right transition-transform ${isExpanded ? 'rotate-90' : ''}"></i>
+              </button>
+            </div>
+            <div class="channel-list-wrap pl-6 ${isExpanded ? '' : 'hidden'}">
+              ${channelRows}
+            </div>
+          </div>
         `;
       }).join('');
     }
@@ -2172,6 +2334,41 @@
       if (idPrefix === '') {
         markDashboardDirty();
       }
+    }
+
+    // Toggles one category's channel list open/closed - a plain CSS
+    // visibility flip (never a rebuild), so collapsing a category can never
+    // lose an in-progress, not-yet-saved channel-checkbox toggle the way a
+    // full re-render would. Found entirely via DOM ancestry from the
+    // clicked button rather than an id built from the category's own name/
+    // id text, since a category name (especially an M3U group-title) isn't
+    // guaranteed to be safe as a literal HTML element id.
+    function toggleCategoryChannelsExpand(btn) {
+      const key = btn.getAttribute('data-expand-key');
+      if (categoryChannelsExpanded.has(key)) {
+        categoryChannelsExpanded.delete(key);
+      } else {
+        categoryChannelsExpanded.add(key);
+      }
+      const row = btn.closest('.catrow');
+      row.querySelector('.channel-list-wrap').classList.toggle('hidden');
+      btn.querySelector('i').classList.toggle('rotate-90');
+    }
+
+    // Updates just the one category's "N of M included" badge after a
+    // single channel checkbox changes - never triggers a rebuild (unlike
+    // handleCategoryToggle for category checkboxes), since nothing here
+    // affects which categories are selected, only which of an already-
+    // selected category's channels are pruned.
+    function updateCategoryChannelBadge(checkboxEl) {
+      const row = checkboxEl.closest('.catrow');
+      if (row) {
+        const all = row.querySelectorAll('input[data-excl-key]');
+        const included = row.querySelectorAll('input[data-excl-key]:checked');
+        const badge = row.querySelector('.channel-count-badge');
+        if (badge) badge.textContent = `${included.length} of ${all.length}`;
+      }
+      markDashboardDirty();
     }
 
     function filterCategoriesGeneric(sport, idPrefix) {
@@ -2416,6 +2613,7 @@
       document.getElementById('channel-epg-panel').classList.add('hidden');
       updateSettingsButtonStates();
     }
+
 
     // --- Export/Import: share Category Search + Channel EPG settings
     // between two accounts on the same IPTV catalog. See
@@ -3586,6 +3784,7 @@
       const idx = provider.selectedSports.indexOf(sport);
       if (idx !== -1) provider.selectedSports.splice(idx, 1);
       if (provider.sportCategories) delete provider.sportCategories[sport];
+      if (provider.excludedChannels) delete provider.excludedChannels[sport];
       renderActiveProviderPanel();
       markDashboardDirty();
     }
@@ -3824,6 +4023,32 @@
 
       const collected = collectCheckedCategories(['GLOBAL', ...getVisibleSports(provider)], 'sports-config-container');
       provider.sportCategories = { ...(provider.sportCategories || {}), ...collected };
+
+      // Channel-level pruning lives inline inside the same accordion (see
+      // buildCategoryCheckboxesHtml) - collected in this same pass rather
+      // than a separate function, since it reads from the exact same
+      // container. Every checked, non-Global-forced category's channel
+      // checkboxes are always in the DOM regardless of expand/collapse (see
+      // that function's comment), so this single scan captures every
+      // pending exclusion no matter what's visually expanded right now.
+      const excludedChannelsContainer = document.getElementById('sports-config-container');
+      const channelCheckboxes = excludedChannelsContainer.querySelectorAll('input[data-excl-sport][data-excl-key]');
+      const excludedCollected = {};
+      const renderedExclusionSports = new Set();
+      channelCheckboxes.forEach(cb => {
+        const sport = cb.getAttribute('data-excl-sport');
+        renderedExclusionSports.add(sport);
+        if (cb.checked) return;
+        (excludedCollected[sport] = excludedCollected[sport] || []).push(cb.getAttribute('data-excl-key'));
+      });
+      // A sport that had its channel checkboxes rendered this pass but
+      // ended up with nothing unchecked needs an explicit [] here (not left
+      // to the merge's fallback of "whatever was there before"), since it
+      // WAS rendered - only a sport that was never rendered at all (no
+      // checked, manageable category in it right now) should fall back to
+      // its prior value instead.
+      renderedExclusionSports.forEach(sport => { if (!excludedCollected[sport]) excludedCollected[sport] = []; });
+      provider.excludedChannels = { ...(provider.excludedChannels || {}), ...excludedCollected };
     }
 
     // Renders the shared Edit Xtream/M3U trigger buttons and Category

@@ -4485,7 +4485,16 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
       const sportCategoryIds = provider.sportCategories?.[upperSport] || [];
       const globalCategoryIds = provider.sportCategories?.GLOBAL || [];
       const configuredCategoryIds = [...new Set([...sportCategoryIds, ...globalCategoryIds])];
-      return { provider, configuredCategoryIds };
+      // Same union shape as configuredCategoryIds above, but for channels the
+      // user has explicitly pruned out of an otherwise-selected category - a
+      // channel excluded under this sport's own individually-assigned
+      // categories only drops out of this sport's results, while one excluded
+      // under GLOBAL drops out of every sport, matching how GLOBAL categories
+      // themselves already apply everywhere.
+      const sportExcludedKeys = provider.excludedChannels?.[upperSport] || [];
+      const globalExcludedKeys = provider.excludedChannels?.GLOBAL || [];
+      const excludedChannelKeys = new Set([...sportExcludedKeys, ...globalExcludedKeys]);
+      return { provider, configuredCategoryIds, excludedChannelKeys };
     })
     .filter(({ configuredCategoryIds }) => configuredCategoryIds.length > 0);
 
@@ -4553,12 +4562,18 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
   };
 
   const perProviderResults = await Promise.allSettled(
-    contributingProviders.map(async ({ provider, configuredCategoryIds }) => {
+    contributingProviders.map(async ({ provider, configuredCategoryIds, excludedChannelKeys }) => {
       if (provider.connectionType === 'm3u') {
         if (!provider.m3u || !provider.m3u.playlistUrl) return [];
         const m3uSource = m3u.getCachedM3USource(provider.m3u.playlistUrl);
         if (!m3uSource) return [];
-        const streams = await applyChannelEpgOverrides(m3u.getCandidateStreamsForGame(m3uSource, configuredCategoryIds, gameTimestamp), provider);
+        // streamUrl, not channelId (tvg-id) - the same distinction
+        // getCandidateStreamsForGame's caller already relies on elsewhere:
+        // tvg-id isn't reliably unique per feed, streamUrl is (see
+        // parseM3UPlaylist's dedup-by-URL comment in m3u.js).
+        const rawStreams = m3u.getCandidateStreamsForGame(m3uSource, configuredCategoryIds, gameTimestamp)
+          .filter(s => !excludedChannelKeys.has(s.streamUrl));
+        const streams = await applyChannelEpgOverrides(rawStreams, provider);
         return showProviderLabel ? streams.map(s => ({ ...s, providerLabel: provider.label })) : streams;
       }
 
@@ -4572,27 +4587,29 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
       const categories = await fetchXtreamCategories(pseudoUser);
       const getCategoryName = buildCategoryNameLookup(categories);
       const epgByStreamId = await fetchEpgForStreams(pseudoUser, xtreamStreams);
-      const xtreamCandidates = xtreamStreams.map(s => {
-        const epg = epgByStreamId[s.stream_id] || { text: '', startTimestamp: null };
-        return {
-          name: s.name,
-          description: epg.text,
-          startTimestamp: epg.startTimestamp,
-          streamUrl: `${provider.xtream.url.replace(/\/+$/, '')}/live/${encodeURIComponent(provider.xtream.username)}/${encodeURIComponent(provider.xtream.password)}/${s.stream_id}.m3u8`,
-          categoryLabel: getCategoryName(s),
-          // stream_id, not epg_channel_id - confirmed against real
-          // provider data that epg_channel_id is frequently empty AND,
-          // worse, sometimes identical across genuinely different
-          // channels on the same account (some providers just don't
-          // populate it meaningfully). stream_id is the one field Xtream
-          // guarantees is present and unique per channel, so it's the
-          // only safe join key for a per-channel override - not used by
-          // anything Xtream-specific here, only kept so the EPGShare01
-          // override above can join against it.
-          channelId: String(s.stream_id),
-          ...(showProviderLabel ? { providerLabel: provider.label } : {})
-        };
-      });
+      const xtreamCandidates = xtreamStreams
+        .filter(s => !excludedChannelKeys.has(String(s.stream_id)))
+        .map(s => {
+          const epg = epgByStreamId[s.stream_id] || { text: '', startTimestamp: null };
+          return {
+            name: s.name,
+            description: epg.text,
+            startTimestamp: epg.startTimestamp,
+            streamUrl: `${provider.xtream.url.replace(/\/+$/, '')}/live/${encodeURIComponent(provider.xtream.username)}/${encodeURIComponent(provider.xtream.password)}/${s.stream_id}.m3u8`,
+            categoryLabel: getCategoryName(s),
+            // stream_id, not epg_channel_id - confirmed against real
+            // provider data that epg_channel_id is frequently empty AND,
+            // worse, sometimes identical across genuinely different
+            // channels on the same account (some providers just don't
+            // populate it meaningfully). stream_id is the one field Xtream
+            // guarantees is present and unique per channel, so it's the
+            // only safe join key for a per-channel override - not used by
+            // anything Xtream-specific here, only kept so the EPGShare01
+            // override above can join against it.
+            channelId: String(s.stream_id),
+            ...(showProviderLabel ? { providerLabel: provider.label } : {})
+          };
+        });
       return await applyChannelEpgOverrides(xtreamCandidates, provider);
     })
   );
