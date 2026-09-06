@@ -2439,7 +2439,17 @@ async function fetchTodayGames(sport, hostUrl, userTimeZone = 'America/New_York'
       timeout: 7000
     });
 
-    const events = res.data?.events || [];
+    // ESPN doesn't return events in kickoff order - without a 'groups' filter
+    // (dropped for NCAAFB above, since groups=50 was the Patriot League bug)
+    // events come back bunched in ESPN's own internal order rather than
+    // chronologically, so every sport's "today" catalog needs an explicit
+    // sort. Games with a missing/invalid date sort last rather than
+    // crashing the comparator or landing in an arbitrary spot.
+    const events = [...(res.data?.events || [])].sort((a, b) => {
+      const timeA = new Date(a.date).getTime();
+      const timeB = new Date(b.date).getTime();
+      return (Number.isFinite(timeA) ? timeA : Infinity) - (Number.isFinite(timeB) ? timeB : Infinity);
+    });
 
     return events.map(event => {
       const competition = event.competitions?.[0] || {};
