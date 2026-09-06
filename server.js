@@ -482,7 +482,16 @@ function isValidStoredPreset(p) {
     && Object.values(p.sportCategories).every(names => Array.isArray(names) && names.every(n => typeof n === 'string'))
     && typeof p.epgOverrides === 'object' && p.epgOverrides !== null
     && Object.values(p.epgOverrides).every(v => typeof v === 'string')
-    && (p.epgSources === undefined || (Array.isArray(p.epgSources) && p.epgSources.every(f => typeof f === 'string')));
+    && (p.epgSources === undefined || (Array.isArray(p.epgSources) && p.epgSources.every(f => typeof f === 'string')))
+    && (p.excludedChannels === undefined || (typeof p.excludedChannels === 'object' && p.excludedChannels !== null
+      && Object.values(p.excludedChannels).every(names => Array.isArray(names) && names.every(n => typeof n === 'string'))))
+    && (p.hiddenFromHomeSports === undefined || (Array.isArray(p.hiddenFromHomeSports) && p.hiddenFromHomeSports.every(s => typeof s === 'string')))
+    && (p.sportOrder === undefined || (Array.isArray(p.sportOrder) && p.sportOrder.every(s => typeof s === 'string')))
+    && (p.allGamesTodayEnabled === undefined || typeof p.allGamesTodayEnabled === 'boolean')
+    && (p.catalogNames === undefined || (typeof p.catalogNames === 'object' && p.catalogNames !== null
+      && Object.values(p.catalogNames).every(v => typeof v === 'string')))
+    && (p.nameFormat === undefined || typeof p.nameFormat === 'string')
+    && (p.titleFormat === undefined || typeof p.titleFormat === 'string');
 }
 
 function loadPresets(file, label) {
@@ -605,7 +614,14 @@ function hashPresetContent(preset) {
     selectedSports: preset.selectedSports,
     sportCategories: preset.sportCategories,
     epgOverrides: preset.epgOverrides,
-    epgSources: preset.epgSources || []
+    epgSources: preset.epgSources || [],
+    excludedChannels: preset.excludedChannels || {},
+    hiddenFromHomeSports: preset.hiddenFromHomeSports || [],
+    sportOrder: preset.sportOrder || [],
+    allGamesTodayEnabled: !!preset.allGamesTodayEnabled,
+    catalogNames: preset.catalogNames || {},
+    nameFormat: preset.nameFormat || '',
+    titleFormat: preset.titleFormat || ''
   };
   return crypto.createHash('sha256').update(stableStringify(content)).digest('hex');
 }
@@ -736,9 +752,42 @@ const ESPN_CORE_EVENT_ENDPOINTS = {
 };
 
 // NCAA sports have far more teams than the pro leagues, and ESPN's scoreboard
-// endpoint silently truncates results unless a broad 'groups' + high 'limit'
-// is passed. The pro leagues and single-table soccer leagues don't need this.
+// endpoint silently truncates results unless a high 'limit' (and, for
+// basketball, a broad 'groups') is passed. The pro leagues and single-table
+// soccer leagues don't need this. ESPN's 'groups' ids are assigned per sport,
+// not shared - groups=50 means "all of Division I" for basketball but maps to
+// an unrelated, near-empty slice for football, so each sport needs its own
+// params rather than one value applied to all three.
 const NCAA_SPORTS = new Set(['NCAAMB', 'NCAAWB', 'NCAAFB']);
+const NCAA_QUERY_PARAMS = {
+  NCAAMB: '&groups=50&limit=500',
+  NCAAWB: '&groups=50&limit=500',
+  NCAAFB: '&limit=500'
+};
+
+// Division (FBS vs FCS) turned out not to predict stream availability at all
+// - confirmed live that several full FBS-vs-FBS games (e.g. Arkansas State
+// @ Memphis) are just as ESPN+-only as FBS-vs-FCS games, while some FBS-vs-
+// FCS games (e.g. VMI @ Virginia Tech) air on a real cable network. The
+// actual signal is the broadcast itself: a handful of conferences run their
+// own secondary streaming apps for games that don't get real TV/cable
+// coverage, and those aren't available through our providers - ESPN+ is
+// treated like a traditional network here (broadly carried, kept in) even
+// though it briefly went through a phase excluded alongside the others. A
+// game is dropped only when every single listed broadcast falls in this
+// excluded set; a missing broadcast list, or any broadcast name not in the
+// set (every real cable/network channel, plus ESPN+), keeps the game.
+const NCAAFB_EXCLUDED_BROADCASTS = new Set(['ACCNX', 'SECN+', 'MW+', 'UConn+', 'Disney+', 'Peacock']);
+
+function filterToStreamableGames(sport, events) {
+  if (sport.toUpperCase() !== 'NCAAFB') return events;
+
+  return events.filter(event => {
+    const broadcasts = (event.competitions?.[0]?.broadcasts || []).flatMap(b => b.names || []);
+    if (broadcasts.length === 0) return true;
+    return broadcasts.some(name => !NCAAFB_EXCLUDED_BROADCASTS.has(name));
+  });
+}
 
 const ESPN_LEAGUES = {
   NBA: 'nba',
@@ -1798,21 +1847,21 @@ async function fetchUpcomingGames(sport, userTimeZone = 'America/New_York', limi
     const isNcaa = NCAA_SPORTS.has(sport.toUpperCase());
     // NCAA sports have hundreds of teams playing multiple games a week, so a
     // short window still comfortably finds `limit` games - and keeps the
-    // query (with groups=50 covering all of Division I) fast and light.
+    // query fast and light.
     const lookaheadDays = isNcaa ? 21 : 90;
     const rangeStart = new Date(now.getTime() + 1 * 24 * 60 * 60 * 1000); // start tomorrow, excluding today's games
     const rangeEnd = new Date(now.getTime() + lookaheadDays * 24 * 60 * 60 * 1000);
     const startStr = formatDateYYYYMMDD(rangeStart, userTimeZone);
     const endStr = formatDateYYYYMMDD(rangeEnd, userTimeZone);
-    const ncaaParams = isNcaa ? '&groups=50&limit=500' : '';
+    const ncaaParams = isNcaa ? (NCAA_QUERY_PARAMS[sport.toUpperCase()] || '&limit=500') : '';
 
     const res = await axios.get(`${endpoint}?dates=${startStr}-${endStr}${ncaaParams}`, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
       timeout: 8000
     });
 
-    const events = res.data?.events || [];
-    const sorted = [...events].sort((a, b) => new Date(a.date) - new Date(b.date));
+    const rawEvents = filterToStreamableGames(sport, res.data?.events || []);
+    const sorted = [...rawEvents].sort((a, b) => new Date(a.date) - new Date(b.date));
 
     return sorted.slice(0, limit).map(event => {
       const competition = event.competitions?.[0] || {};
@@ -2424,13 +2473,25 @@ async function fetchTodayGames(sport, hostUrl, userTimeZone = 'America/New_York'
 
   try {
     const targetDateStr = getLocalDateString(userTimeZone);
-    const ncaaParams = NCAA_SPORTS.has(sport.toUpperCase()) ? '&groups=50&limit=500' : '';
+    const ncaaParams = NCAA_SPORTS.has(sport.toUpperCase()) ? (NCAA_QUERY_PARAMS[sport.toUpperCase()] || '&limit=500') : '';
     const res = await axios.get(`${endpoint}?dates=${targetDateStr}${ncaaParams}`, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
       timeout: 7000
     });
 
-    const events = res.data?.events || [];
+    const streamableEvents = filterToStreamableGames(sport, res.data?.events || []);
+
+    // ESPN doesn't return events in kickoff order - without a 'groups' filter
+    // (dropped for NCAAFB above, since groups=50 was the Patriot League bug)
+    // events come back bunched in ESPN's own internal order rather than
+    // chronologically, so every sport's "today" catalog needs an explicit
+    // sort. Games with a missing/invalid date sort last rather than
+    // crashing the comparator or landing in an arbitrary spot.
+    const events = [...streamableEvents].sort((a, b) => {
+      const timeA = new Date(a.date).getTime();
+      const timeB = new Date(b.date).getTime();
+      return (Number.isFinite(timeA) ? timeA : Infinity) - (Number.isFinite(timeB) ? timeB : Infinity);
+    });
 
     return events.map(event => {
       const competition = event.competitions?.[0] || {};
@@ -3056,6 +3117,33 @@ app.post('/api/m3u/channels', async (req, res) => {
   });
 });
 
+// M3U's equivalent of /api/xtream/streams below - takes the playlist URL
+// directly rather than an account lookup, for the same reason: the setup
+// wizard needs to resolve a preset's channel exclusions against the
+// playlist just tested/imported, before an account (and its uuid/password)
+// exists. No separate auth to check here, same as /api/m3u/import - the
+// URL itself is already this connection's only "credential", and it's
+// never persisted by this route.
+app.post('/api/m3u/channels-by-url', (req, res) => {
+  const { playlistUrl, categoryIds } = req.body;
+  if (!playlistUrl) return res.status(400).json({ error: 'Missing playlist URL' });
+
+  const source = m3u.getCachedM3USource(playlistUrl);
+  if (!source) {
+    return res.json({ success: true, channels: [], notReady: true });
+  }
+
+  const categorySet = new Set(Array.isArray(categoryIds) ? categoryIds : []);
+  const channels = categorySet.size > 0
+    ? source.channels.filter(ch => ch.categories.some(c => categorySet.has(c)))
+    : source.channels;
+
+  return res.json({
+    success: true,
+    channels: channels.map(ch => ({ id: ch.id, name: ch.name, logo: ch.logo, streamUrl: ch.streamUrl, categories: ch.categories }))
+  });
+});
+
 // Xtream's equivalent of /api/m3u/channels above - there's no cached
 // source to read here (Xtream is always a live API call), so this takes
 // the category ids to fetch directly rather than looking them up from a
@@ -3155,11 +3243,30 @@ app.post('/api/presets/public', (req, res) => {
   return res.json({ success: true, presets: getAllPresets().filter(isPresetAvailable) });
 });
 
+// Shared by /api/user/register and /api/user/update (a user's own custom
+// catalog names) and /api/admin/presets/create (seeding those same names
+// from an export) - drops anything malformed rather than saving it, since
+// none of these three callers otherwise validate this shape themselves.
+function sanitizeCatalogNames(catalogNames) {
+  const sanitized = {};
+  if (catalogNames && typeof catalogNames === 'object' && !Array.isArray(catalogNames)) {
+    for (const [id, name] of Object.entries(catalogNames)) {
+      if (typeof id === 'string' && typeof name === 'string' && name.trim()) {
+        sanitized[id] = name.trim().slice(0, 60);
+      }
+    }
+  }
+  return sanitized;
+}
+
 app.post('/api/user/register', async (req, res) => {
   if (!ENCRYPTION_KEY_CONFIGURED) {
     return res.status(503).json({ error: 'Encryption key not configured yet. See the homepage for setup instructions.' });
   }
-  const { xtream, m3u, connectionType, selectedSports, sportCategories, epgOverrides, password, timeZone, sportOrder } = req.body;
+  const {
+    xtream, m3u, connectionType, selectedSports, sportCategories, epgOverrides, excludedChannels,
+    password, timeZone, sportOrder, hiddenFromHomeSports, allGamesTodayEnabled, catalogNames, nameFormat, titleFormat
+  } = req.body;
   if (!password || typeof password !== 'string' || password.length === 0) {
     return res.status(400).json({ error: 'A password is required.' });
   }
@@ -3184,12 +3291,23 @@ app.post('/api/user/register', async (req, res) => {
       selectedSports,
       sportCategories,
       // Only ever populated when the wizard's preset step resolved one -
-      // the manual leagues/categories path never sets this at registration,
-      // same as before this field existed.
-      epgOverrides: epgOverrides && typeof epgOverrides === 'object' ? epgOverrides : {}
+      // the manual leagues/categories path never sets these at
+      // registration, same as before these fields existed. Already
+      // resolved to this account's own channel keys client-side (see
+      // applyWizardPreset in index.html) before reaching here, same as
+      // epgOverrides.
+      epgOverrides: epgOverrides && typeof epgOverrides === 'object' ? epgOverrides : {},
+      excludedChannels: excludedChannels && typeof excludedChannels === 'object' ? excludedChannels : {}
     }],
     timeZone: timeZone || 'America/New_York',
     sportOrder,
+    // Only ever populated via a wizard preset - the manual setup path
+    // leaves these undefined/default, same as sportOrder always has.
+    hiddenFromHomeSports: Array.isArray(hiddenFromHomeSports) ? hiddenFromHomeSports.filter(s => typeof s === 'string') : [],
+    allGamesTodayEnabled: !!allGamesTodayEnabled,
+    catalogNames: sanitizeCatalogNames(catalogNames),
+    nameFormat: typeof nameFormat === 'string' ? (nameFormat.trim() || undefined) : undefined,
+    titleFormat: typeof titleFormat === 'string' ? (titleFormat.trim() || undefined) : undefined,
     createdAt: new Date().toISOString()
   };
   saveUserConfigs();
@@ -3276,17 +3394,7 @@ app.post('/api/user/update', async (req, res) => {
   // since the dashboard's own rename control already treats a
   // cleared/default-matching value as "remove the override" before it
   // ever reaches this request.
-  if (catalogNames !== undefined) {
-    const sanitized = {};
-    if (catalogNames && typeof catalogNames === 'object' && !Array.isArray(catalogNames)) {
-      for (const [id, name] of Object.entries(catalogNames)) {
-        if (typeof id === 'string' && typeof name === 'string' && name.trim()) {
-          sanitized[id] = name.trim().slice(0, 60);
-        }
-      }
-    }
-    user.catalogNames = sanitized;
-  }
+  if (catalogNames !== undefined) user.catalogNames = sanitizeCatalogNames(catalogNames);
   // Blank/whitespace-only is treated as "go back to default" rather than
   // saved literally - an empty template would otherwise render every
   // stream's name/title as a blank string, which is never actually what
@@ -3891,6 +3999,24 @@ app.post('/api/admin/presets/create', async (req, res) => {
       Object.entries(config.epgOverrides).filter(([, v]) => typeof v === 'string')
     ),
     epgSources: validEpgSources,
+    // Everything below is additive (undefined on an export/preset built
+    // before these fields existed) and, like sportCategories/epgOverrides
+    // above, arrives as portable NAMES/ids rather than raw per-account ids
+    // - see exportProviderSettings's own comment in index.html for why.
+    excludedChannels: (config.excludedChannels && typeof config.excludedChannels === 'object')
+      ? Object.fromEntries(
+          Object.entries(config.excludedChannels).filter(([, names]) => Array.isArray(names))
+            .map(([sport, names]) => [sport, names.filter(n => typeof n === 'string')])
+        )
+      : {},
+    hiddenFromHomeSports: Array.isArray(config.hiddenFromHomeSports)
+      ? config.hiddenFromHomeSports.filter(s => typeof s === 'string')
+      : [],
+    sportOrder: Array.isArray(config.sportOrder) ? config.sportOrder.filter(s => typeof s === 'string') : [],
+    allGamesTodayEnabled: !!config.allGamesTodayEnabled,
+    catalogNames: sanitizeCatalogNames(config.catalogNames),
+    nameFormat: typeof config.nameFormat === 'string' ? config.nameFormat.trim() : '',
+    titleFormat: typeof config.titleFormat === 'string' ? config.titleFormat.trim() : '',
     createdAt: new Date().toISOString()
   };
 
@@ -4440,7 +4566,16 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
       const sportCategoryIds = provider.sportCategories?.[upperSport] || [];
       const globalCategoryIds = provider.sportCategories?.GLOBAL || [];
       const configuredCategoryIds = [...new Set([...sportCategoryIds, ...globalCategoryIds])];
-      return { provider, configuredCategoryIds };
+      // Same union shape as configuredCategoryIds above, but for channels the
+      // user has explicitly pruned out of an otherwise-selected category - a
+      // channel excluded under this sport's own individually-assigned
+      // categories only drops out of this sport's results, while one excluded
+      // under GLOBAL drops out of every sport, matching how GLOBAL categories
+      // themselves already apply everywhere.
+      const sportExcludedKeys = provider.excludedChannels?.[upperSport] || [];
+      const globalExcludedKeys = provider.excludedChannels?.GLOBAL || [];
+      const excludedChannelKeys = new Set([...sportExcludedKeys, ...globalExcludedKeys]);
+      return { provider, configuredCategoryIds, excludedChannelKeys };
     })
     .filter(({ configuredCategoryIds }) => configuredCategoryIds.length > 0);
 
@@ -4508,12 +4643,18 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
   };
 
   const perProviderResults = await Promise.allSettled(
-    contributingProviders.map(async ({ provider, configuredCategoryIds }) => {
+    contributingProviders.map(async ({ provider, configuredCategoryIds, excludedChannelKeys }) => {
       if (provider.connectionType === 'm3u') {
         if (!provider.m3u || !provider.m3u.playlistUrl) return [];
         const m3uSource = m3u.getCachedM3USource(provider.m3u.playlistUrl);
         if (!m3uSource) return [];
-        const streams = await applyChannelEpgOverrides(m3u.getCandidateStreamsForGame(m3uSource, configuredCategoryIds, gameTimestamp), provider);
+        // streamUrl, not channelId (tvg-id) - the same distinction
+        // getCandidateStreamsForGame's caller already relies on elsewhere:
+        // tvg-id isn't reliably unique per feed, streamUrl is (see
+        // parseM3UPlaylist's dedup-by-URL comment in m3u.js).
+        const rawStreams = m3u.getCandidateStreamsForGame(m3uSource, configuredCategoryIds, gameTimestamp)
+          .filter(s => !excludedChannelKeys.has(s.streamUrl));
+        const streams = await applyChannelEpgOverrides(rawStreams, provider);
         return showProviderLabel ? streams.map(s => ({ ...s, providerLabel: provider.label })) : streams;
       }
 
@@ -4527,27 +4668,29 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
       const categories = await fetchXtreamCategories(pseudoUser);
       const getCategoryName = buildCategoryNameLookup(categories);
       const epgByStreamId = await fetchEpgForStreams(pseudoUser, xtreamStreams);
-      const xtreamCandidates = xtreamStreams.map(s => {
-        const epg = epgByStreamId[s.stream_id] || { text: '', startTimestamp: null };
-        return {
-          name: s.name,
-          description: epg.text,
-          startTimestamp: epg.startTimestamp,
-          streamUrl: `${provider.xtream.url.replace(/\/+$/, '')}/live/${encodeURIComponent(provider.xtream.username)}/${encodeURIComponent(provider.xtream.password)}/${s.stream_id}.m3u8`,
-          categoryLabel: getCategoryName(s),
-          // stream_id, not epg_channel_id - confirmed against real
-          // provider data that epg_channel_id is frequently empty AND,
-          // worse, sometimes identical across genuinely different
-          // channels on the same account (some providers just don't
-          // populate it meaningfully). stream_id is the one field Xtream
-          // guarantees is present and unique per channel, so it's the
-          // only safe join key for a per-channel override - not used by
-          // anything Xtream-specific here, only kept so the EPGShare01
-          // override above can join against it.
-          channelId: String(s.stream_id),
-          ...(showProviderLabel ? { providerLabel: provider.label } : {})
-        };
-      });
+      const xtreamCandidates = xtreamStreams
+        .filter(s => !excludedChannelKeys.has(String(s.stream_id)))
+        .map(s => {
+          const epg = epgByStreamId[s.stream_id] || { text: '', startTimestamp: null };
+          return {
+            name: s.name,
+            description: epg.text,
+            startTimestamp: epg.startTimestamp,
+            streamUrl: `${provider.xtream.url.replace(/\/+$/, '')}/live/${encodeURIComponent(provider.xtream.username)}/${encodeURIComponent(provider.xtream.password)}/${s.stream_id}.m3u8`,
+            categoryLabel: getCategoryName(s),
+            // stream_id, not epg_channel_id - confirmed against real
+            // provider data that epg_channel_id is frequently empty AND,
+            // worse, sometimes identical across genuinely different
+            // channels on the same account (some providers just don't
+            // populate it meaningfully). stream_id is the one field Xtream
+            // guarantees is present and unique per channel, so it's the
+            // only safe join key for a per-channel override - not used by
+            // anything Xtream-specific here, only kept so the EPGShare01
+            // override above can join against it.
+            channelId: String(s.stream_id),
+            ...(showProviderLabel ? { providerLabel: provider.label } : {})
+          };
+        });
       return await applyChannelEpgOverrides(xtreamCandidates, provider);
     })
   );
@@ -4580,10 +4723,20 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
   // doesn't count. Kept separate from homeKw/awayKw above, which stay
   // city-inclusive for tiers 1-3 (a much stronger "both teams" signal
   // where a city match is far less likely to be a coincidence).
+  //
+  // Deliberately NOT including the abbreviation here (unlike homeKw/awayKw
+  // above) - suspected source of false-positive matches reported against
+  // Arizona State's "ASU" (not directly confirmed against provider data,
+  // since that requires live credentials this investigation couldn't
+  // access). A short abbreviation is generic enough to show up by
+  // coincidence, and unlike a full nickname word it isn't covered by
+  // mentionsForeignTeam below - that exclusion set is built from other
+  // teams' full display names, not their abbreviations, so a coincidental
+  // "asu" hit has no cross-check the way a coincidental "suns" hit would.
+  // Tiers 1-3 stay safe keeping the abbreviation since they require both
+  // teams' identifiers to co-occur.
   const homeNickKw = (game.homeNick || '').toLowerCase().split(' ').filter(w => w.length > 2);
   const awayNickKw = (game.awayNick || '').toLowerCase().split(' ').filter(w => w.length > 2);
-  if (homeAbbr.length > 2) homeNickKw.push(homeAbbr);
-  if (awayAbbr.length > 2) awayNickKw.push(awayAbbr);
 
   // Every team in the league, not just teams playing today - so a channel
   // whose EPG mentions a team that isn't even playing today (a genuinely
