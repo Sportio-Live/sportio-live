@@ -736,9 +736,18 @@ const ESPN_CORE_EVENT_ENDPOINTS = {
 };
 
 // NCAA sports have far more teams than the pro leagues, and ESPN's scoreboard
-// endpoint silently truncates results unless a broad 'groups' + high 'limit'
-// is passed. The pro leagues and single-table soccer leagues don't need this.
+// endpoint silently truncates results unless a high 'limit' (and, for
+// basketball, a broad 'groups') is passed. The pro leagues and single-table
+// soccer leagues don't need this. ESPN's 'groups' ids are assigned per sport,
+// not shared - groups=50 means "all of Division I" for basketball but maps to
+// an unrelated, near-empty slice for football, so each sport needs its own
+// params rather than one value applied to all three.
 const NCAA_SPORTS = new Set(['NCAAMB', 'NCAAWB', 'NCAAFB']);
+const NCAA_QUERY_PARAMS = {
+  NCAAMB: '&groups=50&limit=500',
+  NCAAWB: '&groups=50&limit=500',
+  NCAAFB: '&limit=500'
+};
 
 const ESPN_LEAGUES = {
   NBA: 'nba',
@@ -1798,13 +1807,13 @@ async function fetchUpcomingGames(sport, userTimeZone = 'America/New_York', limi
     const isNcaa = NCAA_SPORTS.has(sport.toUpperCase());
     // NCAA sports have hundreds of teams playing multiple games a week, so a
     // short window still comfortably finds `limit` games - and keeps the
-    // query (with groups=50 covering all of Division I) fast and light.
+    // query fast and light.
     const lookaheadDays = isNcaa ? 21 : 90;
     const rangeStart = new Date(now.getTime() + 1 * 24 * 60 * 60 * 1000); // start tomorrow, excluding today's games
     const rangeEnd = new Date(now.getTime() + lookaheadDays * 24 * 60 * 60 * 1000);
     const startStr = formatDateYYYYMMDD(rangeStart, userTimeZone);
     const endStr = formatDateYYYYMMDD(rangeEnd, userTimeZone);
-    const ncaaParams = isNcaa ? '&groups=50&limit=500' : '';
+    const ncaaParams = isNcaa ? (NCAA_QUERY_PARAMS[sport.toUpperCase()] || '&limit=500') : '';
 
     const res = await axios.get(`${endpoint}?dates=${startStr}-${endStr}${ncaaParams}`, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
@@ -2424,7 +2433,7 @@ async function fetchTodayGames(sport, hostUrl, userTimeZone = 'America/New_York'
 
   try {
     const targetDateStr = getLocalDateString(userTimeZone);
-    const ncaaParams = NCAA_SPORTS.has(sport.toUpperCase()) ? '&groups=50&limit=500' : '';
+    const ncaaParams = NCAA_SPORTS.has(sport.toUpperCase()) ? (NCAA_QUERY_PARAMS[sport.toUpperCase()] || '&limit=500') : '';
     const res = await axios.get(`${endpoint}?dates=${targetDateStr}${ncaaParams}`, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
       timeout: 7000
