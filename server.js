@@ -755,13 +755,13 @@ const NCAA_QUERY_PARAMS = {
 // FCS games (e.g. VMI @ Virginia Tech) air on a real cable network. The
 // actual signal is the broadcast itself: a handful of conferences run their
 // own secondary streaming apps for games that don't get real TV/cable
-// coverage, and those aren't available through our providers. ESPN+ was
-// kept at first since it's broadly carried, but proved unreliable enough on
-// our providers in practice that it's excluded too now. A game is dropped
-// only when every single listed broadcast falls in this excluded set; a
-// missing broadcast list, or any broadcast name not in the set (i.e. every
-// real cable/network channel), keeps the game.
-const NCAAFB_EXCLUDED_BROADCASTS = new Set(['ACCNX', 'SECN+', 'MW+', 'UConn+', 'Disney+', 'Peacock', 'ESPN+']);
+// coverage, and those aren't available through our providers - ESPN+ is
+// treated like a traditional network here (broadly carried, kept in) even
+// though it briefly went through a phase excluded alongside the others. A
+// game is dropped only when every single listed broadcast falls in this
+// excluded set; a missing broadcast list, or any broadcast name not in the
+// set (every real cable/network channel, plus ESPN+), keeps the game.
+const NCAAFB_EXCLUDED_BROADCASTS = new Set(['ACCNX', 'SECN+', 'MW+', 'UConn+', 'Disney+', 'Peacock']);
 
 function filterToStreamableGames(sport, events) {
   if (sport.toUpperCase() !== 'NCAAFB') return events;
