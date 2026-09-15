@@ -789,6 +789,23 @@ function filterToStreamableGames(sport, events) {
   });
 }
 
+// Words that show up in dozens of different college team names and, on
+// their own, don't identify any specific one - "state" alone matches over
+// 20 different FBS/FCS schools. Left as standalone match keywords, these
+// let two completely unrelated teams "confirm" each other (e.g. a channel
+// actually showing Indiana State could satisfy both "Indiana" from an
+// Indiana Hoosiers game and "State" pulled from that same game's Ohio
+// State opponent). Stripped before word lists become match keywords in the
+// stream-matching logic below. Same bug class as Teamarr's issue #799.
+const GENERIC_TEAM_WORDS = new Set([
+  'state', 'university', 'college', 'tech', 'southern', 'north', 'south',
+  'east', 'west', 'central', 'international', 'a&m'
+]);
+
+function stripGenericWords(words) {
+  return words.filter(w => !GENERIC_TEAM_WORDS.has(w));
+}
+
 const ESPN_LEAGUES = {
   NBA: 'nba',
   NFL: 'nfl',
@@ -4707,8 +4724,33 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
     return result.value;
   });
 
-  const homeKw = (game.homeTeam || '').toLowerCase().split(' ').filter(w => w.length > 2);
-  const awayKw = (game.awayTeam || '').toLowerCase().split(' ').filter(w => w.length > 2);
+  const homeTeamLower = (game.homeTeam || '').toLowerCase();
+  const awayTeamLower = (game.awayTeam || '').toLowerCase();
+
+  // Some team names are a real prefix of a different real team's name once
+  // generic words are stripped (Ohio/Ohio State, Miami/Miami (OH), Indiana/
+  // Indiana State, Washington/Washington State, the five Michigans, San
+  // Diego/San Diego State...). A mention of the longer team's name also
+  // contains the shorter team's own "identifying" word as its own standalone
+  // word, so that word can't safely stand in for the shorter team alone.
+  // Built from allTeamNames rather than hardcoded, so it stays correct
+  // across conference realignment without needing to be maintained by hand.
+  const teamWordLists = allTeamNames.map(name => {
+    const lower = (name || '').toLowerCase();
+    return { lower, words: stripGenericWords(lower.split(' ').filter(w => w.length > 2)) };
+  });
+  function dropUnsafePrefixWords(words, ownTeamLower) {
+    return words.filter(w => !teamWordLists.some(t =>
+      t.lower !== ownTeamLower && t.words.length > 1 && t.words[0] === w
+    ));
+  }
+
+  const homeKw = dropUnsafePrefixWords(
+    stripGenericWords(homeTeamLower.split(' ').filter(w => w.length > 2)), homeTeamLower
+  );
+  const awayKw = dropUnsafePrefixWords(
+    stripGenericWords(awayTeamLower.split(' ').filter(w => w.length > 2)), awayTeamLower
+  );
   // Also match on each team's short abbreviation (e.g. "LAL"), which some
   // channels/EPG data use instead of the full team name. Only included when
   // at least 3 characters, to avoid an overly-short string causing
@@ -4738,14 +4780,24 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
   const homeNickKw = (game.homeNick || '').toLowerCase().split(' ').filter(w => w.length > 2);
   const awayNickKw = (game.awayNick || '').toLowerCase().split(' ').filter(w => w.length > 2);
 
-  // Every team in the league, not just teams playing today - so a channel
-  // whose EPG mentions a team that isn't even playing today (a genuinely
-  // stale/outdated listing) still gets caught, not just a same-day mix-up.
+  // Every OTHER team in the league (not today's two), used as a cross-check
+  // so a channel that's actually showing a different real matchup doesn't
+  // slip through - not just teams playing today, so a genuinely stale/wrong
+  // EPG entry for some other game still gets caught, not just a same-day
+  // mix-up.
+  //
+  // Excluded by comparing full team names, not by deleting individual shared
+  // words - deleting e.g. "state" globally just because it was also one of
+  // today's teams' own words used to blind this cross-check to an actual
+  // *different* "State" school's stream (a real Ohio State channel would go
+  // unflagged as "foreign" during an Ohio Bobcats game, since "state" had
+  // been stripped out of the exclusion set entirely).
   const foreignKw = new Set();
   allTeamNames.forEach(name => {
-    (name || '').toLowerCase().split(' ').filter(w => w.length > 2).forEach(w => foreignKw.add(w));
+    const lower = (name || '').toLowerCase();
+    if (lower === homeTeamLower || lower === awayTeamLower) return;
+    stripGenericWords(lower.split(' ').filter(w => w.length > 2)).forEach(w => foreignKw.add(w));
   });
-  [...homeKw, ...awayKw].forEach(w => foreignKw.delete(w));
 
   // Word-boundary matching, not plain substring - a short keyword like
   // "red" (from "Red Sox") must appear as its own word, not as a
