@@ -210,7 +210,13 @@ if (!fs.existsSync(PRESETS_DIR)) {
 const LOCAL_PRESETS_FILE = path.join(DATA_DIR, 'local-presets.json');
 
 app.use(cors());
-app.use(express.json());
+// Default 100kb is too tight for /api/user/update - a provider with
+// thousands of channels and a fully mass-applied epgOverrides map can
+// push the full-state save payload well past it, and express has no
+// JSON error handler here, so the client gets an HTML error page back
+// and its res.json() parse throws ("Network error while saving
+// settings", indistinguishable from an actual network failure).
+app.use(express.json({ limit: '5mb' }));
 app.use(express.static('public'));
 
 // --- Login rate limiting ---
