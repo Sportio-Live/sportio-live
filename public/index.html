@@ -2102,7 +2102,7 @@
     // categories checked under Global render as checked, disabled, and
     // globe-marked - there's no separate on/off state to toggle from
     // within an individual league's view, only from Global itself.
-    function buildCategoryCheckboxesHtml(sport, idPrefix, checkedIds, globalCheckedIds = []) {
+    function buildCategoryCheckboxesHtml(sport, idPrefix, checkedIds, globalCheckedIds = [], allRealSports = []) {
       if (fetchedCategories.length === 0) {
         return '<p class="text-xs text-[#e6e6e6]/55 italic">No categories loaded yet.</p>';
       }
@@ -2191,6 +2191,19 @@
           </label>
         `).join('');
 
+        // Lets a user who just hand-picked which channels to include here
+        // (e.g. 200 out of 600 in a big category) apply that exact same
+        // picked/unpicked set to the same category under one other league,
+        // without it landing on every league the way checking it under
+        // Global would. Only other real leagues are listed - copying onto
+        // itself is meaningless, and Global isn't a per-league target.
+        const otherSports = allRealSports.filter(s => s !== sport);
+        const copyToControl = otherSports.length > 0 ? `
+              <select data-category-id="${escapeHtml(String(cat.category_id))}" onchange="copyCategorySelectionToLeague(this, '${sport}')" class="ml-auto bg-[#2f3e47] border border-[#e6e6e6]/15 rounded px-1.5 py-0.5 text-[10px] font-semibold text-[#5aa8d1] hover:text-[#6bb5dd] focus:outline-none focus:border-[#3b8fc4]" title="Copy this exact channel selection to the same category under another league">
+                <option value="">Copy to league...</option>
+                ${otherSports.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(SPORT_LABELS[s] || s)}</option>`).join('')}
+              </select>` : '';
+
         return `
           <div class="${idPrefix}category-item-${sport} catrow" data-name="${escapeHtml(cat.category_name)}">
             <div class="flex items-center justify-between gap-2">
@@ -2204,6 +2217,7 @@
               <div class="flex items-center gap-3 pb-1.5 mb-1 border-b border-[#e6e6e6]/10">
                 <button type="button" onclick="setCategoryChannelsChecked(this, true)" class="text-[10px] font-bold text-[#5aa8d1] hover:text-[#6bb5dd] transition">Select All</button>
                 <button type="button" onclick="setCategoryChannelsChecked(this, false)" class="text-[10px] font-bold text-[#5aa8d1] hover:text-[#6bb5dd] transition">Select None</button>
+                ${copyToControl}
               </div>
               ${channelRows}
             </div>
@@ -2280,7 +2294,7 @@
         const section = document.createElement('div');
         section.className = 'bg-[#3b4d58]/40 border border-[#e6e6e6]/15 rounded-lg overflow-hidden';
 
-        const categoryCheckboxesHtml = buildCategoryCheckboxesHtml(sport, idPrefix, preSelected, isGlobalSection ? [] : globalSelected);
+        const categoryCheckboxesHtml = buildCategoryCheckboxesHtml(sport, idPrefix, preSelected, isGlobalSection ? [] : globalSelected, sortedSportsList);
 
         // Effective count for a real league includes whatever's checked
         // under Global too, since those categories are searched for every
@@ -2403,9 +2417,17 @@
       const containerId = `${idPrefix}sports-config-container`;
       const checkedIds = Array.from(document.querySelectorAll(`#${containerId} input[data-sport="${sport}"]:checked:not(:disabled)`)).map(cb => cb.value);
       const globalCheckedIds = sport === 'GLOBAL' ? [] : getCurrentGlobalCheckedIds(idPrefix);
+      // Each real league's own top-level section carries this same
+      // data-sport attribute (set once in renderCategoryConfig) - reading
+      // it back from the DOM here, scoped to direct children so it can't
+      // pick up the per-category checkboxes that also carry data-sport,
+      // keeps the "copy to league" dropdown's target list in sync with
+      // whatever's actually rendered without threading it through as an
+      // extra parameter on every caller of this function.
+      const allRealSports = Array.from(document.querySelectorAll(`#${containerId} > div[data-sport]`)).map(el => el.dataset.sport);
 
       const checklist = document.getElementById(`${idPrefix}checklist-${sport}`);
-      checklist.innerHTML = buildCategoryCheckboxesHtml(sport, idPrefix, checkedIds, globalCheckedIds);
+      checklist.innerHTML = buildCategoryCheckboxesHtml(sport, idPrefix, checkedIds, globalCheckedIds, allRealSports);
 
       filterCategoriesGeneric(sport, idPrefix);
     }
@@ -2497,6 +2519,77 @@
       row.querySelectorAll('input[data-excl-key]').forEach(cb => { cb.checked = checked; });
       refreshCatrowBadge(row);
       markDashboardDirty();
+    }
+
+    // Copies one category's exact picked/unpicked channel state from the
+    // league it was just hand-tuned under onto the same category under a
+    // different league - for a user who spent time pruning 600 channels
+    // down to the 200 they want and needs that same picked set on a second
+    // league without redoing it (and without it landing on every league
+    // the way checking the category under Global would).
+    function copyCategorySelectionToLeague(selectEl, sourceSport) {
+      const targetSport = selectEl.value;
+      const categoryId = selectEl.dataset.categoryId;
+      selectEl.value = '';
+      if (!targetSport) return;
+
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      if (!provider) return;
+
+      const sourceRow = selectEl.closest('.catrow');
+      const sourceChecks = sourceRow.querySelectorAll('input[data-excl-key]');
+      if (sourceChecks.length === 0) return;
+      const selection = new Map();
+      sourceChecks.forEach(cb => selection.set(cb.getAttribute('data-excl-key'), cb.checked));
+
+      // Comparing .value in JS (rather than building a selector out of the
+      // category id) since Xtream/M3U category ids can contain characters
+      // that aren't safe to drop straight into a CSS attribute selector.
+      const targetCategoryCheckboxes = document.querySelectorAll(`#checklist-${targetSport} input[data-sport="${targetSport}"]`);
+      const targetCategoryCheckbox = Array.from(targetCategoryCheckboxes).find(cb => cb.value === categoryId);
+      if (targetCategoryCheckbox && targetCategoryCheckbox.disabled) {
+        showStatus(`That category is already applied to every league via Global, so ${SPORT_LABELS[targetSport] || targetSport} already gets it - manage its channels from the Global section instead.`, true);
+        return;
+      }
+      // Make sure the target league is actually searching this category
+      // too - otherwise there'd be nothing there for the copied picks to
+      // apply to.
+      if (targetCategoryCheckbox) targetCategoryCheckbox.checked = true;
+
+      // Seeds provider.excludedChannels so that if the target category's
+      // channel list hasn't been rendered before (just freshly checked
+      // above), the rebuild below starts from this copied selection
+      // instead of defaulting to "everything included".
+      provider.excludedChannels = provider.excludedChannels || {};
+      const targetExcluded = new Set((provider.excludedChannels[targetSport] || []).map(String));
+      selection.forEach((checked, key) => {
+        if (checked) targetExcluded.delete(key);
+        else targetExcluded.add(key);
+      });
+      provider.excludedChannels[targetSport] = Array.from(targetExcluded);
+
+      handleCategoryToggle('', targetSport);
+
+      // If the target's channel rows for this category already existed
+      // before this copy (already checked, already rendered), the rebuild
+      // above reused their live DOM state instead of the copy - force
+      // those specific checkboxes to match now that the section is back in
+      // the DOM.
+      const targetExpandKey = `${targetSport}::${categoryId}`;
+      const targetBtn = Array.from(document.querySelectorAll(`#checklist-${targetSport} [data-expand-key]`))
+        .find(b => b.getAttribute('data-expand-key') === targetExpandKey);
+      const targetRow = targetBtn ? targetBtn.closest('.catrow') : null;
+      if (targetRow) {
+        targetRow.querySelectorAll('input[data-excl-key]').forEach(cb => {
+          const key = cb.getAttribute('data-excl-key');
+          if (selection.has(key)) cb.checked = selection.get(key);
+        });
+        refreshCatrowBadge(targetRow);
+      }
+
+      markDashboardDirty();
+      const includedCount = Array.from(selection.values()).filter(Boolean).length;
+      showStatus(`Copied ${includedCount} of ${selection.size} channel picks to ${SPORT_LABELS[targetSport] || targetSport}.`);
     }
 
     function filterCategoriesGeneric(sport, idPrefix) {
