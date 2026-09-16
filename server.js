@@ -1858,9 +1858,16 @@ function formatGameDateLabel(utcDateStr, timeZone) {
   }
 }
 
-// Looks ahead across a date range (ESPN's scoreboard endpoint only accepts a
-// single day or a range, not "next N games" directly) and returns up to
-// `limit` upcoming games in chronological order.
+// Looks ahead day-by-day and returns up to `limit` upcoming games in
+// chronological order. ESPN's scoreboard endpoint used to accept a
+// "dates=start-end" range in one call, but that range syntax now returns a
+// hard 400 ("Failed to get events endpoint") for every sport - confirmed
+// live against the real API, not specific to any one league, date range
+// length, or date math on our side. Only single-day "dates=YYYYMMDD" queries
+// still work, so this walks the lookahead window a handful of days at a
+// time instead, stopping as soon as `limit` games are found (daily sports
+// like NBA/MLB/NHL typically only need the first batch; sparse ones like
+// NFL need a couple).
 async function fetchUpcomingGames(sport, userTimeZone = 'America/New_York', limit = 20) {
   const endpoint = ESPN_ENDPOINTS[sport.toUpperCase()];
   if (!endpoint) return [];
@@ -1872,19 +1879,35 @@ async function fetchUpcomingGames(sport, userTimeZone = 'America/New_York', limi
     // short window still comfortably finds `limit` games - and keeps the
     // query fast and light.
     const lookaheadDays = isNcaa ? 21 : 90;
-    const rangeStart = new Date(now.getTime() + 1 * 24 * 60 * 60 * 1000); // start tomorrow, excluding today's games
-    const rangeEnd = new Date(now.getTime() + lookaheadDays * 24 * 60 * 60 * 1000);
-    const startStr = formatDateYYYYMMDD(rangeStart, userTimeZone);
-    const endStr = formatDateYYYYMMDD(rangeEnd, userTimeZone);
     const ncaaParams = isNcaa ? (NCAA_QUERY_PARAMS[sport.toUpperCase()] || '&limit=500') : '';
 
-    const res = await axios.get(`${endpoint}?dates=${startStr}-${endStr}${ncaaParams}`, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-      timeout: 8000
-    });
+    const BATCH_SIZE = 10; // days queried concurrently per round
+    const collected = [];
 
-    const rawEvents = filterToStreamableGames(sport, res.data?.events || []);
-    const sorted = [...rawEvents].sort((a, b) => new Date(a.date) - new Date(b.date));
+    for (let batchStart = 1; batchStart <= lookaheadDays && collected.length < limit; batchStart += BATCH_SIZE) {
+      const offsets = [];
+      for (let offset = batchStart; offset < batchStart + BATCH_SIZE && offset <= lookaheadDays; offset++) {
+        offsets.push(offset);
+      }
+
+      const batchResults = await Promise.all(offsets.map(async offset => {
+        const dateStr = formatDateYYYYMMDD(new Date(now.getTime() + offset * 24 * 60 * 60 * 1000), userTimeZone);
+        try {
+          const res = await axios.get(`${endpoint}?dates=${dateStr}${ncaaParams}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+            timeout: 8000
+          });
+          return filterToStreamableGames(sport, res.data?.events || []);
+        } catch (err) {
+          console.error(`[ESPN] Error fetching upcoming schedule for ${sport} (+${offset}d):`, err.message);
+          return [];
+        }
+      }));
+
+      for (const events of batchResults) collected.push(...events);
+    }
+
+    const sorted = collected.sort((a, b) => new Date(a.date) - new Date(b.date));
 
     return sorted.slice(0, limit).map(event => {
       const competition = event.competitions?.[0] || {};
