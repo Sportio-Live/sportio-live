@@ -2208,6 +2208,15 @@ const TEAM_BG_COLOR_OVERRIDES = {
     '14': 'ffd100', // Los Angeles Rams - navy logo blended into navy background
     '19': 'c9243f', // New York Giants - navy logo blended into navy background
     '20': 'ffffff'  // New York Jets - green logo nearly invisible on green background
+  },
+  NBA: {
+    '28': '000000', // Toronto Raptors - red claw/basketball mark blended into red background
+    '26': '79a3dc', // Utah Jazz - purple note-and-ball mark nearly invisible on purple background
+    '20': 'e01234'  // Philadelphia 76ers - navy "6" and star badge nearly invisible on navy background (trade-off: red alternate makes the "7" blend instead)
+  },
+  NHL: {
+    '20': 'ffffff', // Tampa Bay Lightning - navy bolt-in-ring mark, no outline, blended into blue background
+    '19': 'fdb71a'  // St. Louis Blues - blue note mark (thin gold outline only) blended into blue background
   }
 };
 
