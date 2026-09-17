@@ -2106,13 +2106,10 @@ app.get('/poster/:sport/:homeId/:awayId.png', async (req, res) => {
 
   // Using each team's primary color - alternate color was tried and
   // reverted. Falls back to alternate, then the sport's generic theme
-  // color, if a team is missing a primary color.
-  const homeColor = req.query.homeColor ? `#${req.query.homeColor}`
-    : req.query.homeAltColor ? `#${req.query.homeAltColor}`
-    : theme.secondary;
-  const awayColor = req.query.awayColor ? `#${req.query.awayColor}`
-    : req.query.awayAltColor ? `#${req.query.awayAltColor}`
-    : theme.primary;
+  // color, if a team is missing a primary color. TEAM_BG_COLOR_OVERRIDES
+  // takes precedence over all of that for specific teams reported to clash.
+  const homeColor = getTeamBgColor(sportKey, homeId, req.query.homeColor, req.query.homeAltColor, theme.secondary);
+  const awayColor = getTeamBgColor(sportKey, awayId, req.query.awayColor, req.query.awayAltColor, theme.primary);
   const homeAbbr = (req.query.homeAbbr || '').toLowerCase();
   const awayAbbr = (req.query.awayAbbr || '').toLowerCase();
 
@@ -2190,6 +2187,30 @@ const SPORT_THEMES = {
   PREM: { primary: '#00205B', secondary: '#C8102E' },
   IPL: { primary: '#004C8C', secondary: '#F6A100' }
 };
+
+// Per-team background color pins, for teams whose auto-selected color
+// (primary, per the poster/landscape routes above) has been visually
+// confirmed to clash with that team's own logo. Value is the literal
+// replacement hex (no '#'). Keyed by sport key then ESPN team id. Add
+// entries here as clashes are reported and confirmed - see getTeamBgColor.
+const TEAM_BG_COLOR_OVERRIDES = {
+  MLB: {
+    '10': 'c4ced4', // New York Yankees - navy logo blended into navy background
+    '24': '001541', // St. Louis Cardinals - red logo blended into red background
+    '11': 'efb21e', // Athletics - green logo blended into green background
+    '30': '8fbce6', // Tampa Bay Rays - navy logo (thin light-blue outline only) blended into navy background
+    '7': '7ab2dd',  // Kansas City Royals - navy logo blended into navy background
+    '19': 'ffffff', // Los Angeles Dodgers - blue logo blended into blue background
+    '22': '003278', // Philadelphia Phillies - red logo blended into red background
+    '25': 'ffc425'  // San Diego Padres - brown logo nearly invisible on brown background
+  }
+};
+
+function getTeamBgColor(sportKey, teamId, queryColor, queryAltColor, themeFallback) {
+  const override = TEAM_BG_COLOR_OVERRIDES[sportKey]?.[teamId];
+  if (override) return `#${override}`;
+  return queryColor ? `#${queryColor}` : queryAltColor ? `#${queryAltColor}` : themeFallback;
+}
 
 // Primary accent used for the subtle poster background gradient per sport.
 function getSportMotif(sportKey, accentColor) {
@@ -2360,8 +2381,8 @@ app.get('/landscape/:sport/:homeId/:awayId.png', async (req, res) => {
 
   const homeName = req.query.home || 'Home';
   const awayName = req.query.away || 'Away';
-  const homeColor = req.query.homeColor ? `#${req.query.homeColor}` : theme.secondary;
-  const awayColor = req.query.awayColor ? `#${req.query.awayColor}` : theme.primary;
+  const homeColor = getTeamBgColor(sportKey, homeId, req.query.homeColor, null, theme.secondary);
+  const awayColor = getTeamBgColor(sportKey, awayId, req.query.awayColor, null, theme.primary);
   const homeAbbr = (req.query.homeAbbr || '').toLowerCase();
   const awayAbbr = (req.query.awayAbbr || '').toLowerCase();
 
