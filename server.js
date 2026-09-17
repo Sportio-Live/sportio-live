@@ -2203,6 +2203,11 @@ const TEAM_BG_COLOR_OVERRIDES = {
     '19': 'ffffff', // Los Angeles Dodgers - blue logo blended into blue background
     '22': '003278', // Philadelphia Phillies - red logo blended into red background
     '25': 'ffc425'  // San Diego Padres - brown logo nearly invisible on brown background
+  },
+  NFL: {
+    '14': 'ffd100', // Los Angeles Rams - navy logo blended into navy background
+    '19': 'c9243f', // New York Giants - navy logo blended into navy background
+    '20': 'ffffff'  // New York Jets - green logo nearly invisible on green background
   }
 };
 
