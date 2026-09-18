@@ -210,7 +210,13 @@ if (!fs.existsSync(PRESETS_DIR)) {
 const LOCAL_PRESETS_FILE = path.join(DATA_DIR, 'local-presets.json');
 
 app.use(cors());
-app.use(express.json());
+// Default 100kb is too tight for /api/user/update - a provider with
+// thousands of channels and a fully mass-applied epgOverrides map can
+// push the full-state save payload well past it, and express has no
+// JSON error handler here, so the client gets an HTML error page back
+// and its res.json() parse throws ("Network error while saving
+// settings", indistinguishable from an actual network failure).
+app.use(express.json({ limit: '5mb' }));
 app.use(express.static('public'));
 
 // --- Login rate limiting ---
@@ -787,6 +793,23 @@ function filterToStreamableGames(sport, events) {
     if (broadcasts.length === 0) return true;
     return broadcasts.some(name => !NCAAFB_EXCLUDED_BROADCASTS.has(name));
   });
+}
+
+// Words that show up in dozens of different college team names and, on
+// their own, don't identify any specific one - "state" alone matches over
+// 20 different FBS/FCS schools. Left as standalone match keywords, these
+// let two completely unrelated teams "confirm" each other (e.g. a channel
+// actually showing Indiana State could satisfy both "Indiana" from an
+// Indiana Hoosiers game and "State" pulled from that same game's Ohio
+// State opponent). Stripped before word lists become match keywords in the
+// stream-matching logic below. Same bug class as Teamarr's issue #799.
+const GENERIC_TEAM_WORDS = new Set([
+  'state', 'university', 'college', 'tech', 'southern', 'north', 'south',
+  'east', 'west', 'central', 'international', 'a&m'
+]);
+
+function stripGenericWords(words) {
+  return words.filter(w => !GENERIC_TEAM_WORDS.has(w));
 }
 
 const ESPN_LEAGUES = {
@@ -1835,9 +1858,16 @@ function formatGameDateLabel(utcDateStr, timeZone) {
   }
 }
 
-// Looks ahead across a date range (ESPN's scoreboard endpoint only accepts a
-// single day or a range, not "next N games" directly) and returns up to
-// `limit` upcoming games in chronological order.
+// Looks ahead day-by-day and returns up to `limit` upcoming games in
+// chronological order. ESPN's scoreboard endpoint used to accept a
+// "dates=start-end" range in one call, but that range syntax now returns a
+// hard 400 ("Failed to get events endpoint") for every sport - confirmed
+// live against the real API, not specific to any one league, date range
+// length, or date math on our side. Only single-day "dates=YYYYMMDD" queries
+// still work, so this walks the lookahead window a handful of days at a
+// time instead, stopping as soon as `limit` games are found (daily sports
+// like NBA/MLB/NHL typically only need the first batch; sparse ones like
+// NFL need a couple).
 async function fetchUpcomingGames(sport, userTimeZone = 'America/New_York', limit = 20) {
   const endpoint = ESPN_ENDPOINTS[sport.toUpperCase()];
   if (!endpoint) return [];
@@ -1849,19 +1879,35 @@ async function fetchUpcomingGames(sport, userTimeZone = 'America/New_York', limi
     // short window still comfortably finds `limit` games - and keeps the
     // query fast and light.
     const lookaheadDays = isNcaa ? 21 : 90;
-    const rangeStart = new Date(now.getTime() + 1 * 24 * 60 * 60 * 1000); // start tomorrow, excluding today's games
-    const rangeEnd = new Date(now.getTime() + lookaheadDays * 24 * 60 * 60 * 1000);
-    const startStr = formatDateYYYYMMDD(rangeStart, userTimeZone);
-    const endStr = formatDateYYYYMMDD(rangeEnd, userTimeZone);
     const ncaaParams = isNcaa ? (NCAA_QUERY_PARAMS[sport.toUpperCase()] || '&limit=500') : '';
 
-    const res = await axios.get(`${endpoint}?dates=${startStr}-${endStr}${ncaaParams}`, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-      timeout: 8000
-    });
+    const BATCH_SIZE = 10; // days queried concurrently per round
+    const collected = [];
 
-    const rawEvents = filterToStreamableGames(sport, res.data?.events || []);
-    const sorted = [...rawEvents].sort((a, b) => new Date(a.date) - new Date(b.date));
+    for (let batchStart = 1; batchStart <= lookaheadDays && collected.length < limit; batchStart += BATCH_SIZE) {
+      const offsets = [];
+      for (let offset = batchStart; offset < batchStart + BATCH_SIZE && offset <= lookaheadDays; offset++) {
+        offsets.push(offset);
+      }
+
+      const batchResults = await Promise.all(offsets.map(async offset => {
+        const dateStr = formatDateYYYYMMDD(new Date(now.getTime() + offset * 24 * 60 * 60 * 1000), userTimeZone);
+        try {
+          const res = await axios.get(`${endpoint}?dates=${dateStr}${ncaaParams}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+            timeout: 8000
+          });
+          return filterToStreamableGames(sport, res.data?.events || []);
+        } catch (err) {
+          console.error(`[ESPN] Error fetching upcoming schedule for ${sport} (+${offset}d):`, err.message);
+          return [];
+        }
+      }));
+
+      for (const events of batchResults) collected.push(...events);
+    }
+
+    const sorted = collected.sort((a, b) => new Date(a.date) - new Date(b.date));
 
     return sorted.slice(0, limit).map(event => {
       const competition = event.competitions?.[0] || {};
@@ -2060,13 +2106,10 @@ app.get('/poster/:sport/:homeId/:awayId.png', async (req, res) => {
 
   // Using each team's primary color - alternate color was tried and
   // reverted. Falls back to alternate, then the sport's generic theme
-  // color, if a team is missing a primary color.
-  const homeColor = req.query.homeColor ? `#${req.query.homeColor}`
-    : req.query.homeAltColor ? `#${req.query.homeAltColor}`
-    : theme.secondary;
-  const awayColor = req.query.awayColor ? `#${req.query.awayColor}`
-    : req.query.awayAltColor ? `#${req.query.awayAltColor}`
-    : theme.primary;
+  // color, if a team is missing a primary color. TEAM_BG_COLOR_OVERRIDES
+  // takes precedence over all of that for specific teams reported to clash.
+  const homeColor = getTeamBgColor(sportKey, homeId, req.query.homeColor, req.query.homeAltColor, theme.secondary);
+  const awayColor = getTeamBgColor(sportKey, awayId, req.query.awayColor, req.query.awayAltColor, theme.primary);
   const homeAbbr = (req.query.homeAbbr || '').toLowerCase();
   const awayAbbr = (req.query.awayAbbr || '').toLowerCase();
 
@@ -2144,6 +2187,44 @@ const SPORT_THEMES = {
   PREM: { primary: '#00205B', secondary: '#C8102E' },
   IPL: { primary: '#004C8C', secondary: '#F6A100' }
 };
+
+// Per-team background color pins, for teams whose auto-selected color
+// (primary, per the poster/landscape routes above) has been visually
+// confirmed to clash with that team's own logo. Value is the literal
+// replacement hex (no '#'). Keyed by sport key then ESPN team id. Add
+// entries here as clashes are reported and confirmed - see getTeamBgColor.
+const TEAM_BG_COLOR_OVERRIDES = {
+  MLB: {
+    '10': 'c4ced4', // New York Yankees - navy logo blended into navy background
+    '24': '001541', // St. Louis Cardinals - red logo blended into red background
+    '11': 'efb21e', // Athletics - green logo blended into green background
+    '30': '8fbce6', // Tampa Bay Rays - navy logo (thin light-blue outline only) blended into navy background
+    '7': '7ab2dd',  // Kansas City Royals - navy logo blended into navy background
+    '19': 'ffffff', // Los Angeles Dodgers - blue logo blended into blue background
+    '22': '003278', // Philadelphia Phillies - red logo blended into red background
+    '25': 'ffc425'  // San Diego Padres - brown logo nearly invisible on brown background
+  },
+  NFL: {
+    '14': 'ffd100', // Los Angeles Rams - navy logo blended into navy background
+    '19': 'c9243f', // New York Giants - navy logo blended into navy background
+    '20': 'ffffff'  // New York Jets - green logo nearly invisible on green background
+  },
+  NBA: {
+    '28': '000000', // Toronto Raptors - red claw/basketball mark blended into red background
+    '26': '79a3dc', // Utah Jazz - purple note-and-ball mark nearly invisible on purple background
+    '20': 'e01234'  // Philadelphia 76ers - navy "6" and star badge nearly invisible on navy background (trade-off: red alternate makes the "7" blend instead)
+  },
+  NHL: {
+    '20': 'ffffff', // Tampa Bay Lightning - navy bolt-in-ring mark, no outline, blended into blue background
+    '19': 'fdb71a'  // St. Louis Blues - blue note mark (thin gold outline only) blended into blue background
+  }
+};
+
+function getTeamBgColor(sportKey, teamId, queryColor, queryAltColor, themeFallback) {
+  const override = TEAM_BG_COLOR_OVERRIDES[sportKey]?.[teamId];
+  if (override) return `#${override}`;
+  return queryColor ? `#${queryColor}` : queryAltColor ? `#${queryAltColor}` : themeFallback;
+}
 
 // Primary accent used for the subtle poster background gradient per sport.
 function getSportMotif(sportKey, accentColor) {
@@ -2314,8 +2395,8 @@ app.get('/landscape/:sport/:homeId/:awayId.png', async (req, res) => {
 
   const homeName = req.query.home || 'Home';
   const awayName = req.query.away || 'Away';
-  const homeColor = req.query.homeColor ? `#${req.query.homeColor}` : theme.secondary;
-  const awayColor = req.query.awayColor ? `#${req.query.awayColor}` : theme.primary;
+  const homeColor = getTeamBgColor(sportKey, homeId, req.query.homeColor, null, theme.secondary);
+  const awayColor = getTeamBgColor(sportKey, awayId, req.query.awayColor, null, theme.primary);
   const homeAbbr = (req.query.homeAbbr || '').toLowerCase();
   const awayAbbr = (req.query.awayAbbr || '').toLowerCase();
 
@@ -4707,8 +4788,33 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
     return result.value;
   });
 
-  const homeKw = (game.homeTeam || '').toLowerCase().split(' ').filter(w => w.length > 2);
-  const awayKw = (game.awayTeam || '').toLowerCase().split(' ').filter(w => w.length > 2);
+  const homeTeamLower = (game.homeTeam || '').toLowerCase();
+  const awayTeamLower = (game.awayTeam || '').toLowerCase();
+
+  // Some team names are a real prefix of a different real team's name once
+  // generic words are stripped (Ohio/Ohio State, Miami/Miami (OH), Indiana/
+  // Indiana State, Washington/Washington State, the five Michigans, San
+  // Diego/San Diego State...). A mention of the longer team's name also
+  // contains the shorter team's own "identifying" word as its own standalone
+  // word, so that word can't safely stand in for the shorter team alone.
+  // Built from allTeamNames rather than hardcoded, so it stays correct
+  // across conference realignment without needing to be maintained by hand.
+  const teamWordLists = allTeamNames.map(name => {
+    const lower = (name || '').toLowerCase();
+    return { lower, words: stripGenericWords(lower.split(' ').filter(w => w.length > 2)) };
+  });
+  function dropUnsafePrefixWords(words, ownTeamLower) {
+    return words.filter(w => !teamWordLists.some(t =>
+      t.lower !== ownTeamLower && t.words.length > 1 && t.words[0] === w
+    ));
+  }
+
+  const homeKw = dropUnsafePrefixWords(
+    stripGenericWords(homeTeamLower.split(' ').filter(w => w.length > 2)), homeTeamLower
+  );
+  const awayKw = dropUnsafePrefixWords(
+    stripGenericWords(awayTeamLower.split(' ').filter(w => w.length > 2)), awayTeamLower
+  );
   // Also match on each team's short abbreviation (e.g. "LAL"), which some
   // channels/EPG data use instead of the full team name. Only included when
   // at least 3 characters, to avoid an overly-short string causing
@@ -4738,14 +4844,24 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
   const homeNickKw = (game.homeNick || '').toLowerCase().split(' ').filter(w => w.length > 2);
   const awayNickKw = (game.awayNick || '').toLowerCase().split(' ').filter(w => w.length > 2);
 
-  // Every team in the league, not just teams playing today - so a channel
-  // whose EPG mentions a team that isn't even playing today (a genuinely
-  // stale/outdated listing) still gets caught, not just a same-day mix-up.
+  // Every OTHER team in the league (not today's two), used as a cross-check
+  // so a channel that's actually showing a different real matchup doesn't
+  // slip through - not just teams playing today, so a genuinely stale/wrong
+  // EPG entry for some other game still gets caught, not just a same-day
+  // mix-up.
+  //
+  // Excluded by comparing full team names, not by deleting individual shared
+  // words - deleting e.g. "state" globally just because it was also one of
+  // today's teams' own words used to blind this cross-check to an actual
+  // *different* "State" school's stream (a real Ohio State channel would go
+  // unflagged as "foreign" during an Ohio Bobcats game, since "state" had
+  // been stripped out of the exclusion set entirely).
   const foreignKw = new Set();
   allTeamNames.forEach(name => {
-    (name || '').toLowerCase().split(' ').filter(w => w.length > 2).forEach(w => foreignKw.add(w));
+    const lower = (name || '').toLowerCase();
+    if (lower === homeTeamLower || lower === awayTeamLower) return;
+    stripGenericWords(lower.split(' ').filter(w => w.length > 2)).forEach(w => foreignKw.add(w));
   });
-  [...homeKw, ...awayKw].forEach(w => foreignKw.delete(w));
 
   // Word-boundary matching, not plain substring - a short keyword like
   // "red" (from "Red Sox") must appear as its own word, not as a

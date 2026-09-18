@@ -672,9 +672,12 @@
     // merged "all sources" option here - matching is deliberately run
     // against one source at a time. The source choice persists across
     // switching channels (same reasoning as the manual filter above); the
-    // results don't - they're cleared back to null (meaning "not searched
-    // yet") on every new channel selection, since a stale match list for a
-    // different channel's name would be actively misleading.
+    // results themselves are recomputed fresh for whichever channel becomes
+    // selected (see computeChannelEpgSuggestResults) rather than requiring
+    // an explicit Search click each time - a stale match list for a
+    // different channel's name would be actively misleading, but silently
+    // reusing the already-chosen source to re-score is exactly what the
+    // Search button used to make you do manually.
     let channelEpgSuggestSourceFilter = '';
     let channelEpgSuggestResults = null;
     let channelEpgExpandedCategories = new Set();
@@ -2099,7 +2102,7 @@
     // categories checked under Global render as checked, disabled, and
     // globe-marked - there's no separate on/off state to toggle from
     // within an individual league's view, only from Global itself.
-    function buildCategoryCheckboxesHtml(sport, idPrefix, checkedIds, globalCheckedIds = []) {
+    function buildCategoryCheckboxesHtml(sport, idPrefix, checkedIds, globalCheckedIds = [], allRealSports = []) {
       if (fetchedCategories.length === 0) {
         return '<p class="text-xs text-[#e6e6e6]/55 italic">No categories loaded yet.</p>';
       }
@@ -2188,6 +2191,19 @@
           </label>
         `).join('');
 
+        // Lets a user who just hand-picked which channels to include here
+        // (e.g. 200 out of 600 in a big category) apply that exact same
+        // picked/unpicked set to the same category under one other league,
+        // without it landing on every league the way checking it under
+        // Global would. Only other real leagues are listed - copying onto
+        // itself is meaningless, and Global isn't a per-league target.
+        const otherSports = allRealSports.filter(s => s !== sport);
+        const copyToControl = otherSports.length > 0 ? `
+              <select data-category-id="${escapeHtml(String(cat.category_id))}" onchange="copyCategorySelectionToLeague(this, '${sport}')" class="ml-auto bg-[#2f3e47] border border-[#e6e6e6]/15 rounded px-1.5 py-0.5 text-[10px] font-semibold text-[#5aa8d1] hover:text-[#6bb5dd] focus:outline-none focus:border-[#3b8fc4]" title="Copy this exact channel selection to the same category under another league">
+                <option value="">Copy to league...</option>
+                ${otherSports.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(SPORT_LABELS[s] || s)}</option>`).join('')}
+              </select>` : '';
+
         return `
           <div class="${idPrefix}category-item-${sport} catrow" data-name="${escapeHtml(cat.category_name)}">
             <div class="flex items-center justify-between gap-2">
@@ -2201,6 +2217,7 @@
               <div class="flex items-center gap-3 pb-1.5 mb-1 border-b border-[#e6e6e6]/10">
                 <button type="button" onclick="setCategoryChannelsChecked(this, true)" class="text-[10px] font-bold text-[#5aa8d1] hover:text-[#6bb5dd] transition">Select All</button>
                 <button type="button" onclick="setCategoryChannelsChecked(this, false)" class="text-[10px] font-bold text-[#5aa8d1] hover:text-[#6bb5dd] transition">Select None</button>
+                ${copyToControl}
               </div>
               ${channelRows}
             </div>
@@ -2277,7 +2294,7 @@
         const section = document.createElement('div');
         section.className = 'bg-[#3b4d58]/40 border border-[#e6e6e6]/15 rounded-lg overflow-hidden';
 
-        const categoryCheckboxesHtml = buildCategoryCheckboxesHtml(sport, idPrefix, preSelected, isGlobalSection ? [] : globalSelected);
+        const categoryCheckboxesHtml = buildCategoryCheckboxesHtml(sport, idPrefix, preSelected, isGlobalSection ? [] : globalSelected, sortedSportsList);
 
         // Effective count for a real league includes whatever's checked
         // under Global too, since those categories are searched for every
@@ -2400,9 +2417,17 @@
       const containerId = `${idPrefix}sports-config-container`;
       const checkedIds = Array.from(document.querySelectorAll(`#${containerId} input[data-sport="${sport}"]:checked:not(:disabled)`)).map(cb => cb.value);
       const globalCheckedIds = sport === 'GLOBAL' ? [] : getCurrentGlobalCheckedIds(idPrefix);
+      // Each real league's own top-level section carries this same
+      // data-sport attribute (set once in renderCategoryConfig) - reading
+      // it back from the DOM here, scoped to direct children so it can't
+      // pick up the per-category checkboxes that also carry data-sport,
+      // keeps the "copy to league" dropdown's target list in sync with
+      // whatever's actually rendered without threading it through as an
+      // extra parameter on every caller of this function.
+      const allRealSports = Array.from(document.querySelectorAll(`#${containerId} > div[data-sport]`)).map(el => el.dataset.sport);
 
       const checklist = document.getElementById(`${idPrefix}checklist-${sport}`);
-      checklist.innerHTML = buildCategoryCheckboxesHtml(sport, idPrefix, checkedIds, globalCheckedIds);
+      checklist.innerHTML = buildCategoryCheckboxesHtml(sport, idPrefix, checkedIds, globalCheckedIds, allRealSports);
 
       filterCategoriesGeneric(sport, idPrefix);
     }
@@ -2494,6 +2519,77 @@
       row.querySelectorAll('input[data-excl-key]').forEach(cb => { cb.checked = checked; });
       refreshCatrowBadge(row);
       markDashboardDirty();
+    }
+
+    // Copies one category's exact picked/unpicked channel state from the
+    // league it was just hand-tuned under onto the same category under a
+    // different league - for a user who spent time pruning 600 channels
+    // down to the 200 they want and needs that same picked set on a second
+    // league without redoing it (and without it landing on every league
+    // the way checking the category under Global would).
+    function copyCategorySelectionToLeague(selectEl, sourceSport) {
+      const targetSport = selectEl.value;
+      const categoryId = selectEl.dataset.categoryId;
+      selectEl.value = '';
+      if (!targetSport) return;
+
+      const provider = activeUser && activeUser.providers[activeProviderIndex];
+      if (!provider) return;
+
+      const sourceRow = selectEl.closest('.catrow');
+      const sourceChecks = sourceRow.querySelectorAll('input[data-excl-key]');
+      if (sourceChecks.length === 0) return;
+      const selection = new Map();
+      sourceChecks.forEach(cb => selection.set(cb.getAttribute('data-excl-key'), cb.checked));
+
+      // Comparing .value in JS (rather than building a selector out of the
+      // category id) since Xtream/M3U category ids can contain characters
+      // that aren't safe to drop straight into a CSS attribute selector.
+      const targetCategoryCheckboxes = document.querySelectorAll(`#checklist-${targetSport} input[data-sport="${targetSport}"]`);
+      const targetCategoryCheckbox = Array.from(targetCategoryCheckboxes).find(cb => cb.value === categoryId);
+      if (targetCategoryCheckbox && targetCategoryCheckbox.disabled) {
+        showStatus(`That category is already applied to every league via Global, so ${SPORT_LABELS[targetSport] || targetSport} already gets it - manage its channels from the Global section instead.`, true);
+        return;
+      }
+      // Make sure the target league is actually searching this category
+      // too - otherwise there'd be nothing there for the copied picks to
+      // apply to.
+      if (targetCategoryCheckbox) targetCategoryCheckbox.checked = true;
+
+      // Seeds provider.excludedChannels so that if the target category's
+      // channel list hasn't been rendered before (just freshly checked
+      // above), the rebuild below starts from this copied selection
+      // instead of defaulting to "everything included".
+      provider.excludedChannels = provider.excludedChannels || {};
+      const targetExcluded = new Set((provider.excludedChannels[targetSport] || []).map(String));
+      selection.forEach((checked, key) => {
+        if (checked) targetExcluded.delete(key);
+        else targetExcluded.add(key);
+      });
+      provider.excludedChannels[targetSport] = Array.from(targetExcluded);
+
+      handleCategoryToggle('', targetSport);
+
+      // If the target's channel rows for this category already existed
+      // before this copy (already checked, already rendered), the rebuild
+      // above reused their live DOM state instead of the copy - force
+      // those specific checkboxes to match now that the section is back in
+      // the DOM.
+      const targetExpandKey = `${targetSport}::${categoryId}`;
+      const targetBtn = Array.from(document.querySelectorAll(`#checklist-${targetSport} [data-expand-key]`))
+        .find(b => b.getAttribute('data-expand-key') === targetExpandKey);
+      const targetRow = targetBtn ? targetBtn.closest('.catrow') : null;
+      if (targetRow) {
+        targetRow.querySelectorAll('input[data-excl-key]').forEach(cb => {
+          const key = cb.getAttribute('data-excl-key');
+          if (selection.has(key)) cb.checked = selection.get(key);
+        });
+        refreshCatrowBadge(targetRow);
+      }
+
+      markDashboardDirty();
+      const includedCount = Array.from(selection.values()).filter(Boolean).length;
+      showStatus(`Copied ${includedCount} of ${selection.size} channel picks to ${SPORT_LABELS[targetSport] || targetSport}.`);
     }
 
     function filterCategoriesGeneric(sport, idPrefix) {
@@ -3527,13 +3623,15 @@
       channelEpgSelectedChannelKey = channelEpgSelectedChannelKeys.size === 1
         ? [...channelEpgSelectedChannelKeys][0]
         : null;
-      // Last channel's matches would be actively misleading here - source
-      // choice stays, but the results themselves are always per-channel.
-      channelEpgSuggestResults = null;
       renderChannelEpgCategories();
       if (channelEpgSelectedChannelKeys.size >= 2) {
+        channelEpgSuggestResults = null;
         renderChannelEpgMultiEditor();
       } else {
+        // Re-score against whichever source is already chosen so matches
+        // are on-screen the instant a channel is picked - no separate
+        // Search click needed for every channel in a mass-review pass.
+        computeChannelEpgSuggestResults();
         renderChannelEpgEditor();
       }
     }
@@ -3742,9 +3840,12 @@
       // admin-enabled+cached source (no merged "all sources" choice here,
       // unlike the manual picker below: matching is scoped to one source
       // at a time by design). channelEpgSuggestSourceFilter persists across
-      // channel selections; channelEpgSuggestResults doesn't, so switching
-      // channels always requires a fresh Search click even though the
-      // source stays picked.
+      // channel selections, and so do the results in spirit - they're
+      // recomputed automatically against that same source for whichever
+      // channel is now selected (see computeChannelEpgSuggestResults), so
+      // there's no manual Search click needed per channel. The button
+      // stays as a manual re-trigger for when the catalog was still
+      // loading at selection time.
       const sources = epgShareSourcesCatalog || [];
       const catalogLoading = epgShareSourcesCatalog === null;
       const suggestSourceOptionsHtml = sources.map(s => `
@@ -3752,7 +3853,7 @@
       `).join('');
       const searchDisabled = catalogLoading || !channelEpgSuggestSourceFilter;
       const suggestResultsHtml = channelEpgSuggestResults === null
-        ? `<p class="text-xs text-[#e6e6e6]/55 italic">${catalogLoading ? 'Loading sources...' : 'Pick an EPG source above, then click Search.'}</p>`
+        ? `<p class="text-xs text-[#e6e6e6]/55 italic">${catalogLoading ? 'Loading sources...' : 'Pick an EPG source above to see suggested matches.'}</p>`
         : channelEpgSuggestResults.length > 0
           ? channelEpgSuggestResults.map(id => `
               <button type="button" onclick="applyEpgShareOverrideToSelected('${escapeJsAttr(id)}')" class="w-full text-left px-3 py-1.5 text-xs font-mono rounded-lg transition ${id === overrideTarget ? 'bg-[#3b8fc4]/30 text-[#5aa8d1]' : 'bg-[#3b4d58] hover:bg-[#455c69]'}">${escapeHtml(id)}</button>
@@ -3769,6 +3870,17 @@
         <option value="${escapeHtml(s.file)}" ${s.file === channelEpgManualSourceFilter ? 'selected' : ''}>${escapeHtml(epgShareSourceLabel(s.file))} (${s.channelIds.length})</option>
       `).join('');
 
+      // Prev/next step through channelEpgVisibleOrder - the same
+      // left-panel order shift-click ranges use - regardless of override
+      // status, so a mass-review pass can move channel-to-channel without
+      // touching the list on the left.
+      const visibleIdx = channelEpgVisibleOrder.indexOf(channel.key);
+      const prevDisabled = visibleIdx <= 0;
+      const nextDisabled = visibleIdx === -1 || visibleIdx >= channelEpgVisibleOrder.length - 1;
+      const stepPositionHtml = visibleIdx !== -1
+        ? `<span class="text-[10px] text-[#e6e6e6]/45 tabular-nums">${visibleIdx + 1} / ${channelEpgVisibleOrder.length}</span>`
+        : '';
+
       editor.innerHTML = `
         <div class="flex items-start justify-between gap-3 mb-3">
           <div class="min-w-0 flex-1">
@@ -3777,7 +3889,18 @@
           </div>
           ${currentHtml}
         </div>
-        <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Suggested matches</label>
+        <div class="flex items-center justify-between mb-1.5 gap-2">
+          <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55">Suggested matches</label>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <button type="button" onclick="stepChannelEpgSelection(-1)" ${prevDisabled ? 'disabled' : ''} title="Previous channel" class="w-6 h-6 flex items-center justify-center rounded-md text-xs transition ${prevDisabled ? 'text-[#e6e6e6]/25 cursor-not-allowed' : 'text-[#e6e6e6]/70 hover:bg-[#3b4d58] hover:text-white'}">
+              <i class="fa-solid fa-chevron-left"></i>
+            </button>
+            ${stepPositionHtml}
+            <button type="button" onclick="stepChannelEpgSelection(1)" ${nextDisabled ? 'disabled' : ''} title="Next channel" class="w-6 h-6 flex items-center justify-center rounded-md text-xs transition ${nextDisabled ? 'text-[#e6e6e6]/25 cursor-not-allowed' : 'text-[#e6e6e6]/70 hover:bg-[#3b4d58] hover:text-white'}">
+              <i class="fa-solid fa-chevron-right"></i>
+            </button>
+          </div>
+        </div>
         <div class="flex gap-2 mb-2">
           <select id="channel-epg-suggest-source" onchange="onChannelEpgSuggestSourceChange()" ${catalogLoading ? 'disabled' : ''} class="flex-1 min-w-0 bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-1.5 text-xs focus:border-[#3b8fc4] focus:outline-none">
             <option value="" ${channelEpgSuggestSourceFilter === '' ? 'selected' : ''}>${catalogLoading ? 'Loading sources...' : 'Select a source...'}</option>
@@ -3804,18 +3927,37 @@
 
     function onChannelEpgSuggestSourceChange() {
       channelEpgSuggestSourceFilter = document.getElementById('channel-epg-suggest-source').value;
-      // Stale results from whichever source was picked before - require a
-      // fresh Search click rather than silently re-scoring in place.
-      channelEpgSuggestResults = null;
+      computeChannelEpgSuggestResults();
       renderChannelEpgEditor();
     }
 
-    function searchChannelEpgSuggestions() {
+    // Re-scores the currently selected channel against whichever source is
+    // picked in channelEpgSuggestSourceFilter, or clears the results if
+    // there's no channel/source to score yet (e.g. catalog still loading).
+    // Called on channel selection, source change, and the Search button
+    // alike so all three land on the same result.
+    function computeChannelEpgSuggestResults() {
       const channel = channelEpgChannels.find(ch => ch.key === channelEpgSelectedChannelKey);
       const source = (epgShareSourcesCatalog || []).find(s => s.file === channelEpgSuggestSourceFilter);
-      if (!channel || !source) return;
-      channelEpgSuggestResults = getSuggestedEpgShareMatches(channel.name, source.channelIds);
+      channelEpgSuggestResults = (channel && source) ? getSuggestedEpgShareMatches(channel.name, source.channelIds) : null;
+    }
+
+    function searchChannelEpgSuggestions() {
+      computeChannelEpgSuggestResults();
       renderChannelEpgEditor();
+    }
+
+    // Arrow navigation above "Suggested matches" - steps to the previous/
+    // next channel in the left panel's current visible order (whatever the
+    // active search/filter shows), regardless of whether either channel
+    // already has an override. Lets a mass-review pass move through a
+    // whole category without clicking back into the list for every row.
+    function stepChannelEpgSelection(direction) {
+      if (!channelEpgSelectedChannelKey) return;
+      const idx = channelEpgVisibleOrder.indexOf(channelEpgSelectedChannelKey);
+      const nextIdx = idx + direction;
+      if (idx === -1 || nextIdx < 0 || nextIdx >= channelEpgVisibleOrder.length) return;
+      selectChannelForEpgEdit(channelEpgVisibleOrder[nextIdx], null);
     }
 
     function onChannelEpgManualSourceChange() {
@@ -3859,9 +4001,18 @@
       if (!provider || !channel) return;
       provider.epgOverrides = provider.epgOverrides || {};
       provider.epgOverrides[channel.id] = epgShareChannelId;
-      renderChannelEpgCategories();
-      renderChannelEpgEditor();
       markDashboardDirty();
+      // Auto-advance to the next channel in the visible list - approving a
+      // match shouldn't dead-end back at the list for every single channel
+      // in a mass-review pass. Re-render first so channelEpgVisibleOrder
+      // reflects the just-applied override before we look up "next".
+      renderChannelEpgCategories();
+      const idx = channelEpgVisibleOrder.indexOf(channel.key);
+      if (idx !== -1 && idx + 1 < channelEpgVisibleOrder.length) {
+        selectChannelForEpgEdit(channelEpgVisibleOrder[idx + 1], null);
+      } else {
+        renderChannelEpgEditor();
+      }
     }
 
     function clearSelectedChannelEpgOverride() {
