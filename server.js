@@ -2496,10 +2496,39 @@ app.get('/poster/none/:sport.jpg', async (req, res) => {
 const realLeagueLogoCache = {};
 const REAL_LEAGUE_LOGO_CACHE_MS = 14 * 24 * 60 * 60 * 1000;
 
+// ESPN's scoreboard data has no real NCAA logo to extract - leagues[0].logos
+// for college football/basketball just returns ESPN's own generic sport
+// icons (ESPN-icon-football-college.png, ESPN-icon-basketball.png), not
+// anything NCAA-branded. TheSportsDB has the actual NCAA shield badges per
+// sport instead, confirmed live via lookupleague.php for each id below, so
+// these three are fetched from TheSportsDB's API rather than ESPN's.
+const THESPORTSDB_LEAGUE_IDS = {
+  NCAAFB: 4479, // NCAA Division 1 Football
+  NCAAMB: 4607, // NCAA Division I Basketball Mens
+  NCAAWB: 5789  // NCAA Division I Basketball Women
+};
+// TheSportsDB's documented free-tier key (https://www.thesportsdb.com/documentation)
+const THESPORTSDB_API_KEY = '123';
+
 async function getRealLeagueLogoUrl(sportKey) {
   const cached = realLeagueLogoCache[sportKey];
   if (cached && (Date.now() - cached.fetchedAt) < REAL_LEAGUE_LOGO_CACHE_MS) {
     return cached.url;
+  }
+
+  const thesportsdbLeagueId = THESPORTSDB_LEAGUE_IDS[sportKey];
+  if (thesportsdbLeagueId) {
+    try {
+      const res = await axios.get(`https://www.thesportsdb.com/api/v1/json/${THESPORTSDB_API_KEY}/lookupleague.php?id=${thesportsdbLeagueId}`, {
+        timeout: 7000
+      });
+      const url = res.data?.leagues?.[0]?.strBadge || null;
+      realLeagueLogoCache[sportKey] = { fetchedAt: Date.now(), url };
+      return url;
+    } catch (err) {
+      console.error(`[Logo] Failed to fetch TheSportsDB league badge for ${sportKey}:`, err.message);
+      return cached ? cached.url : null;
+    }
   }
 
   const endpoint = ESPN_ENDPOINTS[sportKey];
