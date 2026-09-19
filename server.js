@@ -2637,6 +2637,9 @@ async function fetchTodayGames(sport, hostUrl, userTimeZone = 'America/New_York'
       const statusDetail = event.status?.type?.detail || 'Scheduled';
 
       const venueName = competition.venue?.fullName || 'the arena';
+      const venueCity = competition.venue?.address?.city || '';
+      const venueState = competition.venue?.address?.state || '';
+      const venueLocation = [venueCity, venueState].filter(Boolean).join(', ');
 
       let formattedTime = 'TBD';
       let formattedDate = '';
@@ -2645,48 +2648,47 @@ async function fetchTodayGames(sport, hostUrl, userTimeZone = 'America/New_York'
         formattedDate = formatReadableDate(gameUtcDate, userTimeZone) || '';
       }
 
-      const line1 = `${awayNick.toUpperCase()} VS. ${homeNick.toUpperCase()}`;
-      const line2 = [formattedDate, venueName, formattedTime].filter(Boolean).join('    ');
+      const isCollege = NCAA_SPORTS.has(sport.toUpperCase());
 
-      // Home/road split, matched by explicit type rather than array index -
-      // already present in the same records array used for the overall
-      // record above, so this is free (no extra API call). Folded into the
-      // same sentence as the overall record (rather than a separate one)
-      // so it doesn't read as two back-to-back sentences both starting
-      // with the same team name. Only added if both splits are actually
-      // present, so a missing/unusual records shape just falls back to the
-      // plain overall-record sentence.
-      const homeSplit = home.records?.find(r => r.type === 'home')?.summary;
-      const awaySplit = away.records?.find(r => r.type === 'road')?.summary;
-      let line3 = (homeSplit && awaySplit)
-        ? `${homeNick} enter the matchup at ${homeWinLoss} on the season (${homeSplit} at home), while ${awayNick} come in at ${awayWinLoss} (${awaySplit} on the road).`
-        : `${homeNick} enter the matchup at ${homeWinLoss} on the season, while ${awayNick} come in at ${awayWinLoss}.`;
+      const line1 = isCollege
+        ? `${awayFull} VS. ${homeFull}`
+        : `${awayNick.toUpperCase()} VS. ${homeNick.toUpperCase()}`;
 
-      // Statistical leaders, using whichever categories the sport's own API
-      // naturally provides (passing/rushing/receiving for football, points
-      // for basketball, etc.) rather than hard-coded per-sport categories,
-      // so this works uniformly across every sport without special-casing.
-      // Capped at the first 2 categories to stay bite-size. Silently
-      // omitted entirely if the game hasn't started and leaders aren't
-      // populated yet, or the athlete/team can't be resolved - no partial
-      // or malformed sentences.
-      const leaderLines = (competition.leaders || []).slice(0, 2).map(category => {
-        const top = category.leaders?.[0];
-        const athleteName = top?.athlete?.displayName;
-        const statLine = top?.displayValue;
-        const leaderTeamId = top?.team?.id;
-        if (!athleteName || !statLine || !leaderTeamId) return null;
-        const teamShortName = leaderTeamId === homeTeam.id ? homeNick : (leaderTeamId === awayTeam.id ? awayNick : null);
-        if (!teamShortName) return null;
-        const categoryLabel = (category.displayName || category.shortDisplayName || 'stat leader').replace(/\s*leader\s*$/i, '').toLowerCase();
-        return `${athleteName} leads in ${categoryLabel} for ${teamShortName} (${statLine})`;
-      }).filter(Boolean);
+      const timeDateLine = [
+        formattedTime ? `🕐 ${formattedTime}` : null,
+        formattedDate ? `📅 ${formattedDate}` : null
+      ].filter(Boolean).join('  |  ');
 
-      if (leaderLines.length > 0) {
-        line3 += ` ${leaderLines.join('; ')}.`;
-      }
+      const venueLine = [
+        venueName ? `🏟️ ${venueName}` : null,
+        venueLocation ? `📍 ${venueLocation}` : null
+      ].filter(Boolean).join('  |  ');
 
-      const description = `${line1}\n${line2}\n\n${line3}`;
+      // Home/road split, matched against both naming conventions ESPN uses
+      // across sports - confirmed live that NBA/NFL/MLB/NHL/WNBA/NCAAMB/
+      // NCAAWB use type 'home'/'road' while NCAAFB alone uses 'homerecord'/
+      // 'awayrecord'. Every soccer league, rugby, cricket, and AFL have no
+      // home/road split at all (confirmed live: 'total' only, or no records
+      // field), so this resolves to undefined for them and the parenthetical
+      // is just omitted below rather than forced.
+      const homeSplit = home.records?.find(r => r.type === 'home' || r.type === 'homerecord')?.summary;
+      const awaySplit = away.records?.find(r => r.type === 'road' || r.type === 'awayrecord')?.summary;
+
+      // College games read by school name (a singular noun - "Delaware
+      // enters..."), pro games read by nickname (plural - "Celtics
+      // enter..."), matching how each is naturally referred to on broadcast.
+      const homeSubject = isCollege ? (homeTeam.location || homeFull) : homeNick;
+      const awaySubject = isCollege ? (awayTeam.location || awayFull) : awayNick;
+      const enterVerb = isCollege ? 'enters' : 'enter';
+      const comeInVerb = isCollege ? 'comes in' : 'come in';
+
+      // Each side's split is independent, so a missing/unusual records shape
+      // on one side just drops that side's parenthetical rather than the
+      // whole sentence.
+      const homeRecordLine = `${homeSubject} ${enterVerb} the matchup at ${homeWinLoss} on the season${homeSplit ? ` (${homeSplit} at home)` : ''}`;
+      const awayRecordLine = `${awaySubject} ${comeInVerb} at ${awayWinLoss}${awaySplit ? ` (${awaySplit} on the road)` : ''}.`;
+
+      const description = `${line1}\n${timeDateLine}\n${venueLine}\n\n${homeRecordLine}\n${awayRecordLine}`;
 
       return {
         id: String(event.id),
