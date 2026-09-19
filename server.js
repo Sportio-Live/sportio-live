@@ -4947,7 +4947,14 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
     // Tier 4: one team's actual nickname (not just its city/state) in the
     // channel name specifically. The one tier without a strong
     // independent anchor, so foreign-team exclusion applies here only.
-    if (matchesHomeNickOnly(name) || matchesAwayNickOnly(name)) {
+    //
+    // Disabled for NCAA sports - college mascots collide across dozens of
+    // unrelated schools (many different "Wildcats"/"Bulldogs"/"Tigers"/
+    // "Eagles" teams), unlike pro leagues where nicknames are effectively
+    // unique. A single-team nickname hit isn't a reliable enough signal
+    // there even with foreign-team exclusion, so NCAA games require both
+    // teams confirmed (tiers 1-3) or don't match at all.
+    if (!NCAA_SPORTS.has(upperSport) && (matchesHomeNickOnly(name) || matchesAwayNickOnly(name))) {
       if (mentionsForeignTeam(combined)) return;
       tiers[3].push(entry);
     }
