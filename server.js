@@ -2217,11 +2217,36 @@ const TEAM_BG_COLOR_OVERRIDES = {
   NHL: {
     '20': 'ffffff', // Tampa Bay Lightning - navy bolt-in-ring mark, no outline, blended into blue background
     '19': 'fdb71a'  // St. Louis Blues - blue note mark (thin gold outline only) blended into blue background
+  },
+  // ESPN keys college teams by school, not by sport - the same team id,
+  // color/alternateColor, and logo art are shared across NCAAFB/NCAAMB/
+  // NCAAWB for a given school (confirmed live: Duke is id 150 with
+  // identical colors in both the football and basketball APIs). One
+  // shared bucket here avoids tripling every entry across all three NCAA
+  // sportKeys - see getTeamBgColor's NCAA_SPORTS check below.
+  NCAA: {
+    '239': 'ffb81c',  // Baylor Bears - solid green mark blended into green background
+    '25': 'ffc72c',   // California Golden Bears - solid navy script blended into navy background
+    '2429': 'a49665', // Charlotte 49ers - solid green mark blended into green background
+    '2440': '8a8d8f', // Nevada Wolf Pack - solid navy mark blended into navy background
+    '2483': 'fff41b', // Oregon Ducks - solid green mark blended into green background
+    '2567': '0033a1', // SMU Mustangs - solid red mark blended into red background
+    '26': 'f2a900',   // UCLA Bruins - solid blue script blended into blue background
+    '265': '4d4d4d'   // Washington State Cougars - solid crimson mark blended into crimson background
+    // Alabama, Air Force, Buffalo, Clemson, Duke, Indiana, Kansas State,
+    // Michigan State, North Texas, Oklahoma, Penn State, Rice, Sam Houston,
+    // TCU, Temple, Tennessee, Texas A&M, Texas, Utah, Utah State also have
+    // this same clash (confirmed for both football and the major men's
+    // basketball conferences), but their ESPN alternateColor is white/
+    // near-white - skipped per Chris's call that a plain white bg looks
+    // worse than the clash itself for these. Revisit if a better
+    // non-white fix is found.
   }
 };
 
 function getTeamBgColor(sportKey, teamId, queryColor, queryAltColor, themeFallback) {
-  const override = TEAM_BG_COLOR_OVERRIDES[sportKey]?.[teamId];
+  const overrideKey = NCAA_SPORTS.has(sportKey) ? 'NCAA' : sportKey;
+  const override = TEAM_BG_COLOR_OVERRIDES[overrideKey]?.[teamId];
   if (override) return `#${override}`;
   return queryColor ? `#${queryColor}` : queryAltColor ? `#${queryAltColor}` : themeFallback;
 }
