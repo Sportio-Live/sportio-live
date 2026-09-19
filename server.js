@@ -4979,9 +4979,25 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
   // Every stream that qualified for ANY tier is included - tier number
   // controls display order only, not inclusion. A stream in tier 4 doesn't
   // get discarded just because some other stream also qualified for tier 1.
-  // If nothing cleared any tier at all, the flattened result is naturally
-  // empty - no separate fallback needed.
   const streamsToReturn = tiers.flat().map(e => e.stream);
+
+  // An empty result here is otherwise indistinguishable (to the user) from
+  // Sportio having nothing to say about this game at all - especially
+  // through an aggregator like AIOStreams, where an empty {streams: []}
+  // just makes the addon silently vanish from the merged list instead of
+  // confirming it was checked. A real playable placeholder (rather than
+  // some non-url stream object) is what actually renders across clients.
+  if (streamsToReturn.length === 0) {
+    res.setHeader('Content-Type', 'application/json');
+    return res.json({
+      streams: [{
+        name: 'Sportio Live',
+        title: 'No streams found for this game.',
+        description: 'No streams found for this game.',
+        url: `${hostUrl}/no_streams_found.mp4`
+      }]
+    });
+  }
 
   // Confirmed via direct testing in Nuvio that a forced rank-prefix isn't
   // actually needed - Nuvio respects our intended order as returned.
