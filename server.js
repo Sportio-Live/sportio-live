@@ -2217,11 +2217,36 @@ const TEAM_BG_COLOR_OVERRIDES = {
   NHL: {
     '20': 'ffffff', // Tampa Bay Lightning - navy bolt-in-ring mark, no outline, blended into blue background
     '19': 'fdb71a'  // St. Louis Blues - blue note mark (thin gold outline only) blended into blue background
+  },
+  // ESPN keys college teams by school, not by sport - the same team id,
+  // color/alternateColor, and logo art are shared across NCAAFB/NCAAMB/
+  // NCAAWB for a given school (confirmed live: Duke is id 150 with
+  // identical colors in both the football and basketball APIs). One
+  // shared bucket here avoids tripling every entry across all three NCAA
+  // sportKeys - see getTeamBgColor's NCAA_SPORTS check below.
+  NCAA: {
+    '239': 'ffb81c',  // Baylor Bears - solid green mark blended into green background
+    '25': 'ffc72c',   // California Golden Bears - solid navy script blended into navy background
+    '2429': 'a49665', // Charlotte 49ers - solid green mark blended into green background
+    '2440': '8a8d8f', // Nevada Wolf Pack - solid navy mark blended into navy background
+    '2483': 'fff41b', // Oregon Ducks - solid green mark blended into green background
+    '2567': '0033a1', // SMU Mustangs - solid red mark blended into red background
+    '26': 'f2a900',   // UCLA Bruins - solid blue script blended into blue background
+    '265': '4d4d4d'   // Washington State Cougars - solid crimson mark blended into crimson background
+    // Alabama, Air Force, Buffalo, Clemson, Duke, Indiana, Kansas State,
+    // Michigan State, North Texas, Oklahoma, Penn State, Rice, Sam Houston,
+    // TCU, Temple, Tennessee, Texas A&M, Texas, Utah, Utah State also have
+    // this same clash (confirmed for both football and the major men's
+    // basketball conferences), but their ESPN alternateColor is white/
+    // near-white - skipped per Chris's call that a plain white bg looks
+    // worse than the clash itself for these. Revisit if a better
+    // non-white fix is found.
   }
 };
 
 function getTeamBgColor(sportKey, teamId, queryColor, queryAltColor, themeFallback) {
-  const override = TEAM_BG_COLOR_OVERRIDES[sportKey]?.[teamId];
+  const overrideKey = NCAA_SPORTS.has(sportKey) ? 'NCAA' : sportKey;
+  const override = TEAM_BG_COLOR_OVERRIDES[overrideKey]?.[teamId];
   if (override) return `#${override}`;
   return queryColor ? `#${queryColor}` : queryAltColor ? `#${queryAltColor}` : themeFallback;
 }
@@ -2496,10 +2521,39 @@ app.get('/poster/none/:sport.jpg', async (req, res) => {
 const realLeagueLogoCache = {};
 const REAL_LEAGUE_LOGO_CACHE_MS = 14 * 24 * 60 * 60 * 1000;
 
+// ESPN's scoreboard data has no real NCAA logo to extract - leagues[0].logos
+// for college football/basketball just returns ESPN's own generic sport
+// icons (ESPN-icon-football-college.png, ESPN-icon-basketball.png), not
+// anything NCAA-branded. TheSportsDB has the actual NCAA shield badges per
+// sport instead, confirmed live via lookupleague.php for each id below, so
+// these three are fetched from TheSportsDB's API rather than ESPN's.
+const THESPORTSDB_LEAGUE_IDS = {
+  NCAAFB: 4479, // NCAA Division 1 Football
+  NCAAMB: 4607, // NCAA Division I Basketball Mens
+  NCAAWB: 5789  // NCAA Division I Basketball Women
+};
+// TheSportsDB's documented free-tier key (https://www.thesportsdb.com/documentation)
+const THESPORTSDB_API_KEY = '123';
+
 async function getRealLeagueLogoUrl(sportKey) {
   const cached = realLeagueLogoCache[sportKey];
   if (cached && (Date.now() - cached.fetchedAt) < REAL_LEAGUE_LOGO_CACHE_MS) {
     return cached.url;
+  }
+
+  const thesportsdbLeagueId = THESPORTSDB_LEAGUE_IDS[sportKey];
+  if (thesportsdbLeagueId) {
+    try {
+      const res = await axios.get(`https://www.thesportsdb.com/api/v1/json/${THESPORTSDB_API_KEY}/lookupleague.php?id=${thesportsdbLeagueId}`, {
+        timeout: 7000
+      });
+      const url = res.data?.leagues?.[0]?.strBadge || null;
+      realLeagueLogoCache[sportKey] = { fetchedAt: Date.now(), url };
+      return url;
+    } catch (err) {
+      console.error(`[Logo] Failed to fetch TheSportsDB league badge for ${sportKey}:`, err.message);
+      return cached ? cached.url : null;
+    }
   }
 
   const endpoint = ESPN_ENDPOINTS[sportKey];
@@ -2637,6 +2691,9 @@ async function fetchTodayGames(sport, hostUrl, userTimeZone = 'America/New_York'
       const statusDetail = event.status?.type?.detail || 'Scheduled';
 
       const venueName = competition.venue?.fullName || 'the arena';
+      const venueCity = competition.venue?.address?.city || '';
+      const venueState = competition.venue?.address?.state || '';
+      const venueLocation = [venueCity, venueState].filter(Boolean).join(', ');
 
       let formattedTime = 'TBD';
       let formattedDate = '';
@@ -2645,48 +2702,47 @@ async function fetchTodayGames(sport, hostUrl, userTimeZone = 'America/New_York'
         formattedDate = formatReadableDate(gameUtcDate, userTimeZone) || '';
       }
 
-      const line1 = `${awayNick.toUpperCase()} VS. ${homeNick.toUpperCase()}`;
-      const line2 = [formattedDate, venueName, formattedTime].filter(Boolean).join('    ');
+      const isCollege = NCAA_SPORTS.has(sport.toUpperCase());
 
-      // Home/road split, matched by explicit type rather than array index -
-      // already present in the same records array used for the overall
-      // record above, so this is free (no extra API call). Folded into the
-      // same sentence as the overall record (rather than a separate one)
-      // so it doesn't read as two back-to-back sentences both starting
-      // with the same team name. Only added if both splits are actually
-      // present, so a missing/unusual records shape just falls back to the
-      // plain overall-record sentence.
-      const homeSplit = home.records?.find(r => r.type === 'home')?.summary;
-      const awaySplit = away.records?.find(r => r.type === 'road')?.summary;
-      let line3 = (homeSplit && awaySplit)
-        ? `${homeNick} enter the matchup at ${homeWinLoss} on the season (${homeSplit} at home), while ${awayNick} come in at ${awayWinLoss} (${awaySplit} on the road).`
-        : `${homeNick} enter the matchup at ${homeWinLoss} on the season, while ${awayNick} come in at ${awayWinLoss}.`;
+      const line1 = isCollege
+        ? `${awayFull} VS. ${homeFull}`
+        : `${awayNick.toUpperCase()} VS. ${homeNick.toUpperCase()}`;
 
-      // Statistical leaders, using whichever categories the sport's own API
-      // naturally provides (passing/rushing/receiving for football, points
-      // for basketball, etc.) rather than hard-coded per-sport categories,
-      // so this works uniformly across every sport without special-casing.
-      // Capped at the first 2 categories to stay bite-size. Silently
-      // omitted entirely if the game hasn't started and leaders aren't
-      // populated yet, or the athlete/team can't be resolved - no partial
-      // or malformed sentences.
-      const leaderLines = (competition.leaders || []).slice(0, 2).map(category => {
-        const top = category.leaders?.[0];
-        const athleteName = top?.athlete?.displayName;
-        const statLine = top?.displayValue;
-        const leaderTeamId = top?.team?.id;
-        if (!athleteName || !statLine || !leaderTeamId) return null;
-        const teamShortName = leaderTeamId === homeTeam.id ? homeNick : (leaderTeamId === awayTeam.id ? awayNick : null);
-        if (!teamShortName) return null;
-        const categoryLabel = (category.displayName || category.shortDisplayName || 'stat leader').replace(/\s*leader\s*$/i, '').toLowerCase();
-        return `${athleteName} leads in ${categoryLabel} for ${teamShortName} (${statLine})`;
-      }).filter(Boolean);
+      const timeDateLine = [
+        formattedTime ? `🕐 ${formattedTime}` : null,
+        formattedDate ? `📅 ${formattedDate}` : null
+      ].filter(Boolean).join('  |  ');
 
-      if (leaderLines.length > 0) {
-        line3 += ` ${leaderLines.join('; ')}.`;
-      }
+      const venueLine = [
+        venueName ? `🏟️ ${venueName}` : null,
+        venueLocation ? `📍 ${venueLocation}` : null
+      ].filter(Boolean).join('  |  ');
 
-      const description = `${line1}\n${line2}\n\n${line3}`;
+      // Home/road split, matched against both naming conventions ESPN uses
+      // across sports - confirmed live that NBA/NFL/MLB/NHL/WNBA/NCAAMB/
+      // NCAAWB use type 'home'/'road' while NCAAFB alone uses 'homerecord'/
+      // 'awayrecord'. Every soccer league, rugby, cricket, and AFL have no
+      // home/road split at all (confirmed live: 'total' only, or no records
+      // field), so this resolves to undefined for them and the parenthetical
+      // is just omitted below rather than forced.
+      const homeSplit = home.records?.find(r => r.type === 'home' || r.type === 'homerecord')?.summary;
+      const awaySplit = away.records?.find(r => r.type === 'road' || r.type === 'awayrecord')?.summary;
+
+      // College games read by school name (a singular noun - "Delaware
+      // enters..."), pro games read by nickname (plural - "Celtics
+      // enter..."), matching how each is naturally referred to on broadcast.
+      const homeSubject = isCollege ? (homeTeam.location || homeFull) : homeNick;
+      const awaySubject = isCollege ? (awayTeam.location || awayFull) : awayNick;
+      const enterVerb = isCollege ? 'enters' : 'enter';
+      const comeInVerb = isCollege ? 'comes in' : 'come in';
+
+      // Each side's split is independent, so a missing/unusual records shape
+      // on one side just drops that side's parenthetical rather than the
+      // whole sentence.
+      const homeRecordLine = `${homeSubject} ${enterVerb} the matchup at ${homeWinLoss} on the season${homeSplit ? ` (${homeSplit} at home)` : ''}`;
+      const awayRecordLine = `${awaySubject} ${comeInVerb} at ${awayWinLoss}${awaySplit ? ` (${awaySplit} on the road)` : ''}.`;
+
+      const description = `${line1}\n${timeDateLine}\n${venueLine}\n\n${homeRecordLine}\n${awayRecordLine}`;
 
       return {
         id: String(event.id),
@@ -4947,7 +5003,14 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
     // Tier 4: one team's actual nickname (not just its city/state) in the
     // channel name specifically. The one tier without a strong
     // independent anchor, so foreign-team exclusion applies here only.
-    if (matchesHomeNickOnly(name) || matchesAwayNickOnly(name)) {
+    //
+    // Disabled for NCAA sports - college mascots collide across dozens of
+    // unrelated schools (many different "Wildcats"/"Bulldogs"/"Tigers"/
+    // "Eagles" teams), unlike pro leagues where nicknames are effectively
+    // unique. A single-team nickname hit isn't a reliable enough signal
+    // there even with foreign-team exclusion, so NCAA games require both
+    // teams confirmed (tiers 1-3) or don't match at all.
+    if (!NCAA_SPORTS.has(upperSport) && (matchesHomeNickOnly(name) || matchesAwayNickOnly(name))) {
       if (mentionsForeignTeam(combined)) return;
       tiers[3].push(entry);
     }
@@ -4970,9 +5033,25 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
   // Every stream that qualified for ANY tier is included - tier number
   // controls display order only, not inclusion. A stream in tier 4 doesn't
   // get discarded just because some other stream also qualified for tier 1.
-  // If nothing cleared any tier at all, the flattened result is naturally
-  // empty - no separate fallback needed.
   const streamsToReturn = tiers.flat().map(e => e.stream);
+
+  // An empty result here is otherwise indistinguishable (to the user) from
+  // Sportio having nothing to say about this game at all - especially
+  // through an aggregator like AIOStreams, where an empty {streams: []}
+  // just makes the addon silently vanish from the merged list instead of
+  // confirming it was checked. A real playable placeholder (rather than
+  // some non-url stream object) is what actually renders across clients.
+  if (streamsToReturn.length === 0) {
+    res.setHeader('Content-Type', 'application/json');
+    return res.json({
+      streams: [{
+        name: 'Sportio Live',
+        title: 'No streams found for this game.',
+        description: 'No streams found for this game.',
+        url: `${hostUrl}/no_streams_found.mp4`
+      }]
+    });
+  }
 
   // Confirmed via direct testing in Nuvio that a forced rank-prefix isn't
   // actually needed - Nuvio respects our intended order as returned.
