@@ -58,6 +58,10 @@
             <i class="fa-solid fa-users"></i>
             Accounts
           </button>
+          <button id="admin-tab-probing-btn" onclick="switchAdminTab('probing')" class="bg-transparent border-0 border-b-2 border-transparent rounded-none -mb-px pb-2.5 px-0.5 sm:px-1 text-xs sm:text-sm font-semibold transition flex items-center gap-2 text-[#e6e6e6]/55 hover:text-[#e6e6e6]">
+            <i class="fa-solid fa-gauge-high"></i>
+            Stream Quality
+          </button>
         </div>
 
         <div id="section-body-m3u">
@@ -192,6 +196,113 @@
         <div id="presets-list" class="space-y-2"></div>
         </div>
 
+        <div id="section-body-probing" class="hidden">
+        <h2 class="text-sm font-bold mb-4">Stream Quality Probing</h2>
+        <p class="text-xs text-[#e6e6e6]/55 mb-4">Uses a dedicated IPTV account to measure the real resolution/fps of specific channels shortly after a game starts, so users see the best-quality stream first. Nothing is probed until you've added an account below AND selected categories for at least one preset - adding an account alone does nothing on its own.</p>
+
+        <div class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-4 mb-6 flex items-center justify-between max-w-2xl">
+          <div>
+            <div class="text-xs font-bold">Probing enabled</div>
+            <div class="text-[10px] text-[#e6e6e6]/45">Pausing this stops new probes without touching any of your account or category selections below.</div>
+          </div>
+          <button type="button" onclick="toggleProbingEnabled()" id="probing-master-toggle"
+            class="relative shrink-0 w-9 h-5 rounded-full transition bg-[#56707d]/60">
+            <span class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition"></span>
+          </button>
+        </div>
+
+        <h3 class="text-xs font-bold uppercase text-[#e6e6e6]/55 mb-2">Probing Accounts</h3>
+        <p class="text-xs text-[#e6e6e6]/55 mb-3">Never shown to users - used only to connect and measure channel quality. Add more than one if your presets are sourced from different providers.</p>
+        <div id="probing-accounts-empty" class="text-xs text-[#e6e6e6]/55 italic mb-3">No probing accounts yet.</div>
+        <div id="probing-accounts-list" class="space-y-2 mb-4 max-w-2xl"></div>
+
+        <div class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-4 mb-8 max-w-md">
+          <div id="probing-add-choose">
+            <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-2">Add a probing account</label>
+            <div class="grid grid-cols-2 gap-2">
+              <button type="button" onclick="probingAddGoTo('xtream')" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2 px-3 rounded-lg transition">Xtream</button>
+              <button type="button" onclick="probingAddGoTo('m3u')" class="bg-[#3f5460] hover:bg-[#56707d] border border-[#66818f]/40 text-xs font-bold py-2 px-3 rounded-lg transition">M3U</button>
+            </div>
+          </div>
+
+          <div id="probing-add-xtream" class="hidden">
+            <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Label (optional)</label>
+            <input type="text" id="probing-xtream-label" placeholder="e.g. Provider A (probing)" class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs mb-3 focus:border-[#3b8fc4] focus:outline-none">
+            <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Server URL</label>
+            <input type="text" id="probing-xtream-url" placeholder="http://example.com:8080" class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs mb-3 focus:border-[#3b8fc4] focus:outline-none">
+            <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Username</label>
+            <input type="text" id="probing-xtream-username" autocomplete="off" class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs mb-3 focus:border-[#3b8fc4] focus:outline-none">
+            <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Password</label>
+            <input type="password" id="probing-xtream-password" autocomplete="off" class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs mb-3 focus:border-[#3b8fc4] focus:outline-none">
+            <div id="probing-xtream-error" class="hidden text-xs text-[#e56a6a] font-semibold mb-3"></div>
+            <div class="grid grid-cols-2 gap-2">
+              <button type="button" onclick="probingAddCancel()" class="bg-[#56707d] hover:bg-[#66818f] font-bold py-2 px-3 rounded-lg text-xs transition">Cancel</button>
+              <button type="button" onclick="submitAddProbingAccount('xtream')" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2 px-3 rounded-lg text-xs transition">Add</button>
+            </div>
+          </div>
+
+          <div id="probing-add-m3u" class="hidden">
+            <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Label (optional)</label>
+            <input type="text" id="probing-m3u-label" placeholder="e.g. Provider B (probing)" class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs mb-3 focus:border-[#3b8fc4] focus:outline-none">
+            <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">Playlist URL</label>
+            <input type="text" id="probing-m3u-playlist" class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs mb-3 focus:border-[#3b8fc4] focus:outline-none">
+            <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1.5">EPG URL (optional)</label>
+            <input type="text" id="probing-m3u-epg" class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs mb-3 focus:border-[#3b8fc4] focus:outline-none">
+            <div id="probing-m3u-error" class="hidden text-xs text-[#e56a6a] font-semibold mb-3"></div>
+            <div class="grid grid-cols-2 gap-2">
+              <button type="button" onclick="probingAddCancel()" class="bg-[#56707d] hover:bg-[#66818f] font-bold py-2 px-3 rounded-lg text-xs transition">Cancel</button>
+              <button type="button" onclick="submitAddProbingAccount('m3u')" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2 px-3 rounded-lg text-xs transition">Add</button>
+            </div>
+          </div>
+        </div>
+
+        <h3 class="text-xs font-bold uppercase text-[#e6e6e6]/55 mb-2">Per-Preset Probe Targets</h3>
+        <p class="text-xs text-[#e6e6e6]/55 mb-3">For each preset, pick which probing account resolves it, then check the specific categories worth quality-checking. Leave a preset untouched to probe nothing from it.</p>
+        <div id="probing-presets-empty" class="text-xs text-[#e6e6e6]/55 italic mb-3">No presets yet - create one in the Presets tab first.</div>
+        <div id="probing-presets-list" class="space-y-3 max-w-2xl mb-8"></div>
+
+        <h3 class="text-xs font-bold uppercase text-[#e6e6e6]/55 mb-2">Test Probe</h3>
+        <p class="text-xs text-[#e6e6e6]/55 mb-3">Manually probe a real, currently-scheduled game right now - this is a diagnostic tool to validate your accounts/selections above, it does not affect what users see or write anything to live probe results.</p>
+        <div class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-4 max-w-2xl">
+          <div class="flex flex-wrap items-end gap-3 mb-3">
+            <div>
+              <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">Sport</label>
+              <select id="probing-test-sport" onchange="loadProbingTestGames()" class="bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+                <option value="">Choose...</option>
+                <option value="NBA">NBA</option>
+                <option value="NFL">NFL</option>
+                <option value="MLB">MLB</option>
+                <option value="NHL">NHL</option>
+                <option value="WNBA">WNBA</option>
+                <option value="NCAAMB">NCAAMB</option>
+                <option value="NCAAWB">NCAAWB</option>
+                <option value="NCAAFB">NCAAFB</option>
+                <option value="EPL">EPL</option>
+                <option value="MLS">MLS</option>
+                <option value="LALIGA">LALIGA</option>
+                <option value="WORLDCUP">WORLDCUP</option>
+                <option value="UFC">UFC</option>
+                <option value="AFL">AFL</option>
+                <option value="URC">URC</option>
+                <option value="PREM">PREM</option>
+                <option value="IPL">IPL</option>
+              </select>
+            </div>
+            <div class="flex-1 min-w-[220px]">
+              <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">Game</label>
+              <select id="probing-test-game" class="w-full bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 text-xs focus:border-[#3b8fc4] focus:outline-none">
+                <option value="">Pick a sport first...</option>
+              </select>
+            </div>
+            <button type="button" onclick="runProbingTest()" id="probing-test-run-btn" class="bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-2 px-4 rounded-lg text-xs transition disabled:opacity-50 disabled:cursor-not-allowed">
+              Probe Now
+            </button>
+          </div>
+          <div id="probing-test-status" class="text-xs text-[#e6e6e6]/55 italic mb-2"></div>
+          <div id="probing-test-results" class="space-y-3"></div>
+        </div>
+        </div>
+
         <div id="section-body-accounts" class="hidden">
         <h2 class="text-sm font-bold mb-4">Accounts</h2>
         <div class="flex flex-wrap items-end gap-3 mb-4">
@@ -275,7 +386,7 @@
     // Exactly one panel is visible at a time; state lives only in the DOM
     // (a hidden class per panel), nothing persisted, so a fresh login
     // always starts back on the first tab.
-    const ADMIN_TABS = ['m3u', 'artcache', 'epgshare', 'presets', 'accounts'];
+    const ADMIN_TABS = ['m3u', 'artcache', 'epgshare', 'presets', 'accounts', 'probing'];
     function switchAdminTab(name) {
       ADMIN_TABS.forEach(tab => {
         document.getElementById(`section-body-${tab}`).classList.toggle('hidden', tab !== name);
@@ -311,6 +422,7 @@
           loadEpgShareCatalog(false);
           loadEpgShareSettings();
           loadPresets();
+          loadProbing();
         } else {
           errorEl.textContent = data.error || 'Login failed.';
           errorEl.classList.remove('hidden');
@@ -977,6 +1089,7 @@
         if (data.success) {
           presets = data.presets;
           renderPresetsList();
+          renderProbingPresetsList();
         }
       } catch (err) {
         console.error('Failed to load presets:', err.message);
@@ -1336,6 +1449,349 @@
       // Errors stay up longer - a multi-source failure list takes more
       // than 4 seconds to actually read.
       setTimeout(() => el.classList.add('hidden'), isError ? 10000 : 4000);
+    }
+
+    // --- Stream Quality Probing tab ---
+    // probeConfig arrives from the server as { enabled, accounts, presetConfig }
+    // where presetConfig is keyed by preset id: { probingAccountId, selectedCategories }.
+    let probeConfig = { enabled: true, accounts: [], presetConfig: {} };
+
+    async function loadProbing() {
+      try {
+        const res = await fetch('/api/admin/probing', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(adminCreds)
+        });
+        const data = await res.json();
+        if (data.success) {
+          probeConfig = data.config;
+          renderProbingMasterToggle();
+          renderProbingAccountsList();
+          renderProbingPresetsList();
+        }
+      } catch (err) {
+        console.error('Failed to load probing config:', err.message);
+      }
+    }
+
+    function renderProbingMasterToggle() {
+      const btn = document.getElementById('probing-master-toggle');
+      btn.className = `relative shrink-0 w-9 h-5 rounded-full transition ${probeConfig.enabled ? 'bg-[#4a9d52]' : 'bg-[#56707d]/60'}`;
+      btn.querySelector('span').className = `absolute top-0.5 ${probeConfig.enabled ? 'left-[18px]' : 'left-0.5'} w-4 h-4 bg-white rounded-full transition`;
+    }
+
+    async function toggleProbingEnabled() {
+      try {
+        const res = await fetch('/api/admin/probing/toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...adminCreds, enabled: !probeConfig.enabled })
+        });
+        const data = await res.json();
+        if (data.success) {
+          probeConfig = data.config;
+          renderProbingMasterToggle();
+          showAdminStatus(probeConfig.enabled ? 'Probing enabled.' : 'Probing paused - existing selections were left untouched.');
+        } else {
+          showAdminStatus(data.error || 'Failed to update probing.', true);
+        }
+      } catch (err) {
+        showAdminStatus('Network error while updating probing.', true);
+      }
+    }
+
+    function renderProbingAccountsList() {
+      const list = document.getElementById('probing-accounts-list');
+      const empty = document.getElementById('probing-accounts-empty');
+      empty.classList.toggle('hidden', probeConfig.accounts.length > 0);
+      list.innerHTML = probeConfig.accounts.map(a => {
+        const badge = a.connectionType === 'm3u'
+          ? '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#3b8fc4]/20 text-[#5aa8d1]">M3U</span>'
+          : '<span class="inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-[#4a9d52]/20 text-[#a8e0ac]">Xtream</span>';
+        const detail = a.connectionType === 'm3u'
+          ? escapeHtml(a.m3u && a.m3u.playlistUrl || '')
+          : escapeHtml(a.xtream && a.xtream.url || '');
+        return `
+        <div class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg px-3 py-2 flex items-center gap-3">
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2">
+              <span class="text-xs font-semibold truncate">${escapeHtml(a.label)}</span>
+              ${badge}
+            </div>
+            <div class="text-[10px] text-[#e6e6e6]/45 truncate">${detail}</div>
+          </div>
+          <button type="button" onclick="deleteProbingAccount('${a.id}')" class="shrink-0 bg-[#c0392b] hover:bg-[#d8483a] text-white text-xs font-bold py-1.5 px-3 rounded-lg transition">
+            <i class="fa-solid fa-trash"></i>
+          </button>
+        </div>`;
+      }).join('');
+    }
+
+    function probingAddGoTo(type) {
+      document.getElementById('probing-add-choose').classList.add('hidden');
+      document.getElementById('probing-add-xtream').classList.toggle('hidden', type !== 'xtream');
+      document.getElementById('probing-add-m3u').classList.toggle('hidden', type !== 'm3u');
+    }
+
+    function probingAddCancel() {
+      document.getElementById('probing-add-choose').classList.remove('hidden');
+      document.getElementById('probing-add-xtream').classList.add('hidden');
+      document.getElementById('probing-add-m3u').classList.add('hidden');
+      ['probing-xtream-label', 'probing-xtream-url', 'probing-xtream-username', 'probing-xtream-password', 'probing-m3u-label', 'probing-m3u-playlist', 'probing-m3u-epg'].forEach(id => {
+        document.getElementById(id).value = '';
+      });
+      document.getElementById('probing-xtream-error').classList.add('hidden');
+      document.getElementById('probing-m3u-error').classList.add('hidden');
+    }
+
+    async function submitAddProbingAccount(connectionType) {
+      const errorEl = document.getElementById(`probing-${connectionType}-error`);
+      errorEl.classList.add('hidden');
+
+      const payload = { ...adminCreds, connectionType };
+      if (connectionType === 'xtream') {
+        payload.label = document.getElementById('probing-xtream-label').value;
+        payload.xtream = {
+          url: document.getElementById('probing-xtream-url').value.trim(),
+          username: document.getElementById('probing-xtream-username').value.trim(),
+          password: document.getElementById('probing-xtream-password').value
+        };
+      } else {
+        payload.label = document.getElementById('probing-m3u-label').value;
+        payload.m3u = {
+          playlistUrl: document.getElementById('probing-m3u-playlist').value.trim(),
+          epgUrl: document.getElementById('probing-m3u-epg').value.trim()
+        };
+      }
+
+      try {
+        const res = await fetch('/api/admin/probing/accounts/add', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.success) {
+          probeConfig = data.config;
+          renderProbingAccountsList();
+          renderProbingPresetsList();
+          probingAddCancel();
+          showAdminStatus('Probing account added.');
+        } else {
+          errorEl.textContent = data.error || 'Failed to add probing account.';
+          errorEl.classList.remove('hidden');
+        }
+      } catch (err) {
+        errorEl.textContent = 'Network error while adding the probing account.';
+        errorEl.classList.remove('hidden');
+      }
+    }
+
+    async function deleteProbingAccount(id) {
+      const account = probeConfig.accounts.find(a => a.id === id);
+      if (!confirm(`Delete probing account "${account ? account.label : id}"? Any preset assigned to it will need a new account picked.`)) {
+        return;
+      }
+      try {
+        const res = await fetch('/api/admin/probing/accounts/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...adminCreds, id })
+        });
+        const data = await res.json();
+        if (data.success) {
+          probeConfig = data.config;
+          renderProbingAccountsList();
+          renderProbingPresetsList();
+          showAdminStatus('Probing account deleted.');
+        } else {
+          showAdminStatus(data.error || 'Failed to delete probing account.', true);
+        }
+      } catch (err) {
+        showAdminStatus('Network error while deleting the probing account.', true);
+      }
+    }
+
+    // Per-preset probe target selection. Reads from the same `presets`
+    // array the Presets tab already loads (sportCategories per preset) -
+    // this is deliberately just a further-filtered subset of that, not a
+    // separate source of channel data. Called from both loadProbing() and
+    // loadPresets(), since they load concurrently and each needs the
+    // other's data to render correctly - whichever finishes second ends up
+    // with both available.
+    function renderProbingPresetsList() {
+      const list = document.getElementById('probing-presets-list');
+      const empty = document.getElementById('probing-presets-empty');
+      if (!presets.length) {
+        empty.classList.remove('hidden');
+        list.innerHTML = '';
+        return;
+      }
+      empty.classList.add('hidden');
+
+      const accountOptions = (selectedId) => {
+        const noneSelected = !selectedId ? 'selected' : '';
+        const opts = probeConfig.accounts.map(a =>
+          `<option value="${a.id}" ${a.id === selectedId ? 'selected' : ''}>${escapeHtml(a.label)}</option>`
+        ).join('');
+        return `<option value="" ${noneSelected}>&mdash; None &mdash;</option>${opts}`;
+      };
+
+      list.innerHTML = presets.map(p => {
+        const cfg = probeConfig.presetConfig[p.id] || { probingAccountId: null, selectedCategories: {} };
+        const sportsHtml = (p.selectedSports || []).map(sport => {
+          const categories = p.sportCategories[sport] || [];
+          if (!categories.length) return '';
+          const selected = new Set(cfg.selectedCategories[sport] || []);
+          const checkboxes = categories.map(cat => `
+            <label class="flex items-center gap-2 text-[11px] py-0.5">
+              <input type="checkbox" data-sport="${escapeHtml(sport)}" data-category="${escapeHtml(cat)}" ${selected.has(cat) ? 'checked' : ''} class="probing-category-checkbox" data-preset="${p.id}">
+              <span class="truncate">${escapeHtml(cat)}</span>
+            </label>`).join('');
+          return `
+            <div class="mb-2">
+              <div class="text-[10px] font-semibold uppercase text-[#e6e6e6]/45 mb-1">${escapeHtml(sport)}</div>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-3">${checkboxes}</div>
+            </div>`;
+        }).join('');
+
+        return `
+        <div class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3">
+          <div class="flex items-center justify-between gap-3 mb-2">
+            <span class="text-xs font-semibold truncate">${escapeHtml(p.name)}</span>
+            <select id="probing-preset-account-${p.id}" class="bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg px-2 py-1 text-[11px] focus:border-[#3b8fc4] focus:outline-none">
+              ${accountOptions(cfg.probingAccountId)}
+            </select>
+          </div>
+          ${sportsHtml || '<div class="text-[10px] text-[#e6e6e6]/45 italic">This preset has no categories to probe.</div>'}
+          <button type="button" onclick="saveProbingPresetConfig('${p.id}')" class="mt-2 bg-[#3b8fc4] hover:bg-[#4fa3d8] font-bold py-1.5 px-3 rounded-lg text-xs transition">
+            Save
+          </button>
+        </div>`;
+      }).join('');
+    }
+
+    async function loadProbingTestGames() {
+      const sport = document.getElementById('probing-test-sport').value;
+      const gameSelect = document.getElementById('probing-test-game');
+      if (!sport) {
+        gameSelect.innerHTML = '<option value="">Pick a sport first...</option>';
+        return;
+      }
+      gameSelect.innerHTML = '<option value="">Loading...</option>';
+      try {
+        const res = await fetch('/api/admin/probing/games', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...adminCreds, sport })
+        });
+        const data = await res.json();
+        if (data.success) {
+          gameSelect.innerHTML = data.games.length
+            ? data.games.map(g => `<option value="${g.id}">${escapeHtml(g.name || `${g.awayTeam} @ ${g.homeTeam}`)}</option>`).join('')
+            : '<option value="">No games today for this sport</option>';
+        } else {
+          gameSelect.innerHTML = '<option value="">Failed to load games</option>';
+        }
+      } catch (err) {
+        gameSelect.innerHTML = '<option value="">Network error</option>';
+      }
+    }
+
+    async function runProbingTest() {
+      const sport = document.getElementById('probing-test-sport').value;
+      const gameId = document.getElementById('probing-test-game').value;
+      const statusEl = document.getElementById('probing-test-status');
+      const resultsEl = document.getElementById('probing-test-results');
+      const btn = document.getElementById('probing-test-run-btn');
+      if (!sport || !gameId) {
+        statusEl.textContent = 'Pick a sport and a game first.';
+        return;
+      }
+
+      btn.disabled = true;
+      statusEl.textContent = 'Probing - this connects to your probing account(s) and runs ffprobe against any matching channels, so it can take a little while...';
+      resultsEl.innerHTML = '';
+
+      try {
+        const res = await fetch('/api/admin/probing/test-run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...adminCreds, sport, gameId })
+        });
+        const data = await res.json();
+        btn.disabled = false;
+        if (!data.success) {
+          statusEl.textContent = '';
+          resultsEl.innerHTML = `<div class="text-xs text-[#e56a6a] font-semibold">${escapeHtml(data.error || 'Test run failed.')}</div>`;
+          return;
+        }
+        if (data.note) {
+          statusEl.textContent = data.note;
+          resultsEl.innerHTML = '';
+          return;
+        }
+        statusEl.textContent = `Results for: ${escapeHtml(data.game.name)}`;
+        resultsEl.innerHTML = data.results.map(r => {
+          if (r.error) {
+            return `<div class="bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg p-3">
+              <div class="text-xs font-semibold mb-1">${escapeHtml(r.presetName)}</div>
+              <div class="text-xs text-[#e56a6a]">${escapeHtml(r.error)}</div>
+            </div>`;
+          }
+          const rows = r.probed.length
+            ? r.probed.map(p => {
+                const statusColor = p.status === 'alive' ? 'text-[#a8e0ac]' : 'text-[#f0b8b8]';
+                const detail = p.status === 'alive'
+                  ? `${p.width}x${p.height}${p.fps ? ` @ ${Math.round(p.fps * 100) / 100}fps` : ''} - <span class="font-bold">${p.tier}</span>`
+                  : 'dead / unreachable';
+                return `<div class="flex items-center justify-between text-[11px] py-1 border-t border-[#e6e6e6]/10">
+                  <span class="truncate">${escapeHtml(p.name)} <span class="text-[#e6e6e6]/40">(${escapeHtml(p.category)})</span></span>
+                  <span class="${statusColor} shrink-0 ml-2">${detail}</span>
+                </div>`;
+              }).join('')
+            : '<div class="text-[11px] text-[#e6e6e6]/45 italic py-1">No channels matched this game in the selected categories.</div>';
+          return `<div class="bg-[#3b4d58] border border-[#e6e6e6]/15 rounded-lg p-3">
+            <div class="text-xs font-semibold mb-1">${escapeHtml(r.presetName)} <span class="text-[#e6e6e6]/45 font-normal">via ${escapeHtml(r.accountLabel)}</span></div>
+            <div class="text-[10px] text-[#e6e6e6]/45 mb-1">${r.candidateCount} channel${r.candidateCount === 1 ? '' : 's'} in selected categories, ${r.matchedCount} matched this game</div>
+            ${rows}
+          </div>`;
+        }).join('');
+      } catch (err) {
+        btn.disabled = false;
+        statusEl.textContent = '';
+        resultsEl.innerHTML = `<div class="text-xs text-[#e56a6a] font-semibold">Network error while running the test probe.</div>`;
+      }
+    }
+
+    async function saveProbingPresetConfig(presetId) {
+      const probingAccountId = document.getElementById(`probing-preset-account-${presetId}`).value || null;
+      const selectedCategories = {};
+      document.querySelectorAll(`.probing-category-checkbox[data-preset="${presetId}"]:checked`).forEach(cb => {
+        const sport = cb.getAttribute('data-sport');
+        const category = cb.getAttribute('data-category');
+        if (!selectedCategories[sport]) selectedCategories[sport] = [];
+        selectedCategories[sport].push(category);
+      });
+
+      try {
+        const res = await fetch('/api/admin/probing/preset-config/update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...adminCreds, presetId, probingAccountId, selectedCategories })
+        });
+        const data = await res.json();
+        if (data.success) {
+          probeConfig = data.config;
+          renderProbingPresetsList();
+          showAdminStatus('Probe targets saved.');
+        } else {
+          showAdminStatus(data.error || 'Failed to save probe targets.', true);
+        }
+      } catch (err) {
+        showAdminStatus('Network error while saving probe targets.', true);
+      }
     }
   </script>
 </body>

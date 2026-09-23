@@ -11,7 +11,11 @@ WORKDIR /usr/src/app
 # boxes rather than the actual text. ttf-dejavu's sans-serif face is what
 # fontconfig resolves every font-family stack in this app's art to, since
 # every one of them ends in a generic 'sans-serif' fallback.
-RUN apk add --no-cache fontconfig ttf-dejavu
+# ffmpeg provides the ffprobe binary used to measure real stream
+# resolution/fps for quality-tier probing (see probe.js) - shelled out to
+# directly rather than pulled in as an npm package, since ffprobe is a
+# standalone binary, not a Node library.
+RUN apk add --no-cache fontconfig ttf-dejavu ffmpeg
 
 COPY package*.json ./
 
