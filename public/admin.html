@@ -1746,9 +1746,18 @@
                 const detail = p.status === 'alive'
                   ? `${p.width}x${p.height}${p.fps ? ` @ ${Math.round(p.fps * 100) / 100}fps` : ''} - <span class="font-bold">${p.tier}</span>`
                   : `dead / unreachable${p.reason ? ` - ${escapeHtml(p.reason)}` : ''}`;
-                return `<div class="flex items-center justify-between text-[11px] py-1 border-t border-[#e6e6e6]/10">
-                  <span class="truncate">${escapeHtml(p.name)} <span class="text-[#e6e6e6]/40">(${escapeHtml(p.category)})</span></span>
-                  <span class="${statusColor} shrink-0 ml-2">${detail}</span>
+                // The raw resolved URL for a dead result, so it can be tested
+                // directly (curl/VLC) outside of ffprobe - not shown for a
+                // successful probe, where there's nothing to diagnose.
+                const urlRow = p.status !== 'alive' && p.streamUrl
+                  ? `<div class="text-[10px] text-[#e6e6e6]/35 font-mono break-all mt-0.5">${escapeHtml(p.streamUrl)}</div>`
+                  : '';
+                return `<div class="text-[11px] py-1 border-t border-[#e6e6e6]/10">
+                  <div class="flex items-center justify-between">
+                    <span class="truncate">${escapeHtml(p.name)} <span class="text-[#e6e6e6]/40">(${escapeHtml(p.category)})</span></span>
+                    <span class="${statusColor} shrink-0 ml-2">${detail}</span>
+                  </div>
+                  ${urlRow}
                 </div>`;
               }).join('')
             : '<div class="text-[11px] text-[#e6e6e6]/45 italic py-1">No channels matched this game in the selected categories.</div>';

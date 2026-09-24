@@ -4760,7 +4760,15 @@ async function probeGameForAccount(account, selectedCategories, game, upperSport
       height: result.height,
       fps: result.fps,
       tier: result.status === 'alive' ? probe.computeTier(result) : null,
-      reason: result.reason
+      reason: result.reason,
+      // Included so a failure can be tested directly (curl/VLC/browser)
+      // outside of ffprobe entirely, to tell "ffprobe-specific problem"
+      // apart from "this stream genuinely doesn't work right now" - this
+      // is only ever shown in this manual diagnostic tool, never in
+      // anything a real user sees, and the admin already has plaintext
+      // access to this account's own credentials elsewhere in this same
+      // panel, so this isn't a new exposure.
+      streamUrl: candidate.streamUrl
     });
   }
 
