@@ -4759,7 +4759,8 @@ async function probeGameForAccount(account, selectedCategories, game, upperSport
       width: result.width,
       height: result.height,
       fps: result.fps,
-      tier: result.status === 'alive' ? probe.computeTier(result) : null
+      tier: result.status === 'alive' ? probe.computeTier(result) : null,
+      reason: result.reason
     });
   }
 

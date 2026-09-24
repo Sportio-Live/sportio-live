@@ -22,18 +22,35 @@ const PROBE_TIMEOUT_MS = 10000;
 const ANALYZE_DURATION_US = 3000000; // 3 seconds
 const PROBE_SIZE_BYTES = 5000000; // 5MB
 
+// Many real-world IPTV panels allow ffmpeg/ffprobe's own default user
+// agent through on their API endpoints (see fetchXtreamCategories/
+// fetchXtreamLiveStreams in server.js, which already spoof a desktop
+// browser UA there) but block it specifically on the actual stream
+// delivery endpoint, to keep non-player tools from scraping streams.
+// Nothing in this app ever connected to a raw stream URL server-side
+// before probe.js - the API calls elsewhere never exercised this. Spoofed
+// as VLC, since it's close to universally allowlisted by IPTV providers as
+// "a real player."
+const STREAM_USER_AGENT = 'VLC/3.0.20 LibVLC/3.0.20';
+
 // Runs ffprobe against streamUrl and resolves to either
-// { status: 'alive', width, height, fps } or { status: 'dead' }.
+// { status: 'alive', width, height, fps } or { status: 'dead', reason }.
+// `reason` is a short, human-readable diagnostic (ffprobe's own stderr, a
+// timeout marker, or "ffprobe not found") - never used for logic, only so
+// a human looking at a probe result can tell an outright-missing ffprobe
+// binary apart from a genuinely dead stream apart from a provider blocking
+// the request, instead of every failure looking identical.
 // Never rejects - a probe failure is a normal, expected outcome here, not
 // an exceptional one, so callers never need a try/catch around this.
 function probeStream(streamUrl) {
   return new Promise((resolve) => {
     const args = [
-      '-v', 'quiet',
+      '-v', 'error',
       '-print_format', 'json',
       '-show_streams',
       '-analyzeduration', String(ANALYZE_DURATION_US),
       '-probesize', String(PROBE_SIZE_BYTES),
+      '-user_agent', STREAM_USER_AGENT,
       streamUrl
     ];
 
@@ -41,7 +58,7 @@ function probeStream(streamUrl) {
       timeout: PROBE_TIMEOUT_MS,
       killSignal: 'SIGKILL',
       maxBuffer: 10 * 1024 * 1024
-    }, (err, stdout) => {
+    }, (err, stdout, stderr) => {
       // Covers both a hard timeout (child_process kills the process and
       // still calls back with an error) and any non-zero exit - stream
       // unreachable, connection refused, malformed URL, etc. Either way
@@ -49,7 +66,15 @@ function probeStream(streamUrl) {
       // the batch) that decides whether a single dead reading actually
       // means "confirmed dead" lives at the call site, not in here.
       if (err) {
-        resolve({ status: 'dead' });
+        let reason;
+        if (err.code === 'ENOENT') {
+          reason = 'ffprobe binary not found on this system/container';
+        } else if (err.killed || err.signal === 'SIGKILL') {
+          reason = `timed out after ${PROBE_TIMEOUT_MS}ms`;
+        } else {
+          reason = (stderr || err.message || '').trim().split('\n').slice(-1)[0] || 'unknown ffprobe error';
+        }
+        resolve({ status: 'dead', reason });
         return;
       }
 
@@ -57,13 +82,13 @@ function probeStream(streamUrl) {
       try {
         parsed = JSON.parse(stdout);
       } catch (parseErr) {
-        resolve({ status: 'dead' });
+        resolve({ status: 'dead', reason: 'ffprobe returned unparseable output' });
         return;
       }
 
       const videoStream = (parsed.streams || []).find(s => s.codec_type === 'video');
       if (!videoStream || !videoStream.width || !videoStream.height) {
-        resolve({ status: 'dead' });
+        resolve({ status: 'dead', reason: 'no video stream found (audio-only or empty response)' });
         return;
       }
 
