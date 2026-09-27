@@ -4,8 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Sportio Live - Admin</title>
-  <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <!-- After Font Awesome on purpose: Tailwind utilities (e.g. text-xs line-height) must win ties with FA's icon defaults, same as when Tailwind was injected at runtime. -->
+  <link rel="stylesheet" href="/tailwind.css">
   <style>
     body { background-color: #49626d; color: #e6e6e6; }
     .glass { background: rgba(59, 77, 88, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(230, 230, 230, 0.1); }
@@ -194,6 +195,17 @@
 
         <div id="section-body-accounts" class="hidden">
         <h2 class="text-sm font-bold mb-4">Accounts</h2>
+        <div class="bg-[#2f3e47] border border-[#e6e6e6]/15 rounded-lg p-3 mb-4">
+          <label class="flex items-center gap-2 cursor-pointer select-none">
+            <div class="relative shrink-0">
+              <input type="checkbox" id="registration-open-toggle" onchange="toggleRegistrationOpen()" class="sr-only peer">
+              <div class="w-9 h-5 bg-[#56707d] rounded-full peer-checked:bg-[#3b8fc4] transition"></div>
+              <div class="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full transition peer-checked:translate-x-4"></div>
+            </div>
+            <span class="text-xs font-semibold text-[#e6e6e6]/75">Allow new sign-ups</span>
+          </label>
+          <p class="text-xs text-[#e6e6e6]/55 mt-1.5">When off, the homepage's Setup button is hidden and new accounts can't be created. Existing accounts keep working normally.</p>
+        </div>
         <div class="flex flex-wrap items-end gap-3 mb-4">
           <div>
             <label class="block text-xs font-semibold uppercase text-[#e6e6e6]/55 mb-1">Filter by</label>
@@ -307,6 +319,7 @@
           document.getElementById('admin-panel-section').classList.remove('hidden');
           switchAdminTab('m3u');
           loadUsers();
+          loadAppSettings();
           loadM3uSettings();
           loadEpgShareCatalog(false);
           loadEpgShareSettings();
@@ -434,6 +447,40 @@
     function removeM3uTime(value) {
       m3uTimes = m3uTimes.filter(t => t !== value);
       renderM3uTimesList();
+    }
+
+    async function loadAppSettings() {
+      try {
+        const res = await fetch('/api/admin/app-settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(adminCreds)
+        });
+        const data = await res.json();
+        if (data.success) {
+          document.getElementById('registration-open-toggle').checked = data.settings.registrationOpen;
+        }
+      } catch (err) {
+        console.error('Failed to load app settings:', err.message);
+      }
+    }
+
+    async function toggleRegistrationOpen() {
+      const toggle = document.getElementById('registration-open-toggle');
+      const registrationOpen = toggle.checked;
+      try {
+        const res = await fetch('/api/admin/app-settings/update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...adminCreds, registrationOpen })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Failed to save.');
+        showAdminStatus(registrationOpen ? 'New sign-ups are now open.' : 'New sign-ups are now closed.');
+      } catch (err) {
+        toggle.checked = !registrationOpen;
+        showAdminStatus(`Couldn't change sign-ups: ${err.message}`, true);
+      }
     }
 
     async function loadM3uSettings() {

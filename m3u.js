@@ -14,6 +14,10 @@
 // scheduleM3URefresh() below.
 
 const axios = require('axios');
+const zlib = require('zlib');
+const { promisify } = require('util');
+
+const gunzip = promisify(zlib.gunzip);
 
 // ---------------------------------------------------------------------
 // Playlist parsing
@@ -103,7 +107,7 @@ function parseM3UPlaylist(content) {
 // ---------------------------------------------------------------------
 
 // Parses raw XMLTV text into a Map of channel_id -> array of
-// { start, stop, title } programme entries.
+// { start, title } programme entries.
 //
 // Deliberately regex-based rather than a full XML DOM parse - the
 // confirmed real-world structure here is simple and flat (no nesting to
@@ -132,13 +136,15 @@ function parseXMLTVEpg(content, relevantChannelIds) {
 
   let match;
   while ((match = pattern.exec(content)) !== null) {
-    const [, start, stop, channel, title] = match;
+    const [, start, , channel, title] = match;
     if (relevantChannelIds && !relevantChannelIds.has(channel)) continue;
     const channelCopy = copy(channel);
     if (!programmesByChannel.has(channelCopy)) {
       programmesByChannel.set(channelCopy, []);
     }
-    programmesByChannel.get(channelCopy).push({ start: copy(start), stop: copy(stop), title: copy(title.trim()) });
+    // stop is matched by the pattern but deliberately not kept - nothing
+    // reads it, and across every programme of a large EPG it adds up.
+    programmesByChannel.get(channelCopy).push({ start: copy(start), title: copy(title.trim()) });
   }
 
   return programmesByChannel;
@@ -247,10 +253,33 @@ function getCandidateStreamsForGame(source, configuredCategoryIds, gameTimestamp
 // failure can be attributed to the correct URL - Promise.all would fail
 // fast and lose which one was actually the problem, but the wizard needs
 // to tell the user which of their two URLs is bad.
+// Hard ceilings on what a single source is allowed to download. Real
+// playlists run to a few MB and real EPGs to ~150MB uncompressed; these
+// just stop a bad (or hostile - /api/m3u/import is reachable before an
+// account exists) URL from pulling an unbounded file into memory. V8 can't
+// hold a string much past ~512MB anyway.
+const PLAYLIST_MAX_BYTES = 100 * 1024 * 1024;
+const EPG_MAX_BYTES = 500 * 1024 * 1024;
+
+// Many providers serve their XMLTV guide gzipped (".xml.gz") as the file
+// itself rather than via Content-Encoding, which axios would hand back as
+// binary garbage - so the body is fetched raw and gunzipped here when it
+// starts with the gzip magic bytes. Async gunzip, so a large guide doesn't
+// freeze every other request while it decompresses.
+async function fetchEpgText(epgUrl) {
+  const res = await axios.get(epgUrl, { timeout: 60000, responseType: 'arraybuffer', maxContentLength: EPG_MAX_BYTES });
+  const buf = Buffer.from(res.data);
+  const isGzip = buf.length > 2 && buf[0] === 0x1f && buf[1] === 0x8b;
+  const text = isGzip
+    ? (await gunzip(buf, { maxOutputLength: EPG_MAX_BYTES })).toString('utf8')
+    : buf.toString('utf8');
+  return { data: text };
+}
+
 async function fetchAndParseM3USource(playlistUrl, epgUrl) {
   const [playlistResult, epgResult] = await Promise.allSettled([
-    axios.get(playlistUrl, { timeout: 30000, responseType: 'text', transformResponse: [d => d] }),
-    axios.get(epgUrl, { timeout: 60000, responseType: 'text', transformResponse: [d => d] })
+    axios.get(playlistUrl, { timeout: 30000, responseType: 'text', transformResponse: [d => d], maxContentLength: PLAYLIST_MAX_BYTES }),
+    fetchEpgText(epgUrl)
   ]);
 
   if (playlistResult.status === 'rejected' || epgResult.status === 'rejected') {
@@ -377,6 +406,20 @@ function computeNextScheduledRun(daysOfWeek, times, timeZone, now = new Date()) 
 // same provider - no reason to fetch and parse the same ~150MB file
 // twice in the same refresh cycle. Each source refreshes independently;
 // one failing (bad URL, provider down, etc) doesn't block the others.
+//
+// Sources are refreshed one at a time, not all at once: each one briefly
+// holds its whole raw EPG text in memory while parsing (~150MB+ for a real
+// provider), so several in parallel stacked those peaks on top of each
+// other for no real benefit - this runs in the background on a schedule,
+// where finishing a little later costs nothing.
+//
+// Also drops cached sources no account uses anymore (a deleted account, a
+// changed URL) - nothing else ever removed them, so each one stayed in
+// memory until the next restart. A source imported in the last couple of
+// hours is kept even if unused, since that's the setup wizard's window
+// between importing a playlist and actually creating the account for it.
+const UNUSED_SOURCE_GRACE_MS = 2 * 60 * 60 * 1000;
+
 async function refreshAllM3USources(getActiveSources) {
   const sources = getActiveSources();
   const uniqueByPlaylistUrl = new Map();
@@ -384,18 +427,39 @@ async function refreshAllM3USources(getActiveSources) {
     if (s && s.playlistUrl && s.epgUrl) uniqueByPlaylistUrl.set(s.playlistUrl, s);
   }
 
-  const results = await Promise.allSettled(
-    [...uniqueByPlaylistUrl.values()].map(({ playlistUrl, epgUrl }) => refreshM3USource(playlistUrl, epgUrl))
-  );
-
-  results.forEach((result, i) => {
-    const { playlistUrl } = [...uniqueByPlaylistUrl.values()][i];
-    if (result.status === 'rejected') {
-      console.error(`[M3U scheduler] Failed to refresh source ${playlistUrl}:`, result.reason.message);
-    } else {
-      console.log(`[M3U scheduler] Refreshed ${playlistUrl}: ${result.value.channels.length} channels, ${result.value.categoryList.length} categories`);
+  for (const [playlistUrl, cached] of m3uSourceCache.entries()) {
+    if (!uniqueByPlaylistUrl.has(playlistUrl) && Date.now() - cached.fetchedAt > UNUSED_SOURCE_GRACE_MS) {
+      m3uSourceCache.delete(playlistUrl);
+      console.log(`[M3U scheduler] Dropped unused cached source ${describeUrlForLog(playlistUrl)}`);
     }
-  });
+  }
+
+  for (const { playlistUrl, epgUrl } of uniqueByPlaylistUrl.values()) {
+    try {
+      const parsed = await refreshM3USource(playlistUrl, epgUrl);
+      console.log(`[M3U scheduler] Refreshed ${describeUrlForLog(playlistUrl)}: ${parsed.channels.length} channels, ${parsed.categoryList.length} categories`);
+    } catch (err) {
+      console.error(`[M3U scheduler] Failed to refresh source ${describeUrlForLog(playlistUrl)}:`, err.message);
+    }
+  }
+
+  // Same reasoning as the explicit collections after the art warm-up and
+  // EPGShare01 refresh in server.js/epgshare01.js: parsing leaves a large
+  // amount of reclaimable native memory that V8's heap-pressure-driven GC
+  // has little reason to collect on its own. No-op without --expose-gc.
+  if (typeof global.gc === 'function') global.gc();
+}
+
+// Playlist/EPG URLs usually embed the account's username and password
+// (".../get.php?username=X&password=Y", or ".../live/X/Y/..."), so logs
+// only ever get the scheme+host.
+function describeUrlForLog(url) {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.protocol}//${parsed.host}/...`;
+  } catch (err) {
+    return '(invalid URL)';
+  }
 }
 
 // Starts the self-rescheduling background refresh loop. Fetches
@@ -448,5 +512,6 @@ module.exports = {
   refreshAllM3USources,
   startM3uScheduler,
   stopM3uScheduler,
+  describeUrlForLog,
   m3uSourceCache
 };
