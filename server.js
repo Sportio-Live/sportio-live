@@ -26,7 +26,6 @@ sharp.concurrency(1);
 
 const m3u = require('./m3u.js');
 const epgshare = require('./epgshare01.js');
-const probe = require('./probe.js');
 
 // Without these, Node's default behavior for an unhandled promise rejection
 // (Node 15+) is to crash the entire process - and Docker's restart policy
@@ -182,19 +181,6 @@ const DATA_FILE = path.join(DATA_DIR, 'users.json');
 const M3U_SETTINGS_FILE = path.join(DATA_DIR, 'm3u-settings.json');
 const EPGSHARE_SETTINGS_FILE = path.join(DATA_DIR, 'epgshare-settings.json');
 const ADMIN_CONFIG_FILE = path.join(DATA_DIR, 'admin-config.json');
-// Admin-managed config for the stream-quality-probing feature: dedicated
-// probing IPTV account(s), the master on/off switch, and, per preset,
-// which probing account resolves it and which of its categories are
-// actually selected for probing. Deliberately separate from
-// ADMIN_CONFIG_FILE, which only ever held the admin login credential - see
-// loadProbeConfig/saveProbeConfig below.
-const PROBE_CONFIG_FILE = path.join(DATA_DIR, 'probe-config.json');
-// Actual probe results (resolution/fps/tier per channel) - written by the
-// probing job itself (not yet built - see implementation sequence),
-// unrelated to this config file. Declared here so the constant lives
-// alongside every other DATA_DIR file rather than being introduced later
-// disconnected from this list.
-const PROBE_RESULTS_FILE = path.join(DATA_DIR, 'stream-probe-results.json');
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -439,54 +425,6 @@ function saveEpgShareSettings(settings) {
 }
 
 let epgShareSettings = loadEpgShareSettings();
-
-// Probe-config accounts hold real IPTV credentials, same as a user's own
-// provider - encrypted at rest with the exact same helpers, never treated
-// as lower-stakes just because they belong to the admin rather than a
-// user.
-function loadProbeConfig() {
-  if (!fs.existsSync(PROBE_CONFIG_FILE)) {
-    return { enabled: true, accounts: [], presetConfig: {} };
-  }
-  try {
-    const raw = JSON.parse(fs.readFileSync(PROBE_CONFIG_FILE, 'utf8'));
-    return {
-      // Defaults to true - see project design notes: the master toggle is
-      // a pure pause/resume convenience layered on top of the account +
-      // category-selection gates below, not another activation step an
-      // admin has to remember to flip, so an absent/malformed value should
-      // never silently disable a working setup.
-      enabled: raw.enabled !== false,
-      accounts: Array.isArray(raw.accounts) ? raw.accounts.map(a => ({
-        ...a,
-        xtream: decryptXtreamFromStorage(a.xtream),
-        m3u: decryptM3uFromStorage(a.m3u)
-      })) : [],
-      presetConfig: raw.presetConfig && typeof raw.presetConfig === 'object' ? raw.presetConfig : {}
-    };
-  } catch (err) {
-    console.error('[Storage] Error loading probe-config.json:', err.message);
-    return { enabled: true, accounts: [], presetConfig: {} };
-  }
-}
-
-function saveProbeConfig(config) {
-  try {
-    const toWrite = {
-      ...config,
-      accounts: (config.accounts || []).map(a => ({
-        ...a,
-        xtream: encryptXtreamForStorage(a.xtream),
-        m3u: encryptM3uForStorage(a.m3u)
-      }))
-    };
-    fs.writeFileSync(PROBE_CONFIG_FILE, JSON.stringify(toWrite, null, 2), 'utf8');
-  } catch (err) {
-    console.error('[Storage] Failed to save probe-config.json:', err.message);
-  }
-}
-
-let probeConfig = loadProbeConfig();
 
 // Admin-curated presets - a named, iconed bundle of the exact payload
 // exportProviderSettings() already produces client-side (index.html):
@@ -872,115 +810,6 @@ const GENERIC_TEAM_WORDS = new Set([
 
 function stripGenericWords(words) {
   return words.filter(w => !GENERIC_TEAM_WORDS.has(w));
-}
-
-// Extracted verbatim from the /user/:uuid/stream/sports/:id.json route (no
-// behavior change) so the stream-probing feature's own "which of this
-// game's candidate streams is actually a match" step can call the exact
-// same team-matching/tiering logic real users are ranked with, instead of
-// a second, potentially-diverging reimplementation. See that route for the
-// full tier-by-tier rationale in comments - kept there rather than
-// duplicated here since this function's body is identical to what used to
-// be inline in it.
-function rankCandidateStreamsForGame(game, upperSport, candidateStreams, allTeamNames, gameTimestamp) {
-  const homeTeamLower = (game.homeTeam || '').toLowerCase();
-  const awayTeamLower = (game.awayTeam || '').toLowerCase();
-
-  const teamWordLists = allTeamNames.map(name => {
-    const lower = (name || '').toLowerCase();
-    return { lower, words: stripGenericWords(lower.split(' ').filter(w => w.length > 2)) };
-  });
-  function dropUnsafePrefixWords(words, ownTeamLower) {
-    return words.filter(w => !teamWordLists.some(t =>
-      t.lower !== ownTeamLower && t.words.length > 1 && t.words[0] === w
-    ));
-  }
-
-  const homeKw = dropUnsafePrefixWords(
-    stripGenericWords(homeTeamLower.split(' ').filter(w => w.length > 2)), homeTeamLower
-  );
-  const awayKw = dropUnsafePrefixWords(
-    stripGenericWords(awayTeamLower.split(' ').filter(w => w.length > 2)), awayTeamLower
-  );
-  const homeAbbr = (game.homeAbbr || '').toLowerCase();
-  const awayAbbr = (game.awayAbbr || '').toLowerCase();
-  if (homeAbbr.length > 2) homeKw.push(homeAbbr);
-  if (awayAbbr.length > 2) awayKw.push(awayAbbr);
-
-  const homeNickKw = (game.homeNick || '').toLowerCase().split(' ').filter(w => w.length > 2);
-  const awayNickKw = (game.awayNick || '').toLowerCase().split(' ').filter(w => w.length > 2);
-
-  const foreignKw = new Set();
-  allTeamNames.forEach(name => {
-    const lower = (name || '').toLowerCase();
-    if (lower === homeTeamLower || lower === awayTeamLower) return;
-    stripGenericWords(lower.split(' ').filter(w => w.length > 2)).forEach(w => foreignKw.add(w));
-  });
-
-  function escapeRegex(s) {
-    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }
-  function buildWordBoundaryMatcher(keywords) {
-    if (keywords.length === 0) return () => false;
-    const pattern = new RegExp('\\b(' + keywords.map(escapeRegex).join('|') + ')\\b', 'i');
-    return (text) => pattern.test(text);
-  }
-
-  const matchesHome = buildWordBoundaryMatcher(homeKw);
-  const matchesAway = buildWordBoundaryMatcher(awayKw);
-  const matchesHomeNickOnly = buildWordBoundaryMatcher(homeNickKw);
-  const matchesAwayNickOnly = buildWordBoundaryMatcher(awayNickKw);
-  const mentionsForeignTeam = buildWordBoundaryMatcher([...foreignKw]);
-
-  const has4K = (text) => /\b4k\b/i.test(text);
-
-  const tiers = [[], [], [], []];
-  candidateStreams.forEach(s => {
-    const name = (s.name || '').toLowerCase();
-    const description = (s.description || '').toLowerCase();
-    const combined = `${name} ${description}`;
-
-    const homeInName = matchesHome(name);
-    const awayInName = matchesAway(name);
-    const homeInDesc = matchesHome(description);
-    const awayInDesc = matchesAway(description);
-    const bothInEither = (homeInName || homeInDesc) && (awayInName || awayInDesc);
-    const bothInNameAlone = homeInName && awayInName;
-    const bothInDescAlone = homeInDesc && awayInDesc;
-
-    const entry = { stream: s, startTimestamp: s.startTimestamp };
-
-    if (has4K(combined) && bothInEither) {
-      tiers[0].push(entry);
-      return;
-    }
-
-    if (bothInNameAlone && bothInDescAlone) {
-      tiers[1].push(entry);
-      return;
-    }
-
-    if (bothInEither) {
-      tiers[2].push(entry);
-      return;
-    }
-
-    if (!NCAA_SPORTS.has(upperSport) && (matchesHomeNickOnly(name) || matchesAwayNickOnly(name))) {
-      if (mentionsForeignTeam(combined)) return;
-      tiers[3].push(entry);
-    }
-  });
-
-  if (gameTimestamp !== null) {
-    const byRecency = (a, b) => {
-      const distA = a.startTimestamp !== null ? Math.abs(a.startTimestamp - gameTimestamp) : Infinity;
-      const distB = b.startTimestamp !== null ? Math.abs(b.startTimestamp - gameTimestamp) : Infinity;
-      return distA - distB;
-    };
-    tiers.forEach(tier => tier.sort(byRecency));
-  }
-
-  return tiers.flat().map(e => e.stream);
 }
 
 const ESPN_LEAGUES = {
@@ -4480,364 +4309,6 @@ app.post('/api/admin/presets/delete', async (req, res) => {
   return res.json({ success: true });
 });
 
-// ---------------------------------------------------------------------
-// Stream-quality probing config - dedicated probing account(s), the
-// master on/off switch, and per-preset probe-target selection. See
-// project design notes for the full reasoning; this only manages
-// configuration - no probe ever actually runs from these routes (the
-// probing job itself is a later step in the build sequence).
-// ---------------------------------------------------------------------
-
-app.post('/api/admin/probing', async (req, res) => {
-  const { username, password } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
-
-  return res.json({ success: true, config: probeConfig });
-});
-
-app.post('/api/admin/probing/toggle', async (req, res) => {
-  const { username, password, enabled } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
-
-  probeConfig.enabled = !!enabled;
-  saveProbeConfig(probeConfig);
-
-  return res.json({ success: true, config: probeConfig });
-});
-
-app.post('/api/admin/probing/accounts/add', async (req, res) => {
-  const { username, password, label, connectionType, xtream, m3u: m3uCreds } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
-
-  if (connectionType !== 'xtream' && connectionType !== 'm3u') {
-    return res.status(400).json({ error: 'connectionType must be "xtream" or "m3u".' });
-  }
-  if (connectionType === 'xtream' && !(xtream && xtream.url && xtream.username && xtream.password)) {
-    return res.status(400).json({ error: 'Xtream accounts need a url, username, and password.' });
-  }
-  if (connectionType === 'm3u' && !(m3uCreds && m3uCreds.playlistUrl)) {
-    return res.status(400).json({ error: 'M3U accounts need a playlist URL.' });
-  }
-
-  const account = {
-    id: `probing-${uuidv4()}`,
-    label: typeof label === 'string' && label.trim() ? label.trim().slice(0, 60) : `Probing Account ${probeConfig.accounts.length + 1}`,
-    connectionType,
-    xtream: connectionType === 'xtream' ? { url: xtream.url, username: xtream.username, password: xtream.password } : undefined,
-    m3u: connectionType === 'm3u' ? { playlistUrl: m3uCreds.playlistUrl, epgUrl: m3uCreds.epgUrl } : undefined
-  };
-  probeConfig.accounts.push(account);
-  saveProbeConfig(probeConfig);
-
-  return res.json({ success: true, account, config: probeConfig });
-});
-
-app.post('/api/admin/probing/accounts/delete', async (req, res) => {
-  const { username, password, id } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
-
-  const beforeCount = probeConfig.accounts.length;
-  probeConfig.accounts = probeConfig.accounts.filter(a => a.id !== id);
-  if (probeConfig.accounts.length === beforeCount) {
-    return res.status(404).json({ error: 'Probing account not found.' });
-  }
-
-  // A preset assigned to the account being removed would otherwise point
-  // at a dangling id forever - clear just that assignment (not the
-  // category selections themselves, in case the admin re-adds an
-  // equivalent account and wants to reassign it) rather than leaving a
-  // silent, invisible dead reference.
-  for (const presetId of Object.keys(probeConfig.presetConfig)) {
-    if (probeConfig.presetConfig[presetId].probingAccountId === id) {
-      probeConfig.presetConfig[presetId].probingAccountId = null;
-    }
-  }
-  saveProbeConfig(probeConfig);
-
-  return res.json({ success: true, config: probeConfig });
-});
-
-app.post('/api/admin/probing/preset-config/update', async (req, res) => {
-  const { username, password, presetId, probingAccountId, selectedCategories } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
-
-  const preset = getAllPresets().find(p => p.id === presetId);
-  if (!preset) {
-    return res.status(404).json({ error: 'Preset not found.' });
-  }
-  if (probingAccountId != null && !probeConfig.accounts.some(a => a.id === probingAccountId)) {
-    return res.status(400).json({ error: 'That probing account no longer exists.' });
-  }
-  if (selectedCategories !== undefined && (typeof selectedCategories !== 'object' || selectedCategories === null)) {
-    return res.status(400).json({ error: 'selectedCategories must be an object of sport -> category name list.' });
-  }
-
-  // Selections can only ever be a subset of what the preset itself
-  // actually defines for that sport - silently dropped rather than
-  // rejected outright, since a stale selection referencing a category the
-  // preset no longer has (e.g. after the preset was edited) shouldn't
-  // block saving everything else.
-  const sanitizedCategories = {};
-  if (selectedCategories) {
-    for (const [sport, categories] of Object.entries(selectedCategories)) {
-      const validForSport = new Set(preset.sportCategories[sport] || []);
-      sanitizedCategories[sport] = Array.isArray(categories)
-        ? categories.filter(c => typeof c === 'string' && validForSport.has(c))
-        : [];
-    }
-  }
-
-  probeConfig.presetConfig[presetId] = {
-    probingAccountId: probingAccountId || null,
-    selectedCategories: sanitizedCategories
-  };
-  saveProbeConfig(probeConfig);
-
-  return res.json({ success: true, presetConfig: probeConfig.presetConfig[presetId], config: probeConfig });
-});
-
-// Lists today's games for a sport, for the admin panel's "pick a game to
-// test-probe" dropdown - same fetchGamesForSport every real user's stream
-// route already uses, so "the game the admin sees in this list" and "the
-// game the matching logic below runs against" are guaranteed to agree.
-app.post('/api/admin/probing/games', async (req, res) => {
-  const { username, password, sport } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
-
-  if (!sport || typeof sport !== 'string') {
-    return res.status(400).json({ error: 'sport is required.' });
-  }
-
-  const hostUrl = `${req.protocol}://${req.get('host')}`;
-  const upperSport = sport.toUpperCase();
-  const games = await fetchGamesForSport(upperSport, hostUrl, 'America/New_York');
-
-  return res.json({
-    success: true,
-    games: games.map(g => ({ id: g.id, name: g.name, homeTeam: g.homeTeam, awayTeam: g.awayTeam, date: g.date }))
-  });
-});
-
-// Resolves which real channels from one probing account (restricted to the
-// given category names) actually match the given game, using the exact
-// same team-matching/tiering logic real users are ranked with
-// (rankCandidateStreamsForGame - see its own comment), then runs ffprobe
-// against each match. Deliberately does NOT write to stream-probe-results.json
-// - this is a diagnostic/manual-test path (step 3 of the build sequence),
-// not the real production write pipeline. The real pipeline (automatic
-// T+7 scheduling, the failed->retry->confirmed-dead flow, the circuit
-// breaker) is a later step - writing results directly from here would give
-// this diagnostic action the power to mark a channel "confirmed dead" and
-// exclude it from real users' results after a single probe, skipping the
-// retry safeguard that whole design exists for.
-async function probeGameForAccount(account, selectedCategories, game, upperSport, allTeamNames, gameTimestamp) {
-  let candidates = [];
-
-  if (account.connectionType === 'm3u') {
-    if (!account.m3u || !account.m3u.playlistUrl) return { candidateCount: 0, matchedCount: 0, probed: [], error: 'This account has no M3U playlist URL configured.' };
-    let m3uSource;
-    try {
-      m3uSource = await m3u.fetchAndParseM3USource(account.m3u.playlistUrl, account.m3u.epgUrl);
-    } catch (err) {
-      return { candidateCount: 0, matchedCount: 0, probed: [], error: `Failed to fetch/parse this account's M3U playlist: ${err.message}` };
-    }
-    candidates = m3u.getCandidateStreamsForGame(m3uSource, selectedCategories, gameTimestamp);
-  } else if (account.connectionType === 'xtream') {
-    if (!account.xtream || !account.xtream.url) return { candidateCount: 0, matchedCount: 0, probed: [], error: 'This account has no Xtream URL configured.' };
-    const pseudoUser = { xtream: account.xtream };
-    const categories = await fetchXtreamCategories(pseudoUser);
-    if (categories.length === 0) {
-      return { candidateCount: 0, matchedCount: 0, probed: [], error: 'Could not fetch categories from this Xtream account - check its credentials.' };
-    }
-    const nameToId = {};
-    categories.forEach(c => { nameToId[c.category_name] = String(c.category_id); });
-    const categoryIds = selectedCategories.map(name => nameToId[name]).filter(Boolean);
-    const xtreamStreams = await fetchXtreamLiveStreams(pseudoUser, categoryIds);
-    const getCategoryName = buildCategoryNameLookup(categories);
-    const epgByStreamId = await fetchEpgForStreams(pseudoUser, xtreamStreams);
-    candidates = xtreamStreams.map(s => {
-      const epg = epgByStreamId[s.stream_id] || { text: '', startTimestamp: null };
-      return {
-        name: s.name,
-        description: epg.text,
-        startTimestamp: epg.startTimestamp,
-        streamUrl: `${account.xtream.url.replace(/\/+$/, '')}/live/${encodeURIComponent(account.xtream.username)}/${encodeURIComponent(account.xtream.password)}/${s.stream_id}.m3u8`,
-        categoryLabel: getCategoryName(s),
-        channelId: String(s.stream_id)
-      };
-    });
-  } else {
-    return { candidateCount: 0, matchedCount: 0, probed: [], error: `Unknown connectionType "${account.connectionType}".` };
-  }
-
-  // Dedupe by stream identity before matching/probing - a channel
-  // shouldn't be probed twice just because it happened to resolve from
-  // more than one selected category.
-  const seen = new Set();
-  candidates = candidates.filter(c => {
-    const key = account.connectionType === 'm3u' ? c.streamUrl : c.channelId;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-
-  const matched = rankCandidateStreamsForGame(game, upperSport, candidates, allTeamNames, gameTimestamp);
-
-  const probed = [];
-  for (const candidate of matched) {
-    const result = await probe.probeStream(candidate.streamUrl);
-    probed.push({
-      name: candidate.name,
-      category: candidate.categoryLabel,
-      status: result.status,
-      width: result.width,
-      height: result.height,
-      fps: result.fps,
-      tier: result.status === 'alive' ? probe.computeTier(result) : null,
-      reason: result.reason,
-      // Included so a failure can be tested directly (curl/VLC/browser)
-      // outside of ffprobe entirely, to tell "ffprobe-specific problem"
-      // apart from "this stream genuinely doesn't work right now" - this
-      // is only ever shown in this manual diagnostic tool, never in
-      // anything a real user sees, and the admin already has plaintext
-      // access to this account's own credentials elsewhere in this same
-      // panel, so this isn't a new exposure.
-      streamUrl: candidate.streamUrl
-    });
-  }
-
-  return { candidateCount: candidates.length, matchedCount: matched.length, probed };
-}
-
-app.post('/api/admin/probing/test-run', async (req, res) => {
-  const { username, password, sport, gameId } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
-
-  if (!sport || !gameId) {
-    return res.status(400).json({ error: 'sport and gameId are required.' });
-  }
-
-  const hostUrl = `${req.protocol}://${req.get('host')}`;
-  const upperSport = sport.toUpperCase();
-  const games = await fetchGamesForSport(upperSport, hostUrl, 'America/New_York');
-  const game = games.find(g => g.id === gameId);
-  if (!game) {
-    return res.status(404).json({ error: 'Game not found - it may no longer be on today\'s schedule.' });
-  }
-
-  const gameTimestampMs = game.date ? new Date(game.date).getTime() : null;
-  const gameTimestamp = gameTimestampMs && !isNaN(gameTimestampMs) ? gameTimestampMs / 1000 : null;
-  const allTeamNames = await fetchAllTeamNamesForSport(upperSport);
-
-  // Every preset that has both a probing account assigned AND at least one
-  // selected category for this specific sport contributes its own results,
-  // independently - a preset with nothing configured for this sport (or no
-  // account assigned at all) is silently skipped, same "opt-in, not an
-  // error" treatment as the real pipeline will use.
-  const presetsToTry = getAllPresets()
-    .map(p => ({ preset: p, cfg: probeConfig.presetConfig[p.id] }))
-    .filter(({ cfg }) => cfg && cfg.probingAccountId && (cfg.selectedCategories[upperSport] || []).length > 0);
-
-  if (presetsToTry.length === 0) {
-    return res.json({
-      success: true,
-      game: { id: game.id, name: game.name },
-      results: [],
-      note: `No preset has both a probing account assigned and categories selected for ${upperSport}.`
-    });
-  }
-
-  const results = [];
-  for (const { preset, cfg } of presetsToTry) {
-    const account = probeConfig.accounts.find(a => a.id === cfg.probingAccountId);
-    if (!account) {
-      results.push({ presetId: preset.id, presetName: preset.name, error: 'Assigned probing account no longer exists.' });
-      continue;
-    }
-    const outcome = await probeGameForAccount(account, cfg.selectedCategories[upperSport], game, upperSport, allTeamNames, gameTimestamp);
-    results.push({ presetId: preset.id, presetName: preset.name, accountLabel: account.label, ...outcome });
-  }
-
-  return res.json({ success: true, game: { id: game.id, name: game.name }, results });
-});
-
 app.post('/api/admin/user/delete', async (req, res) => {
   const { username, password, targetUuid } = req.body;
   const ip = req.ip;
@@ -5373,11 +4844,196 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
     return result.value;
   });
 
-  // See rankCandidateStreamsForGame's own comment - this used to be ~190
-  // lines of inline team-matching/tiering logic here; extracted so the
-  // stream-probing feature can call the exact same matching, not a
-  // second implementation of it.
-  const streamsToReturn = rankCandidateStreamsForGame(game, upperSport, candidateStreams, allTeamNames, gameTimestamp);
+  const homeTeamLower = (game.homeTeam || '').toLowerCase();
+  const awayTeamLower = (game.awayTeam || '').toLowerCase();
+
+  // Some team names are a real prefix of a different real team's name once
+  // generic words are stripped (Ohio/Ohio State, Miami/Miami (OH), Indiana/
+  // Indiana State, Washington/Washington State, the five Michigans, San
+  // Diego/San Diego State...). A mention of the longer team's name also
+  // contains the shorter team's own "identifying" word as its own standalone
+  // word, so that word can't safely stand in for the shorter team alone.
+  // Built from allTeamNames rather than hardcoded, so it stays correct
+  // across conference realignment without needing to be maintained by hand.
+  const teamWordLists = allTeamNames.map(name => {
+    const lower = (name || '').toLowerCase();
+    return { lower, words: stripGenericWords(lower.split(' ').filter(w => w.length > 2)) };
+  });
+  function dropUnsafePrefixWords(words, ownTeamLower) {
+    return words.filter(w => !teamWordLists.some(t =>
+      t.lower !== ownTeamLower && t.words.length > 1 && t.words[0] === w
+    ));
+  }
+
+  const homeKw = dropUnsafePrefixWords(
+    stripGenericWords(homeTeamLower.split(' ').filter(w => w.length > 2)), homeTeamLower
+  );
+  const awayKw = dropUnsafePrefixWords(
+    stripGenericWords(awayTeamLower.split(' ').filter(w => w.length > 2)), awayTeamLower
+  );
+  // Also match on each team's short abbreviation (e.g. "LAL"), which some
+  // channels/EPG data use instead of the full team name. Only included when
+  // at least 3 characters, to avoid an overly-short string causing
+  // false-positive substring matches elsewhere.
+  const homeAbbr = (game.homeAbbr || '').toLowerCase();
+  const awayAbbr = (game.awayAbbr || '').toLowerCase();
+  if (homeAbbr.length > 2) homeKw.push(homeAbbr);
+  if (awayAbbr.length > 2) awayKw.push(awayAbbr);
+
+  // Nickname-only keywords (e.g. just "suns", not "phoenix suns") - used
+  // specifically for tier 4's requirement that a city/state-only match
+  // doesn't count. Kept separate from homeKw/awayKw above, which stay
+  // city-inclusive for tiers 1-3 (a much stronger "both teams" signal
+  // where a city match is far less likely to be a coincidence).
+  //
+  // Deliberately NOT including the abbreviation here (unlike homeKw/awayKw
+  // above) - suspected source of false-positive matches reported against
+  // Arizona State's "ASU" (not directly confirmed against provider data,
+  // since that requires live credentials this investigation couldn't
+  // access). A short abbreviation is generic enough to show up by
+  // coincidence, and unlike a full nickname word it isn't covered by
+  // mentionsForeignTeam below - that exclusion set is built from other
+  // teams' full display names, not their abbreviations, so a coincidental
+  // "asu" hit has no cross-check the way a coincidental "suns" hit would.
+  // Tiers 1-3 stay safe keeping the abbreviation since they require both
+  // teams' identifiers to co-occur.
+  const homeNickKw = (game.homeNick || '').toLowerCase().split(' ').filter(w => w.length > 2);
+  const awayNickKw = (game.awayNick || '').toLowerCase().split(' ').filter(w => w.length > 2);
+
+  // Every OTHER team in the league (not today's two), used as a cross-check
+  // so a channel that's actually showing a different real matchup doesn't
+  // slip through - not just teams playing today, so a genuinely stale/wrong
+  // EPG entry for some other game still gets caught, not just a same-day
+  // mix-up.
+  //
+  // Excluded by comparing full team names, not by deleting individual shared
+  // words - deleting e.g. "state" globally just because it was also one of
+  // today's teams' own words used to blind this cross-check to an actual
+  // *different* "State" school's stream (a real Ohio State channel would go
+  // unflagged as "foreign" during an Ohio Bobcats game, since "state" had
+  // been stripped out of the exclusion set entirely).
+  const foreignKw = new Set();
+  allTeamNames.forEach(name => {
+    const lower = (name || '').toLowerCase();
+    if (lower === homeTeamLower || lower === awayTeamLower) return;
+    stripGenericWords(lower.split(' ').filter(w => w.length > 2)).forEach(w => foreignKw.add(w));
+  });
+
+  // Word-boundary matching, not plain substring - a short keyword like
+  // "red" (from "Red Sox") must appear as its own word, not as a
+  // fragment inside an unrelated word like "Reds" (Cincinnati Reds).
+  // Confirmed as a real false-positive against actual provider data
+  // during design (a Reds/Marlins channel incorrectly matched a Red
+  // Sox/Blue Jays game). Same reasoning has4K below already uses \b
+  // boundaries for - this makes every matcher here consistent with it,
+  // rather than just the one. Compiled once per game (not per-candidate,
+  // which would be wasteful across potentially hundreds of streams).
+  function escapeRegex(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+  function buildWordBoundaryMatcher(keywords) {
+    if (keywords.length === 0) return () => false;
+    const pattern = new RegExp('\\b(' + keywords.map(escapeRegex).join('|') + ')\\b', 'i');
+    return (text) => pattern.test(text);
+  }
+
+  const matchesHome = buildWordBoundaryMatcher(homeKw);
+  const matchesAway = buildWordBoundaryMatcher(awayKw);
+  const matchesHomeNickOnly = buildWordBoundaryMatcher(homeNickKw);
+  const matchesAwayNickOnly = buildWordBoundaryMatcher(awayNickKw);
+  const mentionsForeignTeam = buildWordBoundaryMatcher([...foreignKw]);
+
+  // "4k" as a distinct word, not just any substring - avoids a channel
+  // name like "ESPN4Kids" accidentally counting.
+  const has4K = (text) => /\b4k\b/i.test(text);
+
+  // Four tiers, most confident first. A stream is assigned to the FIRST
+  // tier it qualifies for, checked in priority order - see the ranking
+  // logic reference doc for the full rationale behind this ordering. Tier
+  // 5 (EPG-verified broadcaster match) was deliberately removed - the
+  // provider's own Xtream EPG data wasn't judged reliable enough as a
+  // matching signal. Revisit once M3U support lands with a more trustworthy
+  // EPG source (e.g. epg6-style data), as its own dedicated tier rather
+  // than reusing this same slot.
+  const tiers = [[], [], [], []];
+  candidateStreams.forEach(s => {
+    const name = (s.name || '').toLowerCase();
+    // "Description" specifically means the provider's own EPG/programme
+    // text here - Xtream's get_short_epg for Xtream users, or the
+    // closest-to-game-time programme entry from the paired EPG file for
+    // M3U users (see getCandidateStreamsForGame) - not some other,
+    // external source. See the ranking logic reference doc for why that
+    // scope was chosen deliberately.
+    const description = (s.description || '').toLowerCase();
+    const combined = `${name} ${description}`;
+
+    const homeInName = matchesHome(name);
+    const awayInName = matchesAway(name);
+    const homeInDesc = matchesHome(description);
+    const awayInDesc = matchesAway(description);
+    const bothInEither = (homeInName || homeInDesc) && (awayInName || awayInDesc);
+    const bothInNameAlone = homeInName && awayInName;
+    const bothInDescAlone = homeInDesc && awayInDesc;
+
+    const entry = { stream: s, startTimestamp: s.startTimestamp };
+
+    // Tier 1: 4K, plus both teams confirmed somewhere (name and/or
+    // description). Foreign-team exclusion doesn't apply - both teams
+    // being independently confirmed is a strong anchor on its own.
+    if (has4K(combined) && bothInEither) {
+      tiers[0].push(entry);
+      return;
+    }
+
+    // Tier 2: both teams confirmed in EACH field independently (name
+    // alone has both, description alone also has both) - stricter than
+    // tier 3 below, so checked first.
+    if (bothInNameAlone && bothInDescAlone) {
+      tiers[1].push(entry);
+      return;
+    }
+
+    // Tier 3: both teams confirmed across the combined text, not
+    // necessarily within a single field.
+    if (bothInEither) {
+      tiers[2].push(entry);
+      return;
+    }
+
+    // Tier 4: one team's actual nickname (not just its city/state) in the
+    // channel name specifically. The one tier without a strong
+    // independent anchor, so foreign-team exclusion applies here only.
+    //
+    // Disabled for NCAA sports - college mascots collide across dozens of
+    // unrelated schools (many different "Wildcats"/"Bulldogs"/"Tigers"/
+    // "Eagles" teams), unlike pro leagues where nicknames are effectively
+    // unique. A single-team nickname hit isn't a reliable enough signal
+    // there even with foreign-team exclusion, so NCAA games require both
+    // teams confirmed (tiers 1-3) or don't match at all.
+    if (!NCAA_SPORTS.has(upperSport) && (matchesHomeNickOnly(name) || matchesAwayNickOnly(name))) {
+      if (mentionsForeignTeam(combined)) return;
+      tiers[3].push(entry);
+    }
+  });
+
+  // Break ties within any tier by recency - the EPG entry whose start
+  // time sits closest to the game's own scheduled start wins. Streams
+  // with no EPG timestamp available sort last within their tier, not
+  // excluded. Applied uniformly across all 5 tiers, not just specific
+  // ones - every tier could plausibly have multiple qualifying streams.
+  if (gameTimestamp !== null) {
+    const byRecency = (a, b) => {
+      const distA = a.startTimestamp !== null ? Math.abs(a.startTimestamp - gameTimestamp) : Infinity;
+      const distB = b.startTimestamp !== null ? Math.abs(b.startTimestamp - gameTimestamp) : Infinity;
+      return distA - distB;
+    };
+    tiers.forEach(tier => tier.sort(byRecency));
+  }
+
+  // Every stream that qualified for ANY tier is included - tier number
+  // controls display order only, not inclusion. A stream in tier 4 doesn't
+  // get discarded just because some other stream also qualified for tier 1.
+  const streamsToReturn = tiers.flat().map(e => e.stream);
 
   // An empty result here is otherwise indistinguishable (to the user) from
   // Sportio having nothing to say about this game at all - especially
