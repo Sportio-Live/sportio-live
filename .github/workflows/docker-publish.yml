@@ -15,6 +15,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      # public/tailwind.css is compiled from the class names used in
+      # public/*.html and committed - fail the build if someone changed the
+      # pages without re-running `npm run build:css`.
+      - name: Check compiled CSS is up to date
+        run: npm run build:css && git diff --exit-code public/tailwind.css
+
       # Image repo paths must be lowercase; the GitHub org/repo here isn't.
       - name: Compute lowercase image name
         run: echo "IMAGE_NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"

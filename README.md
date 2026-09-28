@@ -92,6 +92,8 @@ docker compose up -d --build
 
 Sportio Live doesn't handle TLS itself, and this isn't just a hardening tip - Stremio and Nuvio both refuse to add an addon that isn't served over HTTPS, so plain HTTP only gets you as far as local testing. Put a reverse proxy in front (Nginx Proxy Manager, Caddy, Traefik) with a real certificate; it also protects the IPTV credentials passing through the wizard and dashboard. If your proxy shares a Docker network with other containers, make sure Sportio Live joins that same network in `docker-compose.yml`.
 
+Sportio Live trusts `X-Forwarded-*` headers only from proxies on the same machine or a private network (e.g. a proxy container on the same Docker network), which covers the usual setups. If your proxy reaches it from a public address, set `TRUST_PROXY` (a hop count like `1`, or a comma-separated list of proxy addresses) - otherwise logins may be rate-limited as if every user came from the proxy's IP.
+
 ---
 
 ## Multi-provider support
@@ -159,7 +161,7 @@ Setting `ADMIN_USERNAME`/`ADMIN_PASSWORD` unlocks `/admin.html`, a separate logi
 - **Refresh schedule** - set days/times to automatically refresh cached M3U and EPG data, or trigger a refresh on demand.
 - **EPG Editor** - pick which EPGShare01 feeds this instance keeps fetched and cached, so users can select them as a per-channel EPG override.
 - **Presets** - import a user configuration file as an instance preset. Review/publish anything an update adds or changes before it reaches users.
-- **Accounts** - browse registered accounts, filterable by created or last-accessed date.
+- **Accounts** - browse registered accounts, filterable by created or last-accessed date, and turn new sign-ups on or off. With sign-ups off, the homepage hides Setup and only existing accounts can log in.
 
 ## Project structure
 
@@ -167,6 +169,10 @@ Setting `ADMIN_USERNAME`/`ADMIN_PASSWORD` unlocks `/admin.html`, a separate logi
 server.js                     Express app - manifest, catalog, stream matching, art generation
 public/index.html             Setup wizard + configuration dashboard
 public/admin.html             Admin panel - EPG, presets, accounts
+public/tailwind.css           Compiled Tailwind CSS for both pages (committed - see Development)
+m3u.js                        M3U playlist/XMLTV parsing and refresh scheduling
+epgshare01.js                 EPGShare01 source catalog, streaming download/parse, on-disk cache
+test/                         Unit tests (node --test)
 assets/posters/                 Poster overlay art
 assets/background/              Landscape background overlay art
 assets/background/schedule/     "Upcoming Schedule" placeholder art, one photo per sport
@@ -174,6 +180,16 @@ presets/presets.json            Stock presets shipped with the app (git-tracked)
 data/local-presets.json         Presets created via this instance's admin panel (auto-created, gitignored)
 data/users.json                 Registered accounts (auto-created, gitignored)
 ```
+
+### Development
+
+```
+npm install
+npm test              # unit tests
+npm run build:css     # recompile public/tailwind.css after changing classes in public/*.html
+```
+
+The compiled CSS is committed so the app runs without a build step; CI fails if it's out of date with the HTML.
 
 ---
 

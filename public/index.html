@@ -4,8 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SPORTIO LIVE - Configurator</title>
-  <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <!-- After Font Awesome on purpose: Tailwind utilities (e.g. text-xs line-height) must win ties with FA's icon defaults, same as when Tailwind was injected at runtime. -->
+  <link rel="stylesheet" href="/tailwind.css">
   <style>
     body { background-color: #49626d; color: #e6e6e6; }
     .glass { background: rgba(59, 77, 88, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(230, 230, 230, 0.1); }
@@ -70,7 +71,7 @@
           <img src="/sportio_logo.png" alt="Sportio Live" class="mx-auto h-28 w-auto">
           <p class="text-[#e6e6e6]/55 text-sm mt-3">Live sports addon for Stremio/Nuvio. Powered by your IPTV.</p>
           <div class="flex items-center justify-center gap-3 mt-6">
-            <button onclick="startSetupWizard()" class="flex items-center justify-center gap-2 bg-[#ed1c24] hover:bg-[#f13842] active:scale-95 transition-all duration-150 shadow-lg font-bold py-2 px-4 rounded-lg text-sm">
+            <button id="landing-setup-btn" onclick="startSetupWizard()" class="flex items-center justify-center gap-2 bg-[#ed1c24] hover:bg-[#f13842] active:scale-95 transition-all duration-150 shadow-lg font-bold py-2 px-4 rounded-lg text-sm">
               <i class="fa-solid fa-wand-magic-sparkles"></i>
               Setup
             </button>
@@ -79,6 +80,7 @@
               Login
             </button>
           </div>
+          <p id="registration-closed-note" class="hidden text-xs text-[#e6e6e6]/55 mt-4">New sign-ups are currently closed on this server.</p>
         </div>
       </div>
 
@@ -634,6 +636,15 @@
       IPL: 'fa-baseball'
     };
     let activeUser = null;
+    // Added to the setup wizard's provider-test/import requests when they're
+    // made from an already-logged-in dashboard (adding or editing a
+    // provider). Only matters once an admin closes new sign-ups - those
+    // endpoints then require an existing account. Separate field names from
+    // the request's own url/username/password, which are the IPTV
+    // provider's credentials, not this account's.
+    function accountAuthFields() {
+      return activeUser ? { accountUuid: activeUser.uuid, accountPassword: activeUser.password } : {};
+    }
     // Which of activeUser.providers is the currently-visible tab. Only this
     // one provider's editor/accordion is ever rendered into the shared
     // panel below the tab strip at any given time.
@@ -1057,7 +1068,7 @@
         const res = await fetch('/api/m3u/import', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ playlistUrl, epgUrl })
+          body: JSON.stringify({ ...accountAuthFields(), playlistUrl, epgUrl })
         });
         const data = await res.json();
         importingEl.classList.add('hidden');
@@ -1122,7 +1133,7 @@
         const res = await fetch('/api/xtream/categories', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url, username, password })
+          body: JSON.stringify({ ...accountAuthFields(), url, username, password })
         });
         const data = await res.json();
         if (data.success) {
@@ -1375,7 +1386,7 @@
           const res = await fetch('/api/m3u/channels-by-url', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ playlistUrl: wizardM3u.playlistUrl, categoryIds })
+            body: JSON.stringify({ ...accountAuthFields(), playlistUrl: wizardM3u.playlistUrl, categoryIds })
           });
           const data = await res.json();
           return data.success ? data.channels.map(ch => ({ id: ch.id, key: ch.streamUrl, name: ch.name })) : [];
@@ -1600,7 +1611,7 @@
           const res = await fetch('/api/xtream/categories', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url, username, password })
+            body: JSON.stringify({ ...accountAuthFields(), url, username, password })
           });
           const data = await res.json();
           if (data.success) {
@@ -1650,7 +1661,7 @@
           const res = await fetch('/api/xtream/streams', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url, username, password, categoryIds })
+            body: JSON.stringify({ ...accountAuthFields(), url, username, password, categoryIds })
           });
           const data = await res.json();
           categorySearchChannels = data.success
@@ -1898,7 +1909,7 @@
         const res = await fetch('/api/xtream/categories', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url, username, password })
+          body: JSON.stringify({ ...accountAuthFields(), url, username, password })
         });
         const data = await res.json();
         if (data.success) {
@@ -2027,7 +2038,7 @@
         const res = await fetch('/api/m3u/import', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ playlistUrl, epgUrl })
+          body: JSON.stringify({ ...accountAuthFields(), playlistUrl, epgUrl })
         });
         const data = await res.json();
         importingEl.classList.add('hidden');
@@ -2988,7 +2999,7 @@
         const res = await fetch('/api/xtream/streams', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url, username, password, categoryIds })
+          body: JSON.stringify({ ...accountAuthFields(), url, username, password, categoryIds })
         });
         const data = await res.json();
         return data.success ? data.streams.map(s => ({ id: String(s.stream_id), name: s.name })) : [];
@@ -3420,7 +3431,7 @@
           const res = await fetch('/api/xtream/streams', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url, username, password, categoryIds })
+            body: JSON.stringify({ ...accountAuthFields(), url, username, password, categoryIds })
           });
           const data = await res.json();
           if (data.success) {
@@ -4222,6 +4233,16 @@
       updateSaveCopyButton();
     }
 
+    // The in-page navigation paths already confirm() before discarding
+    // unsaved changes, but closing the tab, reloading, or hitting Back did
+    // not - and since the password only lives in memory, a reload also
+    // means logging back in before those changes could be redone.
+    window.addEventListener('beforeunload', (event) => {
+      if (!dashboardHasUnsavedChanges) return;
+      event.preventDefault();
+      event.returnValue = '';
+    });
+
     // Only the color/icon/label are touched, via classList rather than a
     // wholesale className overwrite, so the button's own layout classes
     // are left alone.
@@ -4640,7 +4661,7 @@
         const res = await fetch('/api/xtream/categories', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url, username, password })
+          body: JSON.stringify({ ...accountAuthFields(), url, username, password })
         });
         const data = await res.json();
         if (data.success) {
@@ -4697,7 +4718,7 @@
         const res = await fetch('/api/m3u/import', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ playlistUrl, epgUrl })
+          body: JSON.stringify({ ...accountAuthFields(), playlistUrl, epgUrl })
         });
         const data = await res.json();
         importingEl.classList.add('hidden');
@@ -4867,6 +4888,13 @@
         // Setup is fully complete - safe to check whether to show the
         // Admin button on the normal landing page now.
         document.getElementById('admin-page-link').classList.remove('hidden');
+        // The admin can close new sign-ups (admin page > Accounts) - the
+        // server refuses registration either way, this just avoids walking
+        // someone through the whole wizard only to fail at the last step.
+        if (data.registrationOpen === false) {
+          document.getElementById('landing-setup-btn').classList.add('hidden');
+          document.getElementById('registration-closed-note').classList.remove('hidden');
+        }
       } catch (err) {
         // If the status check itself fails, fall through to the normal
         // landing page rather than get stuck on a blank screen - an

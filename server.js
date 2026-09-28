@@ -2,7 +2,6 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const bcrypt = require('bcryptjs');
-const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -170,11 +169,47 @@ function decryptM3uFromStorage(m3u) {
 }
 
 const app = express();
+
+// Express 4 doesn't catch a rejected promise from an async route handler -
+// the process-level unhandledRejection handler above keeps the server up,
+// but that request never gets a response and the client just spins until
+// it times out. Nearly every route here is async, so rather than wrapping
+// each one by hand, get/post are wrapped once here to forward any throw or
+// rejection to the JSON error handler registered after the routes.
+for (const method of ['get', 'post']) {
+  const register = app[method].bind(app);
+  app[method] = (routePath, ...handlers) => {
+    // app.get('some setting') with a single argument is Express's settings
+    // getter, not a route registration.
+    if (handlers.length === 0) return register(routePath);
+    return register(routePath, ...handlers.map(handler => (req, res, next) => {
+      try {
+        return Promise.resolve(handler(req, res, next)).catch(next);
+      } catch (err) {
+        return next(err);
+      }
+    }));
+  };
+}
 // Behind Nginx Proxy Manager (or any reverse proxy), req.protocol/hostname
 // need to trust X-Forwarded-* headers to correctly report https - without
 // this, self-generated URLs (posters, manifest links) would incorrectly
 // say http:// even when the public-facing site is https://.
-app.set('trust proxy', true);
+//
+// Trusts only proxies on loopback/private networks (a reverse proxy on the
+// same host or Docker network), not `true` (trust everyone): with `true`,
+// req.ip is simply whatever the client puts in its own X-Forwarded-For
+// header, so the login rate limiter below could be bypassed by sending a
+// different fake IP with every guess. TRUST_PROXY overrides this for
+// unusual setups (a hop count like "1", or a comma-separated address list).
+function parseTrustProxySetting(value) {
+  if (!value) return 'loopback, linklocal, uniquelocal';
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  if (/^\d+$/.test(value)) return Number(value);
+  return value;
+}
+app.set('trust proxy', parseTrustProxySetting(process.env.TRUST_PROXY));
 const PORT = process.env.PORT || 2323;
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'users.json');
@@ -185,6 +220,17 @@ const ADMIN_CONFIG_FILE = path.join(DATA_DIR, 'admin-config.json');
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   console.log(`[Storage] Created data directory at ${DATA_DIR}`);
+}
+
+// Every data/*.json save goes through this: write a temp file, then rename
+// it over the real one. rename() is atomic on the same filesystem, so a
+// crash, container kill, or full disk mid-write can only ever leave the
+// old file or the new one behind - never a half-written, unparseable file
+// (which, for users.json, would mean every account failing to load).
+function writeJsonFileAtomic(file, data) {
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+  fs.renameSync(tmp, file);
 }
 
 // Deliberately NOT under DATA_DIR - data/ is gitignored and excluded from
@@ -217,7 +263,10 @@ app.use(cors());
 // and its res.json() parse throws ("Network error while saving
 // settings", indistinguishable from an actual network failure).
 app.use(express.json({ limit: '5mb' }));
-app.use(express.static('public'));
+// Resolved from this file's own directory rather than the process's working
+// directory, so the site still loads if the server is started from
+// anywhere other than the repo root.
+app.use(express.static(path.join(__dirname, 'public')));
 
 // --- Login rate limiting ---
 // Tracks failed login attempts per IP address in memory.
@@ -267,6 +316,102 @@ function recordFailedAttempt(ip) {
 
 function clearFailedAttempts(ip) {
   loginAttempts.delete(ip);
+}
+
+// A separate, success-counting budget for unauthenticated actions that are
+// expensive even when they "succeed" - creating an account (a bcrypt hash
+// plus a permanent record) or importing an M3U source (downloading and
+// parsing a possibly-huge playlist+EPG pair). The failed-login limiter
+// above only counts failures, so it doesn't cover these at all.
+const THROTTLE_WINDOW_MS = 60 * 60 * 1000;
+const throttledActions = new Map(); // `${action}|${ip}` -> [timestamps within the window]
+
+function allowThrottledAction(req, action, maxPerHour) {
+  const key = `${action}|${req.ip}`;
+  const now = Date.now();
+  const recent = (throttledActions.get(key) || []).filter(t => now - t < THROTTLE_WINDOW_MS);
+  if (recent.length >= maxPerHour) {
+    throttledActions.set(key, recent);
+    return false;
+  }
+  recent.push(now);
+  throttledActions.set(key, recent);
+  return true;
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, times] of throttledActions.entries()) {
+    if (times.every(t => now - t >= THROTTLE_WINDOW_MS)) throttledActions.delete(key);
+  }
+}, THROTTLE_WINDOW_MS).unref();
+
+// Own-property lookup rather than a bare userConfigs[uuid] - a "uuid" of
+// "__proto__" or "constructor" would otherwise resolve to a built-in object
+// instead of "no such account".
+function getUser(uuid) {
+  return typeof uuid === 'string' && Object.prototype.hasOwnProperty.call(userConfigs, uuid) ? userConfigs[uuid] : null;
+}
+
+// Sends the 429 and returns true if this IP is currently locked out.
+function rejectIfRateLimited(req, res, message = 'Too many failed attempts.') {
+  if (!isRateLimited(req.ip)) return false;
+  const retryAfterSec = getRetryAfterSeconds(req.ip);
+  res.setHeader('Retry-After', retryAfterSec);
+  res.status(429).json({ error: `${message} Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
+  return true;
+}
+
+// The uuid/password check every account route runs before doing anything,
+// sharing one rate-limit budget per IP (see isRateLimited). Returns the
+// user on success; on failure the 429/401 response has already been sent
+// and this returns null, so callers only need `if (!user) return;`.
+async function authenticateUser(req, res, rateLimitMessage) {
+  if (rejectIfRateLimited(req, res, rateLimitMessage)) return null;
+  const user = await checkAccountPassword(req, req.body.uuid, req.body.password);
+  if (!user) res.status(401).json({ error: 'Invalid UUID or password.' });
+  return user;
+}
+
+// Returns the user if uuid/password match, counting the attempt against
+// this IP's shared failed-login budget either way.
+async function checkAccountPassword(req, uuid, password) {
+  const user = getUser(uuid);
+  const ok = !!user && typeof password === 'string' && (await bcrypt.compare(password, user.passwordHash));
+  if (ok) clearFailedAttempts(req.ip); else recordFailedAttempt(req.ip);
+  return ok ? user : null;
+}
+
+// Gate for the setup wizard's pre-account endpoints (testing an Xtream
+// login, importing an M3U source, etc.). While sign-ups are open these
+// are reachable by anyone, same as always - the wizard runs before an
+// account exists. Once an admin closes sign-ups, only an existing
+// account's dashboard (which reuses the same endpoints for adding/editing
+// providers) may call them, identified by accountUuid/accountPassword -
+// separate field names because `password` here already means the IPTV
+// provider's password.
+async function allowPreAccountRequest(req, res) {
+  if (appSettings.registrationOpen) return true;
+  if (rejectIfRateLimited(req, res)) return false;
+  const { accountUuid, accountPassword } = req.body;
+  if (await checkAccountPassword(req, accountUuid, accountPassword)) return true;
+  res.status(403).json({ error: 'New sign-ups are closed on this server.' });
+  return false;
+}
+
+// Admin counterpart to authenticateUser - no server-side sessions anywhere
+// in this app, so every admin request re-sends and re-validates the admin
+// credentials. Returns false (response already sent) on failure.
+async function authenticateAdmin(req, res) {
+  if (rejectIfRateLimited(req, res)) return false;
+  const { username, password } = req.body;
+  if (!(await isValidAdmin(username, password))) {
+    recordFailedAttempt(req.ip);
+    res.status(401).json({ error: 'Invalid admin credentials.' });
+    return false;
+  }
+  clearFailedAttempts(req.ip);
+  return true;
 }
 
 // Wraps a legacy single-provider account (top-level connectionType/xtream/
@@ -325,7 +470,17 @@ if (fs.existsSync(DATA_FILE)) {
       userConfigs[uuid] = migrateUserToProviders(decrypted);
     }
   } catch (err) {
-    console.error('[Storage] Error loading users.json:', err.message);
+    // The unconditional saveUserConfigs() just below would otherwise write
+    // the still-empty map straight over the unreadable file, turning a
+    // recoverable corruption into every account being permanently gone.
+    // Preserve the original bytes first so it can be repaired by hand.
+    const corruptCopy = `${DATA_FILE}.corrupt-${Date.now()}`;
+    try {
+      fs.copyFileSync(DATA_FILE, corruptCopy);
+    } catch (copyErr) {
+      console.error('[Storage] Could not preserve the unreadable users.json:', copyErr.message);
+    }
+    console.error(`[Storage] Error loading users.json (${err.message}) - the original was preserved as ${path.basename(corruptCopy)}. Starting with no accounts loaded.`);
   }
 }
 
@@ -342,7 +497,7 @@ function saveUserConfigs() {
         providers: (user.providers || []).map(p => ({ ...p, xtream: encryptXtreamForStorage(p.xtream), m3u: encryptM3uForStorage(p.m3u) }))
       };
     }
-    fs.writeFileSync(DATA_FILE, JSON.stringify(toWrite, null, 2), 'utf8');
+    writeJsonFileAtomic(DATA_FILE, toWrite);
   } catch (err) {
     console.error('[Storage] Failed to save users.json:', err.message);
   }
@@ -378,13 +533,42 @@ function loadM3uSettings() {
 
 function saveM3uSettings(settings) {
   try {
-    fs.writeFileSync(M3U_SETTINGS_FILE, JSON.stringify(settings, null, 2), 'utf8');
+    writeJsonFileAtomic(M3U_SETTINGS_FILE, settings);
   } catch (err) {
     console.error('[Storage] Failed to save m3u-settings.json:', err.message);
   }
 }
 
 let m3uSettings = loadM3uSettings();
+
+// Instance-wide switches an admin can flip from the admin page without a
+// restart. registrationOpen defaults to true so existing deployments keep
+// behaving exactly as before until an admin decides otherwise - but a
+// public instance anyone can find may not want strangers creating
+// accounts (each one gets the server fetching their provider's data).
+const APP_SETTINGS_FILE = path.join(DATA_DIR, 'app-settings.json');
+const DEFAULT_APP_SETTINGS = { registrationOpen: true };
+
+function loadAppSettings() {
+  if (!fs.existsSync(APP_SETTINGS_FILE)) return { ...DEFAULT_APP_SETTINGS };
+  try {
+    const raw = JSON.parse(fs.readFileSync(APP_SETTINGS_FILE, 'utf8'));
+    return { registrationOpen: typeof raw.registrationOpen === 'boolean' ? raw.registrationOpen : DEFAULT_APP_SETTINGS.registrationOpen };
+  } catch (err) {
+    console.error('[Storage] Error loading app-settings.json, using defaults:', err.message);
+    return { ...DEFAULT_APP_SETTINGS };
+  }
+}
+
+function saveAppSettings(settings) {
+  try {
+    writeJsonFileAtomic(APP_SETTINGS_FILE, settings);
+  } catch (err) {
+    console.error('[Storage] Failed to save app-settings.json:', err.message);
+  }
+}
+
+let appSettings = loadAppSettings();
 
 // Admin-controlled EPGShare01 source pool - empty by default. This is NOT
 // a global "override all EPG" switch: enabling a source here only makes
@@ -418,7 +602,7 @@ function loadEpgShareSettings() {
 
 function saveEpgShareSettings(settings) {
   try {
-    fs.writeFileSync(EPGSHARE_SETTINGS_FILE, JSON.stringify(settings, null, 2), 'utf8');
+    writeJsonFileAtomic(EPGSHARE_SETTINGS_FILE, settings);
   } catch (err) {
     console.error('[Storage] Failed to save epgshare-settings.json:', err.message);
   }
@@ -526,7 +710,7 @@ function loadLocalPresets() {
 
 function saveLocalPresets(list) {
   try {
-    fs.writeFileSync(LOCAL_PRESETS_FILE, JSON.stringify(list, null, 2), 'utf8');
+    writeJsonFileAtomic(LOCAL_PRESETS_FILE, list);
   } catch (err) {
     console.error('[Storage] Failed to save local-presets.json:', err.message);
   }
@@ -634,7 +818,7 @@ function hashPresetContent(preset) {
 
 function saveReviewedPresets(map) {
   try {
-    fs.writeFileSync(REVIEWED_PRESETS_FILE, JSON.stringify(map, null, 2), 'utf8');
+    writeJsonFileAtomic(REVIEWED_PRESETS_FILE, map);
   } catch (err) {
     console.error('[Storage] Failed to save reviewed-presets.json:', err.message);
   }
@@ -710,7 +894,7 @@ function loadAdminConfig() {
 
 function saveAdminConfig(config) {
   try {
-    fs.writeFileSync(ADMIN_CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+    writeJsonFileAtomic(ADMIN_CONFIG_FILE, config);
   } catch (err) {
     console.error('[Storage] Failed to save admin-config.json:', err.message);
   }
@@ -864,7 +1048,7 @@ const SCHEDULE_BACKGROUND_FILES = {
 const scheduleBackgroundCache = {}; // filename -> rendered PNG Buffer
 async function getScheduleBackgroundBuffer(sportKey) {
   const filename = SCHEDULE_BACKGROUND_FILES[sportKey];
-  if (!filename) return null;
+  if (!filename) return isKnownSport(sportKey) ? getGenericScheduleBackgroundBuffer(sportKey) : null;
   if (scheduleBackgroundCache[filename]) return scheduleBackgroundCache[filename];
   try {
     const filePath = path.join(__dirname, 'assets', 'background', 'schedule', filename);
@@ -876,6 +1060,31 @@ async function getScheduleBackgroundBuffer(sportKey) {
     console.error(`[Schedule Background] Failed to load ${filename}:`, err.message);
     return null;
   }
+}
+
+// For a league with no schedule art of its own (UFC today, or any league
+// added later before art exists for it) - previously a 404, which left the
+// "Upcoming Schedule" tile with a broken background in clients. A dark
+// backdrop with the league's real logo, same look as the Upcoming poster.
+// Not cached when the logo fetch fails, so a flaky request isn't pinned.
+async function getGenericScheduleBackgroundBuffer(sportKey) {
+  const cacheKey = `generic:${sportKey}`;
+  if (scheduleBackgroundCache[cacheKey]) return scheduleBackgroundCache[cacheKey];
+  const logoUrl = await getRealLeagueLogoUrl(sportKey);
+  const logoData = logoUrl ? await getBase64Image(logoUrl) : null;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" width="1920" height="1080">
+    <defs>
+      <radialGradient id="bg" cx="50%" cy="50%" r="75%">
+        <stop offset="0%" stop-color="#231f20" />
+        <stop offset="100%" stop-color="#000000" />
+      </radialGradient>
+    </defs>
+    <rect width="1920" height="1080" fill="url(#bg)" />
+    ${logoData ? `<image href="${logoData}" x="660" y="240" width="600" height="600" preserveAspectRatio="xMidYMid meet" opacity="0.9" />` : ''}
+  </svg>`;
+  const png = await renderSvgToImage(svg, 'png');
+  if (logoData) scheduleBackgroundCache[cacheKey] = png;
+  return png;
 }
 
 // The landscape background's decorative overlay is spliced directly into
@@ -997,6 +1206,58 @@ const TEAM_LOGO_BUCKET_OVERRIDES = {
   IPL: 'cricket'
 };
 
+// The art routes below are public and take everything from the URL - the
+// catalog builds those URLs from real ESPN data, but anyone can call them
+// directly. These keep that from being usable to make this server fetch
+// arbitrary URLs (including ones on the host's own private network),
+// inject markup into the SVG it renders, or mint unlimited distinct cache
+// entries via junk query params.
+const ART_IMAGE_HOST_SUFFIXES = ['espncdn.com', 'thesportsdb.com'];
+const ART_ID_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
+
+function sanitizeArtImageUrl(url) {
+  if (typeof url !== 'string' || !url) return '';
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    const allowedHost = ART_IMAGE_HOST_SUFFIXES.some(suffix => host === suffix || host.endsWith(`.${suffix}`));
+    return parsed.protocol === 'https:' && allowedHost ? parsed.href : '';
+  } catch (err) {
+    return '';
+  }
+}
+
+function sanitizeHexColor(value) {
+  return typeof value === 'string' && /^([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(value) ? value : '';
+}
+
+function sanitizeArtLabel(value, fallback) {
+  return typeof value === 'string' && value.trim() ? value.trim().slice(0, 80) : fallback;
+}
+
+function sanitizeTeamAbbr(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9&.'-]{1,12}$/.test(value) ? value.toLowerCase() : '';
+}
+
+function isKnownSport(sportKey) {
+  return Object.prototype.hasOwnProperty.call(ESPN_ENDPOINTS, sportKey);
+}
+
+// Render-cache key built from only the query params a route actually
+// reads, in a fixed order - so extra/reordered params can't produce a
+// "new" image that has to be rendered from scratch, and a route can leave
+// params it doesn't depend on (e.g. the landscape image ignores the
+// viewer's date/timezone) out of its key entirely.
+function canonicalArtKey(req, paramNames) {
+  const params = new URLSearchParams();
+  for (const name of [...paramNames].sort()) {
+    const value = req.query[name];
+    if (typeof value === 'string' && value) params.set(name, value);
+  }
+  const query = params.toString();
+  return query ? `${req.path}?${query}` : req.path;
+}
+
 function getTeamLogoBucket(sportKey) {
   return TEAM_LOGO_BUCKET_OVERRIDES[sportKey] || ESPN_LEAGUES[sportKey] || 'mlb';
 }
@@ -1011,10 +1272,10 @@ function getTeamLogoBucket(sportKey) {
 // succeeds for it).
 function buildTeamLogoCandidates(sportKey, teamId, abbr, providedUrl) {
   const league = getTeamLogoBucket(sportKey);
-  const lowerAbbr = (abbr || '').toLowerCase();
-  const scoreboardUrl = lowerAbbr ? `https://a.espncdn.com/i/teamlogos/${league}/500/scoreboard/${lowerAbbr}.png` : '';
-  const standardUrl = `https://a.espncdn.com/i/teamlogos/${league}/500/${teamId}.png`;
-  return [scoreboardUrl, standardUrl, providedUrl || ''];
+  const lowerAbbr = sanitizeTeamAbbr(abbr);
+  const scoreboardUrl = lowerAbbr ? `https://a.espncdn.com/i/teamlogos/${league}/500/scoreboard/${encodeURIComponent(lowerAbbr)}.png` : '';
+  const standardUrl = `https://a.espncdn.com/i/teamlogos/${league}/500/${encodeURIComponent(teamId)}.png`;
+  return [scoreboardUrl, standardUrl, sanitizeArtImageUrl(providedUrl)];
 }
 
 // Friendly names for sports whose internal key isn't already a clean label.
@@ -1058,25 +1319,79 @@ const IMAGE_FETCH_HEADERS = {
 // expiry here - see warmTodaysArt below for how staleness is actually
 // bounded (a daily, live-schedule-driven re-fetch of every team/fighter
 // playing that day, not just whatever happens to already be in this cache).
+//
+// "Naturally bounded" still means every team/fighter/flag ever seen,
+// accumulating across a whole season with nothing ever removed - so this is
+// capped as a simple LRU (a Map iterates in insertion order, and a hit
+// re-inserts its entry at the end). The cap comfortably covers one busy
+// day's warm-up (the biggest college-football Saturday is a few hundred
+// logos), which is the only time most of these are needed - anything
+// evicted is simply re-fetched from ESPN's CDN on next use.
 const imageBytesCache = new Map(); // url -> { buffer, contentType }
+const IMAGE_BYTES_CACHE_MAX_ENTRIES = 800;
+const IMAGE_FETCH_MAX_BYTES = 5 * 1024 * 1024;
+
+// URLs ESPN has answered with a definitive 404 - mostly the "scoreboard"
+// logo variant, which many teams (most of the WNBA, for one) simply don't
+// have. Without this, every single render re-requested each known-missing
+// URL before falling through to the one that works. Only 404s are
+// remembered (a timeout or 5xx is worth retrying), and only for a day,
+// since the daily warm-up re-checks everything anyway.
+const missingImageUrls = new Map(); // url -> time the 404 was seen
+const MISSING_IMAGE_TTL_MS = 24 * 60 * 60 * 1000;
+const MISSING_IMAGE_MAX_ENTRIES = 2000;
+
+function isKnownMissingImage(url) {
+  const seenAt = missingImageUrls.get(url);
+  if (seenAt === undefined) return false;
+  if (Date.now() - seenAt < MISSING_IMAGE_TTL_MS) return true;
+  missingImageUrls.delete(url);
+  return false;
+}
 
 async function fetchImageBytesUncached(url) {
-  const response = await axios.get(url, {
-    responseType: 'arraybuffer',
-    headers: IMAGE_FETCH_HEADERS,
-    timeout: 5000
-  });
+  let response;
+  try {
+    response = await axios.get(url, {
+      responseType: 'arraybuffer',
+      headers: IMAGE_FETCH_HEADERS,
+      timeout: 5000,
+      maxContentLength: IMAGE_FETCH_MAX_BYTES
+    });
+  } catch (err) {
+    if (err.response && err.response.status === 404) {
+      missingImageUrls.set(url, Date.now());
+      while (missingImageUrls.size > MISSING_IMAGE_MAX_ENTRIES) {
+        missingImageUrls.delete(missingImageUrls.keys().next().value);
+      }
+    }
+    throw err;
+  }
+  missingImageUrls.delete(url);
   const entry = {
     buffer: Buffer.from(response.data, 'binary'),
     contentType: response.headers['content-type'] || 'image/png'
   };
+  imageBytesCache.delete(url);
   imageBytesCache.set(url, entry);
+  while (imageBytesCache.size > IMAGE_BYTES_CACHE_MAX_ENTRIES) {
+    imageBytesCache.delete(imageBytesCache.keys().next().value);
+  }
   return entry;
 }
 
 async function fetchImageBytes(url) {
   const cached = imageBytesCache.get(url);
-  if (cached) return cached;
+  if (cached) {
+    imageBytesCache.delete(url);
+    imageBytesCache.set(url, cached);
+    return cached;
+  }
+  if (isKnownMissingImage(url)) {
+    const err = new Error('Known missing (404 seen recently)');
+    err.knownMissing = true;
+    throw err;
+  }
   return fetchImageBytesUncached(url);
 }
 
@@ -1085,7 +1400,7 @@ async function getBase64Image(url) {
     const { buffer, contentType } = await fetchImageBytes(url);
     return `data:${contentType};base64,${buffer.toString('base64')}`;
   } catch (err) {
-    console.error(`[ImageLoader] Failed to fetch image: ${url}. Error: ${err.message}`);
+    if (!err.knownMissing) console.error(`[ImageLoader] Failed to fetch image: ${url}. Error: ${err.message}`);
     return null;
   }
 }
@@ -1126,7 +1441,7 @@ async function getBase64ImageWithDimensions(url) {
     const base64 = buffer.toString('base64');
     return { dataUri: `data:${contentType};base64,${base64}`, width: dimensions.width, height: dimensions.height };
   } catch (err) {
-    console.error(`[ImageLoader] Failed to fetch image with dimensions: ${url}. Error: ${err.message}`);
+    if (!err.knownMissing) console.error(`[ImageLoader] Failed to fetch image with dimensions: ${url}. Error: ${err.message}`);
     return null;
   }
 }
@@ -1242,7 +1557,7 @@ async function getBase64ImageWithContentBounds(url) {
       contentBounds
     };
   } catch (err) {
-    console.error(`[ImageLoader] Failed to fetch image with content bounds: ${url}. Error: ${err.message}`);
+    if (!err.knownMissing) console.error(`[ImageLoader] Failed to fetch image with content bounds: ${url}. Error: ${err.message}`);
     return null;
   }
 }
@@ -1319,17 +1634,45 @@ function collectArtUrlsForGame(sportKey, game) {
 // and the final-image-render pass below, which otherwise duplicated the
 // same worker-pool bookkeeping.
 async function runWithConcurrency(items, limit, fn) {
+  const results = await mapWithConcurrency(items, limit, fn);
+  const ok = results.filter(Boolean).length;
+  return { ok, bad: results.length - ok };
+}
+
+// Maps `fn` over `items` with at most `limit` calls in flight at once,
+// preserving input order in the returned array.
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
   let nextIndex = 0;
-  let ok = 0;
-  let bad = 0;
   async function worker() {
     while (nextIndex < items.length) {
-      const item = items[nextIndex++];
-      if (await fn(item)) ok++; else bad++;
+      const i = nextIndex++;
+      results[i] = await fn(items[i], i);
     }
   }
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return { ok, bad };
+  return results;
+}
+
+// A small TTL cache that also de-duplicates concurrent requests for the
+// same key (they share one in-flight promise). A fetcher resolving to
+// null means "failed - don't cache", so a transient upstream error isn't
+// remembered for the whole TTL. Bounded by maxEntries, oldest first.
+function createTtlCache(ttlMs, maxEntries) {
+  const entries = new Map(); // key -> { at, promise }
+  return function getOrFetch(key, fetcher) {
+    const now = Date.now();
+    const hit = entries.get(key);
+    if (hit && now - hit.at < ttlMs) return hit.promise;
+    const promise = Promise.resolve().then(fetcher);
+    entries.set(key, { at: now, promise });
+    promise.then(
+      value => { if (value === null && entries.get(key)?.promise === promise) entries.delete(key); },
+      () => { if (entries.get(key)?.promise === promise) entries.delete(key); }
+    );
+    while (entries.size > maxEntries) entries.delete(entries.keys().next().value);
+    return promise;
+  };
 }
 
 // Every real account's own configured timezone (falling back to America/
@@ -1613,8 +1956,8 @@ async function clearRenderCacheDir() {
 // rendered before (by an earlier request, or by the daily art warm-up -
 // see warmTodaysArt) - callers should return immediately when this does,
 // without running any of their own fetch/build logic at all.
-async function serveCachedRenderIfPresent(req, res, cacheControl, format = 'jpeg') {
-  const cached = await readRenderCache('render', req.originalUrl, format === 'png' ? 'png' : 'jpg');
+async function serveCachedRenderIfPresent(renderKey, res, cacheControl, format = 'jpeg') {
+  const cached = await readRenderCache('render', renderKey, format === 'png' ? 'png' : 'jpg');
   if (!cached) return false;
   res.setHeader('Content-Type', contentTypeForFormat(format));
   res.setHeader('Cache-Control', cacheControl);
@@ -1626,9 +1969,9 @@ async function serveCachedRenderIfPresent(req, res, cacheControl, format = 'jpeg
 // freshly-built SVG, caches the result under this request's own URL, and
 // sends it. `resize`, if given, is passed straight through to
 // renderSvgToImage.
-async function renderAndCache(req, res, svg, cacheControl, format = 'jpeg', resize = null) {
+async function renderAndCache(renderKey, res, svg, cacheControl, format = 'jpeg', resize = null) {
   const image = await renderSvgToImage(svg, format, resize);
-  await writeRenderCache('render', req.originalUrl, format === 'png' ? 'png' : 'jpg', image);
+  await writeRenderCache('render', renderKey, format === 'png' ? 'png' : 'jpg', image);
   res.setHeader('Content-Type', contentTypeForFormat(format));
   res.setHeader('Cache-Control', cacheControl);
   res.send(image);
@@ -1685,15 +2028,13 @@ const LANDSCAPE_LOGO_SHADOW_DEFS = buildLogoShadowFilterDefs(LANDSCAPE_LOGO_SHAD
 // every other art route) and sent as the actual response. No SVG ever
 // reaches the client for a poster now, matching how backgrounds already
 // work.
-function stripTimeParams(originalUrl) {
-  const parsed = new URL(originalUrl, 'http://internal');
-  parsed.searchParams.delete('date');
-  parsed.searchParams.delete('tz');
-  return parsed.pathname + parsed.search;
-}
+const POSTER_ART_PARAMS = ['home', 'away', 'homeLogoUrl', 'awayLogoUrl', 'homeColor', 'awayColor', 'homeAltColor', 'awayAltColor', 'homeAbbr', 'awayAbbr'];
+const UFC_POSTER_ART_PARAMS = ['home', 'away'];
+const POSTER_TIME_PARAMS = ['date', 'tz'];
 
-// Cache-aside on RENDER_CACHE_DIR (namespace 'art', keyed on the stripped
-// path+query so time/timezone don't fragment it - see stripTimeParams):
+// Cache-aside on RENDER_CACHE_DIR (namespace 'art', keyed on every param
+// EXCEPT date/tz so time/timezone don't fragment it - see
+// POSTER_TIME_PARAMS and canonicalArtKey):
 // buildArtSvg is only ever called on a miss, so a matchup that's already
 // been rendered (by an earlier request, or by the daily warm-up) never
 // re-fetches logos or re-renders anything, no matter how many different
@@ -1868,7 +2209,30 @@ function formatGameDateLabel(utcDateStr, timeZone) {
 // time instead, stopping as soon as `limit` games are found (daily sports
 // like NBA/MLB/NHL typically only need the first batch; sparse ones like
 // NFL need a couple).
-async function fetchUpcomingGames(sport, userTimeZone = 'America/New_York', limit = 20) {
+//
+// Each call can be up to 90 ESPN requests (an NFL offseason walks the whole
+// window), and the result barely changes over an hour - so results are
+// cached per sport+timezone, and concurrent requests for the same key
+// share one in-flight fetch instead of each starting their own.
+const upcomingGamesCache = new Map(); // `${sport}|${tz}|${limit}` -> { fetchedAt, promise }
+const UPCOMING_GAMES_CACHE_MS = 30 * 60 * 1000;
+
+function fetchUpcomingGames(sport, userTimeZone = 'America/New_York', limit = 20) {
+  if (typeof sport !== 'string' || !ESPN_ENDPOINTS[sport.toUpperCase()]) return Promise.resolve([]);
+  const key = `${String(sport).toUpperCase()}|${userTimeZone}|${limit}`;
+  const cached = upcomingGamesCache.get(key);
+  if (cached && Date.now() - cached.fetchedAt < UPCOMING_GAMES_CACHE_MS) return cached.promise;
+  const promise = fetchUpcomingGamesUncached(sport, userTimeZone, limit);
+  upcomingGamesCache.set(key, { fetchedAt: Date.now(), promise });
+  // An empty result is usually an ESPN hiccup rather than a truly empty
+  // schedule - don't hold onto it for the full half hour.
+  promise.then(games => {
+    if (games.length === 0) upcomingGamesCache.delete(key);
+  });
+  return promise;
+}
+
+async function fetchUpcomingGamesUncached(sport, userTimeZone, limit) {
   const endpoint = ESPN_ENDPOINTS[sport.toUpperCase()];
   if (!endpoint) return [];
 
@@ -1939,17 +2303,20 @@ function getUfcPosterTemplateInline() {
 // needs to come first or it would never be reached.
 app.get('/poster/ufc/:fighterAId/:fighterBId.png', async (req, res) => {
  try {
-  if (await serveCachedRenderIfPresent(req, res, 'public, max-age=3600', 'png')) return;
-
-  const fighterAName = req.query.home || 'Fighter A';
-  const fighterBName = req.query.away || 'Fighter B';
-  const gameUtcDate = req.query.date || null;
-  const userTz = req.query.tz || 'America/New_York';
   const { fighterAId, fighterBId } = req.params;
+  if (!ART_ID_PATTERN.test(fighterAId) || !ART_ID_PATTERN.test(fighterBId)) return res.status(404).send('Not found');
+
+  const renderKey = canonicalArtKey(req, [...UFC_POSTER_ART_PARAMS, ...POSTER_TIME_PARAMS]);
+  if (await serveCachedRenderIfPresent(renderKey, res, 'public, max-age=3600', 'png')) return;
+
+  const fighterAName = sanitizeArtLabel(req.query.home, 'Fighter A');
+  const fighterBName = sanitizeArtLabel(req.query.away, 'Fighter B');
+  const gameUtcDate = typeof req.query.date === 'string' ? req.query.date : null;
+  const userTz = isValidTimeZone(req.query.tz) ? req.query.tz : 'America/New_York';
 
   // Only the art (fighter photos, league logo) is expensive to build and
   // gets cached, keyed on everything but date/tz - see getOrRenderPosterArt.
-  const artCacheKey = stripTimeParams(req.originalUrl);
+  const artCacheKey = canonicalArtKey(req, UFC_POSTER_ART_PARAMS);
   const artPng = await getOrRenderPosterArt(artCacheKey, async () => {
     // Fighter A (home) uses their LEFT stance image, Fighter B (away) uses
     // their RIGHT stance image - both rendered 700px tall, scaled
@@ -2033,7 +2400,7 @@ app.get('/poster/ufc/:fighterAId/:fighterBId.png', async (req, res) => {
   // server-side (see compositeTimeOntoArt) - the response is one flat
   // PNG, no SVG involved at all.
   const finalPng = await compositeTimeOntoArt(artPng, timeMarkup, 600, 900);
-  await writeRenderCache('render', req.originalUrl, 'png', finalPng);
+  await writeRenderCache('render', renderKey, 'png', finalPng);
   res.setHeader('Content-Type', 'image/png');
   res.setHeader('Cache-Control', 'public, max-age=3600');
   res.send(finalPng);
@@ -2096,12 +2463,15 @@ const POSTER_LOGO_SHADOW_DEFS = buildLogoShadowFilterDefs(POSTER_LOGO_SHADOW_FIL
 
 app.get('/poster/:sport/:homeId/:awayId.png', async (req, res) => {
  try {
-  if (await serveCachedRenderIfPresent(req, res, 'public, max-age=3600', 'png')) return;
-
   const { sport, homeId, awayId } = req.params;
-  const gameUtcDate = req.query.date || null;
-  const userTz = req.query.tz || 'America/New_York';
   const sportKey = sport.toUpperCase();
+  if (!isKnownSport(sportKey) || !ART_ID_PATTERN.test(homeId) || !ART_ID_PATTERN.test(awayId)) return res.status(404).send('Not found');
+
+  const renderKey = canonicalArtKey(req, [...POSTER_ART_PARAMS, ...POSTER_TIME_PARAMS]);
+  if (await serveCachedRenderIfPresent(renderKey, res, 'public, max-age=3600', 'png')) return;
+
+  const gameUtcDate = typeof req.query.date === 'string' ? req.query.date : null;
+  const userTz = isValidTimeZone(req.query.tz) ? req.query.tz : 'America/New_York';
   const theme = SPORT_THEMES[sportKey] || SPORT_THEMES.MLB;
 
   // Using each team's primary color - alternate color was tried and
@@ -2110,22 +2480,20 @@ app.get('/poster/:sport/:homeId/:awayId.png', async (req, res) => {
   // takes precedence over all of that for specific teams reported to clash.
   const homeColor = getTeamBgColor(sportKey, homeId, req.query.homeColor, req.query.homeAltColor, theme.secondary);
   const awayColor = getTeamBgColor(sportKey, awayId, req.query.awayColor, req.query.awayAltColor, theme.primary);
-  const homeAbbr = (req.query.homeAbbr || '').toLowerCase();
-  const awayAbbr = (req.query.awayAbbr || '').toLowerCase();
 
   // Only the art (logos, colors, background) is expensive to build and
   // gets cached, keyed on everything but date/tz - see getOrRenderPosterArt.
-  const artCacheKey = stripTimeParams(req.originalUrl);
+  const artCacheKey = canonicalArtKey(req, POSTER_ART_PARAMS);
   const artPng = await getOrRenderPosterArt(artCacheKey, async () => {
-    const homeName = req.query.home || 'Home';
-    const awayName = req.query.away || 'Away';
+    const homeName = sanitizeArtLabel(req.query.home, 'Home');
+    const awayName = sanitizeArtLabel(req.query.away, 'Away');
 
     // See buildTeamLogoCandidates for the scoreboard/standard/provided-URL
     // fallback chain this resolves against (AFL in particular only ever
     // succeeds on the third, provided-URL candidate).
     const [homeLogoData, awayLogoData] = await Promise.all([
-      getBase64ImageWithFallback(buildTeamLogoCandidates(sportKey, homeId, homeAbbr, req.query.homeLogoUrl)),
-      getBase64ImageWithFallback(buildTeamLogoCandidates(sportKey, awayId, awayAbbr, req.query.awayLogoUrl))
+      getBase64ImageWithFallback(buildTeamLogoCandidates(sportKey, homeId, req.query.homeAbbr, req.query.homeLogoUrl)),
+      getBase64ImageWithFallback(buildTeamLogoCandidates(sportKey, awayId, req.query.awayAbbr, req.query.awayLogoUrl))
     ]);
 
     const overlay = getPosterOverlayInline();
@@ -2152,13 +2520,13 @@ app.get('/poster/:sport/:homeId/:awayId.png', async (req, res) => {
   // Target width matches the same "most of the box, not edge to edge"
   // ratio our previous plaque used, scaled to this marker's own width.
   const timeFontSize = Math.max(24, Math.min(POSTER_TIME_BOX.height * 0.9, Math.round(estimateTimeFontSize(timeLine, POSTER_TIME_BOX.width * 0.85))));
-  const timeMarkup = `<text x="${POSTER_TIME_BOX.x + POSTER_TIME_BOX.width / 2}" y="${POSTER_TIME_BOX.y + POSTER_TIME_BOX.height / 2 + timeFontSize * 0.35}" font-family="'Trebuchet MS', Verdana, sans-serif" font-size="${timeFontSize}" font-weight="700" fill="#ffffff" text-anchor="middle" letter-spacing="0.5">${timeLine}</text>`;
+  const timeMarkup = `<text x="${POSTER_TIME_BOX.x + POSTER_TIME_BOX.width / 2}" y="${POSTER_TIME_BOX.y + POSTER_TIME_BOX.height / 2 + timeFontSize * 0.35}" font-family="'Trebuchet MS', Verdana, sans-serif" font-size="${timeFontSize}" font-weight="700" fill="#ffffff" text-anchor="middle" letter-spacing="0.5">${escapeXml(timeLine)}</text>`;
 
   // The time text is composited directly onto the cached art PNG
   // server-side (see compositeTimeOntoArt) - the response is one flat
   // PNG, no SVG involved at all.
   const finalPng = await compositeTimeOntoArt(artPng, timeMarkup, 600, 900);
-  await writeRenderCache('render', req.originalUrl, 'png', finalPng);
+  await writeRenderCache('render', renderKey, 'png', finalPng);
   res.setHeader('Content-Type', 'image/png');
   res.setHeader('Cache-Control', 'public, max-age=3600');
   res.send(finalPng);
@@ -2248,80 +2616,11 @@ function getTeamBgColor(sportKey, teamId, queryColor, queryAltColor, themeFallba
   const overrideKey = NCAA_SPORTS.has(sportKey) ? 'NCAA' : sportKey;
   const override = TEAM_BG_COLOR_OVERRIDES[overrideKey]?.[teamId];
   if (override) return `#${override}`;
-  return queryColor ? `#${queryColor}` : queryAltColor ? `#${queryAltColor}` : themeFallback;
+  // Validated here because the result is written straight into an SVG
+  // fill="..." attribute - an unchecked query value could inject markup.
+  const color = sanitizeHexColor(queryColor) || sanitizeHexColor(queryAltColor);
+  return color ? `#${color}` : themeFallback;
 }
-
-// Primary accent used for the subtle poster background gradient per sport.
-function getSportMotif(sportKey, accentColor) {
-  switch (sportKey) {
-    case 'NBA':
-    case 'WNBA':
-    case 'NCAAMB':
-    case 'NCAAWB':
-      return `
-        <g transform="translate(1500,540)" opacity="0.16" stroke="${accentColor}" stroke-width="6" fill="none">
-          <circle r="380" />
-          <path d="M -380,0 A 380,380 0 0,1 380,0" />
-          <path d="M -380,0 A 380,380 0 0,0 380,0" />
-          <line x1="0" y1="-380" x2="0" y2="380" />
-        </g>`;
-    case 'NFL':
-    case 'NCAAFB':
-      return `
-        <g transform="translate(1500,540)" opacity="0.16" stroke="${accentColor}" stroke-width="10">
-          <line x1="-420" y1="-300" x2="420" y2="-300" />
-          <line x1="-420" y1="-150" x2="420" y2="-150" />
-          <line x1="-420" y1="0" x2="420" y2="0" />
-          <line x1="-420" y1="150" x2="420" y2="150" />
-          <line x1="-420" y1="300" x2="420" y2="300" />
-        </g>`;
-    case 'MLB':
-      return `
-        <g transform="translate(1500,540)" opacity="0.18" stroke="${accentColor}" stroke-width="6" fill="none">
-          <circle r="380" />
-          <path d="M -260,-280 A 380,380 0 0,1 -260,280" stroke-dasharray="14 10" />
-          <path d="M 260,-280 A 380,380 0 0,0 260,280" stroke-dasharray="14 10" />
-        </g>`;
-    case 'NHL':
-      return `
-        <g transform="translate(1500,540)" opacity="0.18" stroke="${accentColor}" stroke-width="6" fill="none">
-          <circle r="380" />
-          <circle r="60" fill="${accentColor}" opacity="0.5" stroke="none" />
-          <line x1="-460" y1="0" x2="-260" y2="0" stroke-width="14" />
-          <line x1="260" y1="0" x2="460" y2="0" stroke-width="14" />
-        </g>`;
-    default:
-      return '';
-  }
-}
-
-app.get('/landscape/:sport.svg', (req, res) => {
-  const sportKey = req.params.sport.toUpperCase();
-  const theme = SPORT_THEMES[sportKey] || SPORT_THEMES.MLB;
-  const motif = getSportMotif(sportKey, theme.secondary);
-
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" width="1920" height="1080">
-    <defs>
-      <linearGradient id="baseGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%" stop-color="#020617" />
-        <stop offset="50%" stop-color="#1e293b" />
-        <stop offset="100%" stop-color="#0f172a" />
-      </linearGradient>
-      <linearGradient id="sweepGrad" x1="100%" y1="0%" x2="35%" y2="100%">
-        <stop offset="0%" stop-color="${theme.primary}" stop-opacity="0.85" />
-        <stop offset="55%" stop-color="${theme.secondary}" stop-opacity="0.45" />
-        <stop offset="100%" stop-color="${theme.secondary}" stop-opacity="0" />
-      </linearGradient>
-    </defs>
-    <rect width="1920" height="1080" fill="url(#baseGrad)" />
-    <rect width="1920" height="1080" fill="url(#sweepGrad)" />
-    ${motif}
-  </svg>`;
-
-  res.setHeader('Content-Type', 'image/svg+xml');
-  res.setHeader('Cache-Control', 'public, max-age=86400');
-  res.send(svg);
-});
 
 // Background art specifically for the "Upcoming Schedule" placeholder
 // entry - a static, sport-specific photo served directly (see
@@ -2349,13 +2648,18 @@ const LANDSCAPE_BOUNDARY_PATH = "M 2393 0 L 2313 20 L 2279 40 L 2256 60 L 2238 8
 // same routing-order reason as the UFC poster route above.
 app.get('/landscape/ufc/:fighterAId/:fighterBId.png', async (req, res) => {
  try {
-  if (await serveCachedRenderIfPresent(req, res, 'public, max-age=3600', 'png')) return;
-
-  const fighterAName = req.query.home || 'Fighter A';
-  const fighterBName = req.query.away || 'Fighter B';
-  const fighterAFlagUrl = req.query.homeFlagUrl || '';
-  const fighterBFlagUrl = req.query.awayFlagUrl || '';
   const { fighterAId, fighterBId } = req.params;
+  if (!ART_ID_PATTERN.test(fighterAId) || !ART_ID_PATTERN.test(fighterBId)) return res.status(404).send('Not found');
+
+  // No date/tz in the key - nothing on this image depends on when the
+  // fight is or who's viewing it (see the team landscape route below).
+  const renderKey = canonicalArtKey(req, ['home', 'away', 'homeFlagUrl', 'awayFlagUrl']);
+  if (await serveCachedRenderIfPresent(renderKey, res, 'public, max-age=3600', 'png')) return;
+
+  const fighterAName = sanitizeArtLabel(req.query.home, 'Fighter A');
+  const fighterBName = sanitizeArtLabel(req.query.away, 'Fighter B');
+  const fighterAFlagUrl = sanitizeArtImageUrl(req.query.homeFlagUrl);
+  const fighterBFlagUrl = sanitizeArtImageUrl(req.query.awayFlagUrl);
 
   const [fighterAPhoto, fighterBPhoto, fighterAFlag, fighterBFlag] = await Promise.all([
     getBase64Image(`https://a.espncdn.com/i/headshots/mma/players/full/${fighterAId}.png`),
@@ -2403,7 +2707,7 @@ app.get('/landscape/ufc/:fighterAId/:fighterBId.png', async (req, res) => {
     <text x="1920" y="1900" font-family="'Trebuchet MS', Verdana, sans-serif" font-size="72" font-weight="700" fill="#ffffff" text-anchor="middle">${escapeXml(fighterAName)} vs ${escapeXml(fighterBName)}</text>
   </svg>`;
 
-  await renderAndCache(req, res, svg, 'public, max-age=3600', 'png', LANDSCAPE_RENDER_SIZE);
+  await renderAndCache(renderKey, res, svg, 'public, max-age=3600', 'png', LANDSCAPE_RENDER_SIZE);
  } catch (err) {
   console.error('[Landscape] Failed to render UFC landscape:', err.message);
   await sendImageErrorFallback(res, 1920, 1080, 'UFC');
@@ -2412,24 +2716,29 @@ app.get('/landscape/ufc/:fighterAId/:fighterBId.png', async (req, res) => {
 
 app.get('/landscape/:sport/:homeId/:awayId.png', async (req, res) => {
  try {
-  if (await serveCachedRenderIfPresent(req, res, 'public, max-age=3600', 'png')) return;
-
   const { sport, homeId, awayId } = req.params;
   const sportKey = sport.toUpperCase();
+  if (!isKnownSport(sportKey) || !ART_ID_PATTERN.test(homeId) || !ART_ID_PATTERN.test(awayId)) return res.status(404).send('Not found');
+
+  // The catalog's background URL carries the viewer's date/tz (it shares
+  // its query string with the poster URL), but nothing on this image
+  // depends on either - keying on them used to mean a full 4K render per
+  // configured timezone for every game, all producing identical pixels.
+  const renderKey = canonicalArtKey(req, ['home', 'away', 'homeColor', 'awayColor', 'homeLogoUrl', 'awayLogoUrl', 'homeAbbr', 'awayAbbr']);
+  if (await serveCachedRenderIfPresent(renderKey, res, 'public, max-age=3600', 'png')) return;
+
   const theme = SPORT_THEMES[sportKey] || SPORT_THEMES.MLB;
 
-  const homeName = req.query.home || 'Home';
-  const awayName = req.query.away || 'Away';
+  const homeName = sanitizeArtLabel(req.query.home, 'Home');
+  const awayName = sanitizeArtLabel(req.query.away, 'Away');
   const homeColor = getTeamBgColor(sportKey, homeId, req.query.homeColor, null, theme.secondary);
   const awayColor = getTeamBgColor(sportKey, awayId, req.query.awayColor, null, theme.primary);
-  const homeAbbr = (req.query.homeAbbr || '').toLowerCase();
-  const awayAbbr = (req.query.awayAbbr || '').toLowerCase();
 
   // Same scoreboard/standard/provided-URL fallback chain as the poster
   // route - see buildTeamLogoCandidates.
   const [homeLogoData, awayLogoData] = await Promise.all([
-    getBase64ImageWithFallback(buildTeamLogoCandidates(sportKey, homeId, homeAbbr, req.query.homeLogoUrl)),
-    getBase64ImageWithFallback(buildTeamLogoCandidates(sportKey, awayId, awayAbbr, req.query.awayLogoUrl))
+    getBase64ImageWithFallback(buildTeamLogoCandidates(sportKey, homeId, req.query.homeAbbr, req.query.homeLogoUrl)),
+    getBase64ImageWithFallback(buildTeamLogoCandidates(sportKey, awayId, req.query.awayAbbr, req.query.awayLogoUrl))
   ]);
 
   const overlayInline = getBackgroundOverlayInline();
@@ -2458,7 +2767,7 @@ app.get('/landscape/:sport/:homeId/:awayId.png', async (req, res) => {
     ${homeLogoMarkup}
   </svg>`;
 
-  await renderAndCache(req, res, svg, 'public, max-age=3600', 'png', LANDSCAPE_RENDER_SIZE);
+  await renderAndCache(renderKey, res, svg, 'public, max-age=3600', 'png', LANDSCAPE_RENDER_SIZE);
  } catch (err) {
   console.error(`[Landscape] Failed to render ${req.params.sport} landscape:`, err.message);
   await sendImageErrorFallback(res, 1920, 1080, req.params.sport.toUpperCase());
@@ -2467,9 +2776,12 @@ app.get('/landscape/:sport/:homeId/:awayId.png', async (req, res) => {
 
 app.get('/poster/none/:sport.jpg', async (req, res) => {
  try {
-  if (await serveCachedRenderIfPresent(req, res, 'public, max-age=3600')) return;
-
   const sportKey = req.params.sport.toUpperCase();
+  if (!isKnownSport(sportKey)) return res.status(404).send('Not found');
+
+  const renderKey = req.path;
+  if (await serveCachedRenderIfPresent(renderKey, res, 'public, max-age=3600')) return;
+
   const theme = SPORT_THEMES[sportKey] || SPORT_THEMES.MLB;
 
   const leagueLogoUrl = await getRealLeagueLogoUrl(sportKey);
@@ -2499,7 +2811,7 @@ app.get('/poster/none/:sport.jpg', async (req, res) => {
     <text x="300" y="790" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="72" font-weight="800" fill="#f8fafc" text-anchor="middle" textLength="480" lengthAdjust="spacingAndGlyphs" letter-spacing="2">SCHEDULE</text>
   </svg>`;
 
-  await renderAndCache(req, res, svg, 'public, max-age=3600');
+  await renderAndCache(renderKey, res, svg, 'public, max-age=3600');
  } catch (err) {
   console.error(`[Poster] Failed to render Upcoming Schedule poster for ${req.params.sport}:`, err.message);
   await sendImageErrorFallback(res, 600, 900, 'UPCOMING');
@@ -2581,9 +2893,12 @@ async function getRealLeagueLogoUrl(sportKey) {
 // logo at all), and JPEG has no alpha channel to preserve that with.
 app.get('/logo/:sport.png', async (req, res) => {
  try {
-  if (await serveCachedRenderIfPresent(req, res, 'public, max-age=86400', 'png')) return;
-
   const sportKey = req.params.sport.toUpperCase();
+  if (!isKnownSport(sportKey)) return res.status(404).send('Not found');
+
+  const renderKey = req.path;
+  if (await serveCachedRenderIfPresent(renderKey, res, 'public, max-age=86400', 'png')) return;
+
   const leagueLogoUrl = await getRealLeagueLogoUrl(sportKey);
 
   const logoData = leagueLogoUrl ? await getBase64Image(leagueLogoUrl) : null;
@@ -2595,7 +2910,15 @@ app.get('/logo/:sport.png', async (req, res) => {
     ${logoMarkup}
   </svg>`;
 
-  await renderAndCache(req, res, svg, 'public, max-age=86400', 'png');
+  // A failed logo fetch still gets a (blank, transparent) response, but
+  // isn't cached - otherwise one flaky ESPN request would pin an empty
+  // logo for this league until the next daily warm-up clears it.
+  if (!logoData) {
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'no-cache');
+    return res.send(await renderSvgToImage(svg, 'png'));
+  }
+  await renderAndCache(renderKey, res, svg, 'public, max-age=86400', 'png');
  } catch (err) {
   console.error(`[Logo] Failed to render logo for ${req.params.sport}:`, err.message);
   await sendImageErrorFallback(res, 1080, 1080, req.params.sport.toUpperCase());
@@ -2853,7 +3176,13 @@ async function fetchTodayUFCEvents(hostUrl, userTimeZone = 'America/New_York') {
         awayFlagUrl: fighterBFlagUrl
       }).toString();
       const eventUtcDate = competition.date || event.date || '';
-      const dateParam = eventUtcDate ? `?date=${encodeURIComponent(eventUtcDate)}&${artParams}` : `?${artParams}`;
+      // tz is required for the poster's fight-time text to show in the
+      // viewer's own timezone - without it the poster route falls back to
+      // America/New_York for everyone.
+      const tzParam = `tz=${encodeURIComponent(userTimeZone)}`;
+      const dateParam = eventUtcDate
+        ? `?date=${encodeURIComponent(eventUtcDate)}&${tzParam}&${artParams}`
+        : `?${tzParam}&${artParams}`;
 
       const poster = `${hostUrl}/poster/ufc/${fighterAId}/${fighterBId}.png${dateParam}`;
       const background = `${hostUrl}/landscape/ufc/${fighterAId}/${fighterBId}.png${dateParam}`;
@@ -2939,15 +3268,54 @@ async function fetchGamesForSport(sport, hostUrl, userTimeZone = 'America/New_Yo
   return games;
 }
 
+// Entries are only ever replaced on a later read, never removed - so a
+// host/timezone combination that stops being requested (an old domain, a
+// user who changed timezone) would otherwise sit in memory forever.
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of gamesCache.entries()) {
+    if (now - entry.fetchedAt >= GAMES_CACHE_MS) gamesCache.delete(key);
+  }
+  for (const [key, entry] of upcomingGamesCache.entries()) {
+    if (now - entry.fetchedAt >= UPCOMING_GAMES_CACHE_MS) upcomingGamesCache.delete(key);
+  }
+}, 10 * 60 * 1000).unref();
+
+// Every stream click used to re-fetch the provider's category list, every
+// selected category's channel list (one at a time), and a short-EPG entry
+// for every one of those channels (all at once - easily hundreds of
+// simultaneous requests to one IPTV provider, the kind of burst providers
+// throttle or ban accounts for). These caches mean a burst of clicks - or
+// several games in the same league - reuses the same data for a few
+// minutes, and the EPG fan-out is capped at XTREAM_EPG_CONCURRENCY.
+const XTREAM_LIST_CACHE_MS = 10 * 60 * 1000;
+const XTREAM_EPG_CACHE_MS = 5 * 60 * 1000;
+const XTREAM_EPG_CONCURRENCY = 16;
+const xtreamCategoriesCache = createTtlCache(XTREAM_LIST_CACHE_MS, 200);
+const xtreamStreamsCache = createTtlCache(XTREAM_LIST_CACHE_MS, 2000);
+const xtreamEpgCache = createTtlCache(XTREAM_EPG_CACHE_MS, 20000);
+
+// Cache-key prefix for one set of Xtream credentials, hashed so the raw
+// password isn't sitting around as a Map key.
+function xtreamAccountKey(xtream) {
+  return crypto.createHash('sha256').update(`${xtream.url}|${xtream.username}|${xtream.password}`).digest('hex').slice(0, 32);
+}
+
 // Fetches the current/upcoming program title+description for a single
 // channel via Xtream's short EPG endpoint. Returns '' on any failure
 // (missing EPG data, timeout, provider error) - EPG matching is a nice
 // enhancement on top of channel-name matching, never a hard requirement,
 // so a failure here should never break stream matching for that channel.
 async function fetchEpgForStream(user, streamId) {
+  const result = await xtreamEpgCache(`${xtreamAccountKey(user.xtream)}|${streamId}`, () => fetchEpgForStreamUncached(user, streamId));
+  return result || { text: '', startTimestamp: null };
+}
+
+// Resolves to null (not cached - see createTtlCache) on failure.
+async function fetchEpgForStreamUncached(user, streamId) {
   const { url, username, password } = user.xtream;
   const baseUrl = url.replace(/\/+$/, '');
-  const apiUrl = `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_short_epg&stream_id=${streamId}&limit=1`;
+  const apiUrl = `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_short_epg&stream_id=${encodeURIComponent(streamId)}&limit=1`;
 
   try {
     const res = await axios.get(apiUrl, {
@@ -2970,22 +3338,18 @@ async function fetchEpgForStream(user, streamId) {
     const startTimestamp = entry.start_timestamp ? Number(entry.start_timestamp) : null;
     return { text, startTimestamp: Number.isFinite(startTimestamp) ? startTimestamp : null };
   } catch (err) {
-    return { text: '', startTimestamp: null };
+    return null;
   }
 }
 
-// Fetches EPG data for every given stream in parallel, so the total wait
-// is roughly bounded by the single slowest channel rather than the sum of
-// all of them. Returns a { [stream_id]: { text, startTimestamp } } lookup;
-// any channel whose lookup failed or timed out simply gets empty/null values.
+// Fetches EPG data for every given stream, XTREAM_EPG_CONCURRENCY at a
+// time. Returns a { [stream_id]: { text, startTimestamp } } lookup; any
+// channel whose lookup failed or timed out simply gets empty/null values.
 async function fetchEpgForStreams(user, streams) {
-  const results = await Promise.allSettled(
-    streams.map(s => fetchEpgForStream(user, s.stream_id))
-  );
-
+  const results = await mapWithConcurrency(streams, XTREAM_EPG_CONCURRENCY, s => fetchEpgForStream(user, s.stream_id));
   const epgByStreamId = {};
   streams.forEach((s, i) => {
-    epgByStreamId[s.stream_id] = results[i].status === 'fulfilled' ? results[i].value : { text: '', startTimestamp: null };
+    epgByStreamId[s.stream_id] = results[i];
   });
   return epgByStreamId;
 }
@@ -3047,19 +3411,22 @@ async function fetchAllTeamNamesForSport(sportKey) {
 }
 
 async function fetchXtreamCategories(user) {
-  const { url, username, password } = user.xtream;
-  const baseUrl = url.replace(/\/+$/, '');
-  const apiUrl = `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_live_categories`;
-  try {
-    const res = await axios.get(apiUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-      timeout: 10000
-    });
-    return Array.isArray(res.data) ? res.data : [];
-  } catch (err) {
-    console.error('[Xtream] Failed to fetch categories for stream naming:', err.message);
-    return [];
-  }
+  const categories = await xtreamCategoriesCache(xtreamAccountKey(user.xtream), async () => {
+    const { url, username, password } = user.xtream;
+    const baseUrl = url.replace(/\/+$/, '');
+    const apiUrl = `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_live_categories`;
+    try {
+      const res = await axios.get(apiUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+        timeout: 10000
+      });
+      return Array.isArray(res.data) ? res.data.map(c => ({ category_id: c.category_id, category_name: c.category_name })) : null;
+    } catch (err) {
+      console.error('[Xtream] Failed to fetch categories for stream naming:', err.message);
+      return null;
+    }
+  });
+  return categories || [];
 }
 
 // Builds a category_id -> category_name lookup, then returns a function that
@@ -3077,32 +3444,54 @@ function buildCategoryNameLookup(categories) {
   };
 }
 
+// A few categories at a time rather than strictly one after another (the
+// old behavior stacked every category's latency end to end), but still
+// well short of firing them all at once at the provider.
+const XTREAM_CATEGORY_FETCH_CONCURRENCY = 4;
+
 async function fetchXtreamLiveStreams(user, categoryIds = []) {
-  if (!categoryIds || categoryIds.length === 0) return [];
+  if (!Array.isArray(categoryIds) || categoryIds.length === 0) return [];
   const { url, username, password } = user.xtream;
   const baseUrl = url.replace(/\/+$/, '');
+  const accountKey = xtreamAccountKey(user.xtream);
 
-  let allStreams = [];
-  for (const catId of categoryIds) {
-    const apiUrl = `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_live_streams&category_id=${catId}`;
-    try {
-      const res = await axios.get(apiUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-        timeout: 8000
-      });
-      if (Array.isArray(res.data)) {
-        allStreams = allStreams.concat(res.data);
+  const perCategory = await mapWithConcurrency(categoryIds, XTREAM_CATEGORY_FETCH_CONCURRENCY, catId =>
+    xtreamStreamsCache(`${accountKey}|${catId}`, async () => {
+      const apiUrl = `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_live_streams&category_id=${encodeURIComponent(catId)}`;
+      try {
+        const res = await axios.get(apiUrl, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+          timeout: 8000
+        });
+        if (!Array.isArray(res.data)) return null;
+        // Only the fields anything here reads - provider rows carry a
+        // dozen more (icons, timestamps, archive flags) not worth caching.
+        return res.data.map(s => ({
+          stream_id: s.stream_id,
+          name: s.name,
+          epg_channel_id: s.epg_channel_id,
+          category_id: s.category_id,
+          category_ids: s.category_ids
+        }));
+      } catch (e) {
+        console.error(`[Xtream] Failed to fetch category ${catId}:`, e.message);
+        return null;
       }
-    } catch (e) {
-      console.error(`[Xtream] Failed to fetch category ${catId}:`, e.message);
-    }
-  }
-  return allStreams;
+    })
+  );
+  return perCategory.flatMap(streams => streams || []);
+}
+
+function isHttpUrl(value) {
+  return typeof value === 'string' && /^https?:\/\//i.test(value);
 }
 
 app.post('/api/xtream/categories', async (req, res) => {
+  if (!(await allowPreAccountRequest(req, res))) return;
   const { url, username, password } = req.body;
-  if (!url || !username || !password) return res.status(400).json({ error: 'Missing credentials' });
+  if (!isHttpUrl(url) || typeof username !== 'string' || !username || typeof password !== 'string' || !password) {
+    return res.status(400).json({ error: 'Missing credentials' });
+  }
 
   const baseUrl = url.replace(/\/+$/, '');
   const apiUrl = `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_live_categories`;
@@ -3133,16 +3522,22 @@ app.post('/api/xtream/categories', async (req, res) => {
 // first user of a brand-new source doesn't hit an empty cache right after
 // finishing setup.
 app.post('/api/m3u/import', async (req, res) => {
+  if (!(await allowPreAccountRequest(req, res))) return;
   const { playlistUrl, epgUrl } = req.body;
-  if (!playlistUrl || !epgUrl) {
-    return res.status(400).json({ error: 'Both a playlist URL and an EPG URL are required.' });
+  if (!isHttpUrl(playlistUrl) || !isHttpUrl(epgUrl)) {
+    return res.status(400).json({ error: 'Both a playlist URL and an EPG URL (http:// or https://) are required.' });
+  }
+  if (!allowThrottledAction(req, 'm3u-import', 20)) {
+    return res.status(429).json({ error: 'Too many imports from this address. Try again later.' });
   }
 
   try {
     const parsed = await m3u.refreshM3USource(playlistUrl, epgUrl);
     return res.json({ success: true, categories: parsed.categoryList });
   } catch (err) {
-    console.error(`[M3U] Failed to import from playlistUrl=${playlistUrl}, epgUrl=${epgUrl}:`, err.message);
+    // Host only - these URLs usually embed the account's username/password
+    // (see encryptM3uForStorage), which must never end up in container logs.
+    console.error(`[M3U] Failed to import from ${m3u.describeUrlForLog(playlistUrl)} / ${m3u.describeUrlForLog(epgUrl)}:`, err.message);
     // Distinguish which URL was the problem where possible, so the wizard
     // can point the user at the right one rather than a generic failure.
     if (err.playlistFailed && err.epgFailed) {
@@ -3169,19 +3564,8 @@ app.post('/api/m3u/import', async (req, res) => {
 // duplicate that work itself.
 app.post('/api/m3u/categories', async (req, res) => {
   const { uuid, password, providerId } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  const user = userConfigs[uuid];
-  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid UUID or password.' });
-  }
-  clearFailedAttempts(ip);
+  const user = await authenticateUser(req, res);
+  if (!user) return;
 
   // An account can have several M3U providers now, so the request has to
   // say which one it means - falling back to the first provider on the
@@ -3214,19 +3598,8 @@ app.post('/api/m3u/categories', async (req, res) => {
 // (a brand-new provider, so there's nothing to scope down to).
 app.post('/api/m3u/channels', async (req, res) => {
   const { uuid, password, providerId } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  const user = userConfigs[uuid];
-  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid UUID or password.' });
-  }
-  clearFailedAttempts(ip);
+  const user = await authenticateUser(req, res);
+  if (!user) return;
 
   const provider = (user.providers || []).find(p => p.id === providerId) || (user.providers || [])[0];
   if (!provider || provider.connectionType !== 'm3u' || !provider.m3u || !provider.m3u.playlistUrl) {
@@ -3261,7 +3634,8 @@ app.post('/api/m3u/channels', async (req, res) => {
 // exists. No separate auth to check here, same as /api/m3u/import - the
 // URL itself is already this connection's only "credential", and it's
 // never persisted by this route.
-app.post('/api/m3u/channels-by-url', (req, res) => {
+app.post('/api/m3u/channels-by-url', async (req, res) => {
+  if (!(await allowPreAccountRequest(req, res))) return;
   const { playlistUrl, categoryIds } = req.body;
   if (!playlistUrl) return res.status(400).json({ error: 'Missing playlist URL' });
 
@@ -3288,8 +3662,11 @@ app.post('/api/m3u/channels-by-url', (req, res) => {
 // pattern. The caller (Channel EPG picker) is expected to pass the same
 // selected-categories union /api/m3u/channels derives server-side itself.
 app.post('/api/xtream/streams', async (req, res) => {
+  if (!(await allowPreAccountRequest(req, res))) return;
   const { url, username, password, categoryIds } = req.body;
-  if (!url || !username || !password) return res.status(400).json({ error: 'Missing credentials' });
+  if (!isHttpUrl(url) || typeof username !== 'string' || !username || typeof password !== 'string' || !password) {
+    return res.status(400).json({ error: 'Missing credentials' });
+  }
   if (!Array.isArray(categoryIds) || categoryIds.length === 0) {
     return res.json({ success: true, streams: [] });
   }
@@ -3323,19 +3700,8 @@ app.post('/api/xtream/streams', async (req, res) => {
 // exception.
 app.post('/api/epgshare/channels', async (req, res) => {
   const { uuid, password } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  const user = userConfigs[uuid];
-  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid UUID or password.' });
-  }
-  clearFailedAttempts(ip);
+  const user = await authenticateUser(req, res);
+  if (!user) return;
 
   return res.json({ success: true, sources: epgshare.getEnabledChannelCatalog(epgShareSettings.enabledSources) });
 });
@@ -3349,19 +3715,8 @@ app.post('/api/epgshare/channels', async (req, res) => {
 // /api/epgshare/channels just above.
 app.post('/api/presets', async (req, res) => {
   const { uuid, password } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  const user = userConfigs[uuid];
-  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid UUID or password.' });
-  }
-  clearFailedAttempts(ip);
+  const user = await authenticateUser(req, res);
+  if (!user) return;
 
   // Unavailable presets (never turned on, or edited since a shipped update
   // and dropped back to unavailable - see isPresetAvailable above) are
@@ -3396,6 +3751,39 @@ function sanitizeCatalogNames(catalogNames) {
   return sanitized;
 }
 
+function isPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+// Shape check for each provider the dashboard saves - not a full schema,
+// just enough that every downstream reader (stream route, scheduler,
+// manifest) can rely on the fields it branches on being the right type.
+function isValidProviderShape(p) {
+  return isPlainObject(p)
+    && typeof p.id === 'string'
+    && (p.connectionType === 'xtream' || p.connectionType === 'm3u')
+    && (p.label === undefined || typeof p.label === 'string')
+    && (p.xtream === undefined || p.xtream === null || isPlainObject(p.xtream))
+    && (p.m3u === undefined || p.m3u === null || isPlainObject(p.m3u))
+    && (p.selectedSports === undefined || Array.isArray(p.selectedSports))
+    && (p.sportCategories === undefined || isPlainObject(p.sportCategories))
+    && (p.epgOverrides === undefined || isPlainObject(p.epgOverrides))
+    && (p.excludedChannels === undefined || isPlainObject(p.excludedChannels));
+}
+
+// A user's timezone ends up in every art URL and decides how many distinct
+// images the daily warm-up renders (one set per configured timezone), so
+// only real IANA zones are accepted.
+function isValidTimeZone(timeZone) {
+  if (typeof timeZone !== 'string' || !timeZone) return false;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone });
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
 app.post('/api/user/register', async (req, res) => {
   if (!ENCRYPTION_KEY_CONFIGURED) {
     return res.status(503).json({ error: 'Encryption key not configured yet. See the homepage for setup instructions.' });
@@ -3407,7 +3795,16 @@ app.post('/api/user/register', async (req, res) => {
   if (!password || typeof password !== 'string' || password.length === 0) {
     return res.status(400).json({ error: 'A password is required.' });
   }
-  const uuid = uuidv4();
+  if (timeZone !== undefined && !isValidTimeZone(timeZone)) {
+    return res.status(400).json({ error: 'Unknown timezone.' });
+  }
+  if (!appSettings.registrationOpen) {
+    return res.status(403).json({ error: 'New sign-ups are closed on this server.' });
+  }
+  if (!allowThrottledAction(req, 'register', 10)) {
+    return res.status(429).json({ error: 'Too many new accounts from this address. Try again later.' });
+  }
+  const uuid = crypto.randomUUID();
   const passwordHash = await bcrypt.hash(password, 10);
 
   userConfigs[uuid] = {
@@ -3437,7 +3834,7 @@ app.post('/api/user/register', async (req, res) => {
       excludedChannels: excludedChannels && typeof excludedChannels === 'object' ? excludedChannels : {}
     }],
     timeZone: timeZone || 'America/New_York',
-    sportOrder,
+    sportOrder: Array.isArray(sportOrder) ? sportOrder.filter(s => typeof s === 'string') : undefined,
     // Only ever populated via a wizard preset - the manual setup path
     // leaves these undefined/default, same as sportOrder always has.
     hiddenFromHomeSports: Array.isArray(hiddenFromHomeSports) ? hiddenFromHomeSports.filter(s => typeof s === 'string') : [],
@@ -3456,24 +3853,9 @@ app.post('/api/user/login', async (req, res) => {
   if (!ENCRYPTION_KEY_CONFIGURED) {
     return res.status(503).json({ error: 'Encryption key not configured yet. See the homepage for setup instructions.' });
   }
-  const { uuid, password } = req.body;
-  const ip = req.ip;
+  const user = await authenticateUser(req, res, 'Too many login attempts.');
+  if (!user) return;
 
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many login attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-
-  const user = userConfigs[uuid];
-  const passwordOk = user && (await bcrypt.compare(password, user.passwordHash));
-
-  if (!passwordOk) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid UUID or password.' });
-  }
-
-  clearFailedAttempts(ip);
   return res.json({
     success: true,
     uuid: user.uuid,
@@ -3485,26 +3867,14 @@ app.post('/api/user/login', async (req, res) => {
     catalogNames: user.catalogNames || {},
     nameFormat: user.nameFormat || DEFAULT_NAME_FORMAT,
     titleFormat: user.titleFormat || DEFAULT_TITLE_FORMAT,
-    manifestUrl: `/user/${uuid}/manifest.json`
+    manifestUrl: `/user/${user.uuid}/manifest.json`
   });
 });
 
 app.post('/api/user/update', async (req, res) => {
-  const { uuid, password, providers, timeZone, sportOrder, hiddenFromHomeSports, allGamesTodayEnabled, catalogNames, nameFormat, titleFormat } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-
-  const user = userConfigs[uuid];
-  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid UUID or password.' });
-  }
-  clearFailedAttempts(ip);
+  const { providers, timeZone, sportOrder, hiddenFromHomeSports, allGamesTodayEnabled, catalogNames, nameFormat, titleFormat } = req.body;
+  const user = await authenticateUser(req, res);
+  if (!user) return;
 
   if (providers !== undefined) {
     // The dashboard always sends the complete, current providers array in
@@ -3515,10 +3885,18 @@ app.post('/api/user/update', async (req, res) => {
     if (!Array.isArray(providers) || providers.length === 0) {
       return res.status(400).json({ error: 'An account must have at least one provider.' });
     }
+    if (!providers.every(isValidProviderShape)) {
+      return res.status(400).json({ error: 'One of the providers is malformed.' });
+    }
     user.providers = providers;
   }
-  if (timeZone) user.timeZone = timeZone;
-  if (sportOrder !== undefined) user.sportOrder = sportOrder;
+  if (timeZone !== undefined) {
+    if (!isValidTimeZone(timeZone)) return res.status(400).json({ error: 'Unknown timezone.' });
+    user.timeZone = timeZone;
+  }
+  if (sportOrder !== undefined) {
+    user.sportOrder = Array.isArray(sportOrder) ? sportOrder.filter(s => typeof s === 'string') : [];
+  }
   if (hiddenFromHomeSports !== undefined) {
     user.hiddenFromHomeSports = Array.isArray(hiddenFromHomeSports)
       ? hiddenFromHomeSports.filter(s => typeof s === 'string')
@@ -3536,11 +3914,11 @@ app.post('/api/user/update', async (req, res) => {
   // saved literally - an empty template would otherwise render every
   // stream's name/title as a blank string, which is never actually what
   // someone clearing the field out wants.
-  if (nameFormat !== undefined) user.nameFormat = nameFormat.trim() || undefined;
-  if (titleFormat !== undefined) user.titleFormat = titleFormat.trim() || undefined;
+  if (nameFormat !== undefined) user.nameFormat = typeof nameFormat === 'string' ? (nameFormat.trim() || undefined) : undefined;
+  if (titleFormat !== undefined) user.titleFormat = typeof titleFormat === 'string' ? (titleFormat.trim() || undefined) : undefined;
   saveUserConfigs();
 
-  return res.json({ success: true, uuid: user.uuid, manifestUrl: `/user/${uuid}/manifest.json` });
+  return res.json({ success: true, uuid: user.uuid, manifestUrl: `/user/${user.uuid}/manifest.json` });
 });
 
 // Permanently removes a user's entire record - their Xtream credentials,
@@ -3548,22 +3926,9 @@ app.post('/api/user/update', async (req, res) => {
 // live under this one object, so deleting it is a complete, irreversible
 // wipe with nothing left behind elsewhere to separately clean up.
 app.post('/api/user/delete', async (req, res) => {
-  const { uuid, password } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-
-  const user = userConfigs[uuid];
-  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid UUID or password.' });
-  }
-  clearFailedAttempts(ip);
-  delete userConfigs[uuid];
+  const user = await authenticateUser(req, res);
+  if (!user) return;
+  delete userConfigs[user.uuid];
   saveUserConfigs();
 
   return res.json({ success: true });
@@ -3582,9 +3947,19 @@ app.post('/api/user/delete', async (req, res) => {
 // This app is a single-operator, self-hosted tool, not a multi-admin
 // platform, so a simple operator credential (whichever source is active)
 // is the right fit, not a full database-backed admin account system.
+// Constant-time string comparison (hashing first so differing lengths
+// don't leak through timingSafeEqual's length requirement).
+function safeEqual(a, b) {
+  const digest = (v) => crypto.createHash('sha256').update(String(v)).digest();
+  return crypto.timingSafeEqual(digest(a), digest(b));
+}
+
 async function isValidAdmin(username, password) {
+  if (typeof username !== 'string' || typeof password !== 'string') return false;
   if (process.env.ADMIN_USERNAME && process.env.ADMIN_PASSWORD) {
-    return username === process.env.ADMIN_USERNAME && password === process.env.ADMIN_PASSWORD;
+    const usernameOk = safeEqual(username, process.env.ADMIN_USERNAME);
+    const passwordOk = safeEqual(password, process.env.ADMIN_PASSWORD);
+    return usernameOk && passwordOk;
   }
   if (adminConfig) {
     return username === adminConfig.username && (await bcrypt.compare(password, adminConfig.passwordHash));
@@ -3608,7 +3983,8 @@ app.get('/api/admin/enabled', (req, res) => {
 app.get('/api/setup/status', (req, res) => {
   return res.json({
     adminConfigured: isAdminConfigured(),
-    encryptionKeyConfigured: ENCRYPTION_KEY_CONFIGURED
+    encryptionKeyConfigured: ENCRYPTION_KEY_CONFIGURED,
+    registrationOpen: appSettings.registrationOpen
   });
 });
 
@@ -3656,19 +4032,7 @@ app.get('/api/setup/generate-encryption-key', (req, res) => {
 
 app.post('/api/admin/login', async (req, res) => {
   const { username, password } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
+  if (!(await authenticateAdmin(req, res))) return;
   return res.json({ success: true });
 });
 
@@ -3679,18 +4043,7 @@ app.post('/api/admin/login', async (req, res) => {
 // trusting a token from an earlier login.
 app.post('/api/admin/users', async (req, res) => {
   const { username, password } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
+  if (!(await authenticateAdmin(req, res))) return;
 
   // Deliberately excludes passwordHash and xtream/m3u credentials - the
   // admin page only needs enough to identify, sort, and delete accounts,
@@ -3710,20 +4063,26 @@ app.post('/api/admin/users', async (req, res) => {
 
 app.post('/api/admin/m3u-settings', async (req, res) => {
   const { username, password } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
+  if (!(await authenticateAdmin(req, res))) return;
 
   return res.json({ success: true, settings: m3uSettings });
+});
+
+app.post('/api/admin/app-settings', async (req, res) => {
+  if (!(await authenticateAdmin(req, res))) return;
+  return res.json({ success: true, settings: appSettings });
+});
+
+// Takes effect immediately - every gate reads appSettings live.
+app.post('/api/admin/app-settings/update', async (req, res) => {
+  if (!(await authenticateAdmin(req, res))) return;
+  const { registrationOpen } = req.body;
+  if (typeof registrationOpen !== 'boolean') {
+    return res.status(400).json({ error: 'registrationOpen must be true or false.' });
+  }
+  appSettings = { ...appSettings, registrationOpen };
+  saveAppSettings(appSettings);
+  return res.json({ success: true, settings: appSettings });
 });
 
 // Takes effect on the scheduler's very next cycle, not requiring a
@@ -3731,18 +4090,7 @@ app.post('/api/admin/m3u-settings', async (req, res) => {
 // reschedules itself, rather than capturing a snapshot once at startup.
 app.post('/api/admin/m3u-settings/update', async (req, res) => {
   const { username, password, daysOfWeek, times, timeZone } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
+  if (!(await authenticateAdmin(req, res))) return;
 
   const validDayNames = new Set(['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']);
   if (!Array.isArray(daysOfWeek) || daysOfWeek.length === 0 || !daysOfWeek.every(d => validDayNames.has(d))) {
@@ -3769,18 +4117,7 @@ app.post('/api/admin/m3u-settings/update', async (req, res) => {
 // rather than firing this and hoping.
 app.post('/api/admin/m3u-cache/recache', async (req, res) => {
   const { username, password } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
+  if (!(await authenticateAdmin(req, res))) return;
 
   m3u.m3uSourceCache.clear();
   await m3u.refreshAllM3USources(getActiveM3uSources);
@@ -3814,18 +4151,7 @@ app.post('/api/admin/m3u-cache/recache', async (req, res) => {
 // actually be traced to a specific cache instead of guessed at.
 app.post('/api/admin/diagnostics', async (req, res) => {
   const { username, password, forceGc } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
+  if (!(await authenticateAdmin(req, res))) return;
 
   const mb = (bytes) => Math.round(bytes / 1024 / 1024 * 10) / 10;
   const memToMB = (mem) => ({
@@ -3917,18 +4243,7 @@ app.post('/api/admin/diagnostics', async (req, res) => {
 // not just logo freshness alone.
 app.post('/api/admin/logo-cache/recache', async (req, res) => {
   const { username, password } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
+  if (!(await authenticateAdmin(req, res))) return;
 
   const { sportsChecked, gamesChecked, teamsWarmed, teamsFailed, imagesRendered, imagesFailed } = await warmTodaysArt();
   return res.json({ success: true, sportsChecked, gamesChecked, teamsWarmed, teamsFailed, imagesRendered, imagesFailed });
@@ -3943,18 +4258,7 @@ app.post('/api/admin/logo-cache/recache', async (req, res) => {
 // { refresh: true } to force a re-fetch instead of serving the cache.
 app.post('/api/admin/epgshare-catalog', async (req, res) => {
   const { username, password, refresh } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
+  if (!(await authenticateAdmin(req, res))) return;
 
   try {
     const catalog = (!refresh && epgshare.getCachedCatalog()) || await epgshare.refreshCatalog();
@@ -3967,18 +4271,7 @@ app.post('/api/admin/epgshare-catalog', async (req, res) => {
 
 app.post('/api/admin/epgshare-settings', async (req, res) => {
   const { username, password } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
+  if (!(await authenticateAdmin(req, res))) return;
 
   return res.json({ success: true, settings: epgShareSettings });
 });
@@ -3991,18 +4284,7 @@ app.post('/api/admin/epgshare-settings', async (req, res) => {
 // reads from whatever ends up cached here.
 app.post('/api/admin/epgshare-settings/update', async (req, res) => {
   const { username, password, enabledSources } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
+  if (!(await authenticateAdmin(req, res))) return;
 
   if (!Array.isArray(enabledSources) || !enabledSources.every(f => epgshare.isKnownSourceFile(f))) {
     return res.status(400).json({ error: 'enabledSources must be a list of valid EPGShare01 source filenames.' });
@@ -4041,18 +4323,7 @@ app.post('/api/admin/epgshare-settings/update', async (req, res) => {
 
 app.post('/api/admin/presets', async (req, res) => {
   const { username, password } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
+  if (!(await authenticateAdmin(req, res))) return;
 
   // Unlike the user-facing /api/presets, the admin's own list shows
   // everything including unavailable presets - available/missingSources are
@@ -4070,18 +4341,7 @@ app.post('/api/admin/presets', async (req, res) => {
 // begin with) into what gets committed to the repo.
 app.post('/api/admin/presets/create', async (req, res) => {
   const { username, password, name, icon, config, onMissingSources } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
+  if (!(await authenticateAdmin(req, res))) return;
 
   const trimmedName = typeof name === 'string' ? name.trim() : '';
   if (!trimmedName || trimmedName.length > PRESET_NAME_MAX_LENGTH) {
@@ -4123,7 +4383,7 @@ app.post('/api/admin/presets/create', async (req, res) => {
   }
 
   const preset = {
-    id: uuidv4(),
+    id: crypto.randomUUID(),
     name: trimmedName,
     icon,
     connectionType: config.connectionType === 'm3u' ? 'm3u' : 'xtream',
@@ -4184,18 +4444,7 @@ app.post('/api/admin/presets/create', async (req, res) => {
 // edit path for content shipped via the repo.
 app.post('/api/admin/presets/rename', async (req, res) => {
   const { username, password, id, name } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
+  if (!(await authenticateAdmin(req, res))) return;
 
   const trimmedName = typeof name === 'string' ? name.trim() : '';
   if (!trimmedName || trimmedName.length > PRESET_NAME_MAX_LENGTH) {
@@ -4223,18 +4472,7 @@ app.post('/api/admin/presets/rename', async (req, res) => {
 
 app.post('/api/admin/presets/review', async (req, res) => {
   const { username, password, id, action } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
+  if (!(await authenticateAdmin(req, res))) return;
 
   if (!['publish', 'publish-and-enable', 'unpublish'].includes(action)) {
     return res.status(400).json({ error: 'Invalid action.' });
@@ -4275,18 +4513,7 @@ app.post('/api/admin/presets/review', async (req, res) => {
 
 app.post('/api/admin/presets/delete', async (req, res) => {
   const { username, password, id } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
+  if (!(await authenticateAdmin(req, res))) return;
 
   // Stock presets ship with the repo and are only ever removed by editing
   // presets/presets.json and shipping an update - this endpoint can only
@@ -4311,19 +4538,8 @@ app.post('/api/admin/presets/delete', async (req, res) => {
 
 app.post('/api/admin/user/delete', async (req, res) => {
   const { username, password, targetUuid } = req.body;
-  const ip = req.ip;
-
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
-  if (!userConfigs[targetUuid]) {
+  if (!(await authenticateAdmin(req, res))) return;
+  if (!getUser(targetUuid)) {
     return res.status(404).json({ error: 'No account found with that UUID.' });
   }
 
@@ -4339,20 +4555,9 @@ app.post('/api/admin/user/delete', async (req, res) => {
 // anywhere else.
 app.post('/api/admin/user/nickname', async (req, res) => {
   const { username, password, targetUuid, nickname } = req.body;
-  const ip = req.ip;
+  if (!(await authenticateAdmin(req, res))) return;
 
-  if (isRateLimited(ip)) {
-    const retryAfterSec = getRetryAfterSeconds(ip);
-    res.setHeader('Retry-After', retryAfterSec);
-    return res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minute(s).` });
-  }
-  if (!(await isValidAdmin(username, password))) {
-    recordFailedAttempt(ip);
-    return res.status(401).json({ error: 'Invalid admin credentials.' });
-  }
-  clearFailedAttempts(ip);
-
-  const user = userConfigs[targetUuid];
+  const user = getUser(targetUuid);
   if (!user) {
     return res.status(404).json({ error: 'No account found with that UUID.' });
   }
@@ -4407,16 +4612,27 @@ function getOrderedActiveSports(user) {
   });
 }
 
+const LAST_ACCESSED_SAVE_INTERVAL_MS = 60 * 60 * 1000;
+
 app.get('/user/:uuid/manifest.json', (req, res) => {
-  const user = userConfigs[req.params.uuid];
+  const user = getUser(req.params.uuid);
   if (!user) return res.status(404).json({ error: 'Invalid manifest UUID' });
 
   // Used by the admin page to show which accounts are actually in active
   // use. Nuvio re-fetches the manifest periodically (not just once at
   // install), so this is a reasonable proxy for real activity without
   // needing to instrument every catalog/stream route too.
-  user.lastAccessedAt = new Date().toISOString();
-  saveUserConfigs();
+  //
+  // Only persisted when the stored value is over an hour old: every save
+  // rewrites (and re-encrypts) the whole users.json, and clients fetch the
+  // manifest often enough that saving on every hit was the single most
+  // frequent disk write in the app - for a column the admin page only
+  // shows to the day.
+  const lastAccessedMs = user.lastAccessedAt ? Date.parse(user.lastAccessedAt) : 0;
+  if (!(Date.now() - lastAccessedMs < LAST_ACCESSED_SAVE_INTERVAL_MS)) {
+    user.lastAccessedAt = new Date().toISOString();
+    saveUserConfigs();
+  }
 
   const orderedActiveSports = getOrderedActiveSports(user);
 
@@ -4497,7 +4713,7 @@ app.get('/user/:uuid/manifest.json', (req, res) => {
 // Discover. The extra segment's value is never inspected - every sport's
 // catalog is unfiltered regardless of how it was reached.
 app.get(['/user/:uuid/catalog/sports/:id.json', '/user/:uuid/catalog/sports/:id/:extra.json'], async (req, res) => {
-  const user = userConfigs[req.params.uuid];
+  const user = getUser(req.params.uuid);
   if (!user) return res.json({ metas: [] });
 
   const hostUrl = `${req.protocol}://${req.get('host')}`;
@@ -4582,7 +4798,7 @@ app.get(['/user/:uuid/catalog/sports/:id.json', '/user/:uuid/catalog/sports/:id/
 });
 
 app.get('/user/:uuid/meta/sports/:id.json', async (req, res) => {
-  const user = userConfigs[req.params.uuid];
+  const user = getUser(req.params.uuid);
   if (!user) return res.json({ meta: {} });
 
   const hostUrl = `${req.protocol}://${req.get('host')}`;
@@ -4592,6 +4808,7 @@ app.get('/user/:uuid/meta/sports/:id.json', async (req, res) => {
   // constructed that shape of id) has been removed, matching the
   // equivalent cleanup already done on the stream route below.
   const [, sport, idVal] = req.params.id.split(':');
+  if (!sport || !idVal) return res.json({ meta: {} });
 
   if (idVal === 'none') {
     const userTz = user.timeZone || 'America/New_York';
@@ -4679,7 +4896,7 @@ function buildFormatterFields(game, stream) {
 const EPG_OVERRIDE_SELF_NAME = '__CHANNEL_NAME__';
 
 app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
-  const user = userConfigs[req.params.uuid];
+  const user = getUser(req.params.uuid);
   if (!user) return res.json({ streams: [] });
 
   // Every id this route ever receives is shaped sb:{sport}:{gameId} - the
@@ -4687,7 +4904,7 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
   // sbstream-prefixed branch (unreachable - nothing in the app ever
   // constructed that shape of id) has been removed.
   const [, sport, idVal] = req.params.id.split(':');
-  if (idVal === 'none') return res.json({ streams: [] });
+  if (!sport || !idVal || idVal === 'none') return res.json({ streams: [] });
 
   const hostUrl = `${req.protocol}://${req.get('host')}`;
   const upperSport = sport.toUpperCase();
@@ -4801,8 +5018,10 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
       // provider-scoped credential set stands in for the "user" they expect
       // without needing those functions to know providers exist at all.
       const pseudoUser = { xtream: provider.xtream };
-      const xtreamStreams = await fetchXtreamLiveStreams(pseudoUser, configuredCategoryIds);
-      const categories = await fetchXtreamCategories(pseudoUser);
+      const [xtreamStreams, categories] = await Promise.all([
+        fetchXtreamLiveStreams(pseudoUser, configuredCategoryIds),
+        fetchXtreamCategories(pseudoUser)
+      ]);
       const getCategoryName = buildCategoryNameLookup(categories);
       const epgByStreamId = await fetchEpgForStreams(pseudoUser, xtreamStreams);
       const xtreamCandidates = xtreamStreams
@@ -5084,6 +5303,19 @@ app.get('/user/:uuid/stream/sports/:id.json', async (req, res) => {
 
   res.setHeader('Content-Type', 'application/json');
   res.json({ streams });
+});
+
+// Catches everything forwarded by the get/post wrapper near the top of this
+// file, plus express.json()'s own errors (malformed JSON, a body over the
+// size limit) - which would otherwise come back as an HTML error page the
+// dashboard's res.json() can't parse, surfacing as a misleading "network
+// error" instead of a real message.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  const status = err.status || err.statusCode || 500;
+  if (status >= 500) console.error(`[HTTP] ${req.method} ${req.path} failed:`, err && err.stack || err);
+  const message = status === 413 ? 'Request too large.' : status < 500 ? 'Bad request.' : 'Something went wrong on the server. Please try again.';
+  res.status(status).json({ error: message });
 });
 
 app.listen(PORT, '0.0.0.0', () => {

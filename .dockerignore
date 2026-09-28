@@ -4,3 +4,7 @@ data
 .git
 *.bak-*
 .claude
+test
+styles
+tailwind.config.js
+screenshots

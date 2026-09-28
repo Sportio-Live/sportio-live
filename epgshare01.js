@@ -19,6 +19,9 @@ const zlib = require('zlib');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { Readable } = require('stream');
+const { pipeline } = require('stream/promises');
+const { StringDecoder } = require('string_decoder');
 const { parseXmltvTimestamp } = require('./m3u.js');
 
 const EPGSHARE_BASE_URL = 'https://epgshare01.online/epgshare01/';
@@ -92,17 +95,15 @@ function parseEpgShareXmltv(content, relevantChannelIds) {
     // confirmed via a real repro (parsing the actual ALL_SOURCES1 file,
     // 1.77GB decompressed) as the cause of catastrophic memory retention
     // that an explicit global.gc() could NOT reclaim on its own: V8 can
-    // implement a substring of a huge string (content here is processed
-    // in ~200MB chunks - see parseEpgShareXmltvBuffer) as a "sliced
+    // implement a substring of a huge string (content here is a multi-MB
+    // batch of the source - see streamSourceToDir) as a "sliced
     // string" that internally still points at the ENTIRE parent chunk's
     // backing memory. channel is the one field that gets kept alive
     // forever (as part of epgShareCache's channelIds list, see
-    // refreshEpgShareSource); start/title/description are only used
-    // transiently within this one refresh call before being written to
-    // disk and discarded, but for a source spanning multiple 200MB
-    // chunks, an uncopied one of these can just as easily keep that
-    // chunk's entire parent string pinned in memory for the rest of the
-    // refresh - confirmed directly: leaving these three uncopied alone
+    // refreshEpgShareSource); start/title/description are only held
+    // until they're written to disk, but an uncopied one of these can
+    // just as easily keep its whole parent batch pinned in memory until
+    // then - confirmed directly: leaving these three uncopied alone
     // left ~340MB of otherwise-dead memory unreclaimable even after
     // forcing a collection, on top of what copying just the channel id
     // already fixed.
@@ -210,56 +211,102 @@ function getCachedCatalog() {
 // Fetch + parse a source
 // ---------------------------------------------------------------------
 
-// V8 hard-caps a single JS string at ~536,870,888 characters
-// (0x1fffffe8) - confirmed directly against a real source: EPGShare01's
-// largest files (epg_ripper_US_LOCALS1, epg_ripper_ALL_SOURCES1)
-// decompress to 700MB-1.8GB, so decoding the whole buffer to one string
-// via .toString('utf8') throws outright for those specifically, even
-// though the gunzip step itself succeeds fine (Buffers aren't
-// string-length-limited). Fixed by scanning the decompressed buffer in
-// overlapping byte-range chunks instead, each decoded to its own
-// (comfortably-under-the-limit) string. The overlap is generously larger
-// than any single matched <programme ...>...</title> span can plausibly
-// be, so a match straddling a chunk boundary still lands fully inside the
-// next chunk's overlap region and gets picked up there - a programme
-// entry counted twice in that tiny overlap is a harmless duplicate array
-// entry, so no de-duplication bookkeeping is needed.
-const PARSE_CHUNK_BYTES = 200 * 1024 * 1024;
-const PARSE_CHUNK_OVERLAP_BYTES = 64 * 1024;
+// Sources are processed as a stream: download, gunzip, and the regex scan
+// all proceed a few MB at a time, and parsed programmes are appended to
+// their per-channel cache files as they accumulate (see
+// streamSourceToDir). The previous design downloaded the whole file,
+// decompressed it into one buffer (700MB-1.8GB for the largest sources),
+// and built every channel's programme list in memory before writing
+// anything - so a refresh's memory spike scaled with the size of the
+// source. Now it's bounded by roughly PARSE_BATCH_CHARS plus
+// PENDING_FLUSH_CHARS regardless of source size. Parsing in batches also
+// means no single string ever approaches V8's ~536M-character string
+// limit, which the old whole-buffer version had to work around with
+// overlapping chunks.
+const PARSE_BATCH_CHARS = 4 * 1024 * 1024;
+const PENDING_FLUSH_CHARS = 16 * 1024 * 1024;
+const PROGRAMME_END_TAG = '</programme>';
 
-function parseEpgShareXmltvBuffer(buf, relevantChannelIds) {
-  if (buf.length <= PARSE_CHUNK_BYTES) {
-    return parseEpgShareXmltv(buf.toString('utf8'), relevantChannelIds);
-  }
-
-  const programmesByChannel = new Map();
-  for (let offset = 0; offset < buf.length; offset += PARSE_CHUNK_BYTES) {
-    const end = Math.min(offset + PARSE_CHUNK_BYTES + PARSE_CHUNK_OVERLAP_BYTES, buf.length);
-    const chunkResult = parseEpgShareXmltv(buf.subarray(offset, end).toString('utf8'), relevantChannelIds);
-    for (const [channel, programmes] of chunkResult) {
-      if (!programmesByChannel.has(channel)) programmesByChannel.set(channel, []);
-      programmesByChannel.get(channel).push(...programmes);
-    }
-  }
-  return programmesByChannel;
-}
-
-// EPGShare01's files are published as gzip (.xml.gz), but this sniffs the
-// gzip magic bytes rather than trusting the URL's file extension - an
+// Yields the response body's chunks, gunzipped if it starts with the gzip
+// magic bytes. EPGShare01's files are published as gzip (.xml.gz), but
+// this sniffs the bytes rather than trusting the URL's file extension - an
 // admin pointing this at some other, already-uncompressed XMLTV source
 // (their own provider's EPG URL, for instance) should still work.
-async function fetchAndParseEpgShareSource(url, relevantChannelIds) {
-  const res = await axios.get(url, { timeout: 120000, responseType: 'arraybuffer' });
-  const buf = Buffer.from(res.data);
-  const isGzip = buf.length > 2 && buf[0] === 0x1f && buf[1] === 0x8b;
-  const decompressed = isGzip ? zlib.gunzipSync(buf) : buf;
+async function* decodedBodyChunks(body) {
+  const iterator = body[Symbol.asyncIterator]();
+  const first = await iterator.next();
+  if (first.done) return;
+  const head = first.value;
+  const raw = Readable.from((async function* () {
+    yield head;
+    for (let r = await iterator.next(); !r.done; r = await iterator.next()) yield r.value;
+  })());
+  if (head.length > 1 && head[0] === 0x1f && head[1] === 0x8b) {
+    const gunzipStream = zlib.createGunzip();
+    // A failure anywhere upstream destroys gunzipStream with that error,
+    // which then surfaces from the iteration below - nothing to handle here.
+    pipeline(raw, gunzipStream).catch(() => {});
+    yield* gunzipStream;
+  } else {
+    yield* raw;
+  }
+}
 
-  const programmesByChannel = parseEpgShareXmltvBuffer(decompressed, relevantChannelIds);
-  if (programmesByChannel.size === 0) {
-    throw new Error('EPGShare01 source parsed but contained no usable programme data');
+// Streams one source into stagingDir as one NDJSON file per channel (one
+// programme per line, appended as they're parsed), returning the sorted
+// list of channel ids found. Text is only handed to the parser up to the
+// last complete </programme>, so no programme is ever split across two
+// parse calls; the incomplete tail carries over to the next batch.
+async function streamSourceToDir(url, stagingDir) {
+  const res = await axios.get(url, { timeout: 120000, responseType: 'stream' });
+  const decoder = new StringDecoder('utf8');
+  const channelIds = new Set();
+  let pending = new Map(); // channel -> [NDJSON lines not yet written]
+  let pendingChars = 0;
+  let carry = '';
+
+  const flush = async () => {
+    const batch = pending;
+    pending = new Map();
+    pendingChars = 0;
+    await mapWithConcurrency([...batch.entries()], EPG_WRITE_CONCURRENCY, ([channel, lines]) =>
+      fs.promises.appendFile(path.join(stagingDir, channelCacheFileName(channel)), lines.join('\n') + '\n')
+    );
+  };
+
+  const parseBatch = async (text) => {
+    for (const [channel, programmes] of parseEpgShareXmltv(text)) {
+      channelIds.add(channel);
+      let lines = pending.get(channel);
+      if (!lines) pending.set(channel, (lines = []));
+      for (const programme of programmes) {
+        const line = JSON.stringify(programme);
+        lines.push(line);
+        pendingChars += line.length;
+      }
+    }
+    if (pendingChars >= PENDING_FLUSH_CHARS) await flush();
+  };
+
+  try {
+    for await (const chunk of decodedBodyChunks(res.data)) {
+      carry += decoder.write(chunk);
+      if (carry.length < PARSE_BATCH_CHARS) continue;
+      const cut = carry.lastIndexOf(PROGRAMME_END_TAG);
+      if (cut === -1) continue;
+      const end = cut + PROGRAMME_END_TAG.length;
+      await parseBatch(carry.slice(0, end));
+      carry = carry.slice(end);
+    }
+    carry += decoder.end();
+    await parseBatch(carry);
+    carry = '';
+    await flush();
+  } finally {
+    res.data.destroy();
   }
 
-  return { programmesByChannel, fetchedAt: Date.now() };
+  return [...channelIds].sort();
 }
 
 // ---------------------------------------------------------------------
@@ -267,13 +314,13 @@ async function fetchAndParseEpgShareSource(url, relevantChannelIds) {
 // ---------------------------------------------------------------------
 
 // Programme data is kept on disk, not in memory - EPGShare01's largest
-// sources decompress to 700MB-1.8GB (see fetchAndParseEpgShareSource above)
+// sources decompress to 700MB-1.8GB (see streamSourceToDir above)
 // and, unlike m3u.js's paired EPG cache, there's no natural way to filter
 // this down to "just the channels in use": this catalog is meant to be
 // fully browsable (see getEnabledChannelCatalog) before anyone's picked
 // anything from it, so every channel a source offers needs real data
-// available, not just ones already referenced by an override. One JSON
-// file per channel, split into a per-source subdirectory (named by a hash
+// available, not just ones already referenced by an override. One NDJSON
+// file per channel (one programme per line), split into a per-source subdirectory (named by a hash
 // of the source URL) so an entire source's old files can be dropped in one
 // shot on refresh without touching any other source's files.
 const EPG_CACHE_DIR = path.join(__dirname, 'data', 'epg-cache');
@@ -286,23 +333,26 @@ function sourceCacheDir(sourceUrl) {
   return path.join(EPG_CACHE_DIR, hash);
 }
 
+function channelCacheFileName(channelId) {
+  return `${crypto.createHash('sha256').update(channelId).digest('hex')}.json`;
+}
+
 function channelCacheFilePath(sourceUrl, channelId) {
-  const hash = crypto.createHash('sha256').update(channelId).digest('hex');
-  return path.join(sourceCacheDir(sourceUrl), `${hash}.json`);
+  return path.join(sourceCacheDir(sourceUrl), channelCacheFileName(channelId));
 }
 
 async function readChannelProgrammes(sourceUrl, channelId) {
   try {
     const raw = await fs.promises.readFile(channelCacheFilePath(sourceUrl, channelId), 'utf8');
-    return JSON.parse(raw);
+    // Files written before streaming refreshes existed hold one JSON array
+    // rather than NDJSON lines - still readable until the first refresh
+    // after an update replaces them.
+    if (raw.startsWith('[')) return JSON.parse(raw);
+    return raw.split('\n').filter(Boolean).map(line => JSON.parse(line));
   } catch (err) {
     if (err.code === 'ENOENT') return null;
     throw err;
   }
-}
-
-async function writeChannelProgrammes(sourceUrl, channelId, programmes) {
-  await fs.promises.writeFile(channelCacheFilePath(sourceUrl, channelId), JSON.stringify(programmes));
 }
 
 async function clearSourceCacheDir(sourceUrl) {
@@ -319,14 +369,10 @@ async function clearSourceCacheDir(sourceUrl) {
 // read one channel at a time, only when something actually asks for it.
 const epgShareCache = new Map(); // sourceUrl -> { url, channelIds, fetchedAt }
 
-// Fetches+parses the whole source (still one full pass over the whole
-// file - there's no way around that, it's the only way to discover what
-// channels/programmes exist at all), then immediately spills every
-// channel's programme array out to its own file and lets the full
-// in-memory Map fall out of scope. Memory briefly reflects the whole
-// parsed source while this runs (same "temporary spike during a refresh,
-// not a standing cost" shape as the art warm-up's rendering pass), but
-// nothing from it stays resident afterward.
+// Streams the whole source through once (the only way to discover what
+// channels/programmes exist at all), spilling programmes to disk as it
+// goes - see streamSourceToDir - so only the channel-id list stays in
+// memory afterward.
 // A handful of enabled sources can add up to tens of thousands of
 // channels (confirmed against the real ALL_SOURCES1 file) - writing every
 // channel's file with unbounded Promise.all concurrency exhausts the
@@ -336,15 +382,30 @@ const epgShareCache = new Map(); // sourceUrl -> { url, channelIds, fetchedAt }
 // in flight at once.
 const EPG_WRITE_CONCURRENCY = 50;
 
+//
+// The new files are written into a scratch directory and only swapped in
+// once every one is written - previously the live directory was emptied
+// first, so any override lookup during the (multi-second, tens-of-thousands-
+// of-files) write saw a half-empty cache, and a failure partway through
+// left it that way until the next refresh.
 async function refreshEpgShareSource(url) {
-  const parsed = await fetchAndParseEpgShareSource(url);
-  await clearSourceCacheDir(url);
-  await fs.promises.mkdir(sourceCacheDir(url), { recursive: true });
-  const channelIds = [...parsed.programmesByChannel.keys()].sort();
-  await mapWithConcurrency(channelIds, EPG_WRITE_CONCURRENCY, channelId =>
-    writeChannelProgrammes(url, channelId, parsed.programmesByChannel.get(channelId))
-  );
-  const cached = { url, channelIds, fetchedAt: parsed.fetchedAt };
+  const liveDir = sourceCacheDir(url);
+  const stagingDir = `${liveDir}.staging`;
+  await fs.promises.rm(stagingDir, { recursive: true, force: true });
+  await fs.promises.mkdir(stagingDir, { recursive: true });
+  let channelIds;
+  try {
+    channelIds = await streamSourceToDir(url, stagingDir);
+    if (channelIds.length === 0) {
+      throw new Error('EPGShare01 source parsed but contained no usable programme data');
+    }
+    await clearSourceCacheDir(url);
+    await fs.promises.rename(stagingDir, liveDir);
+  } catch (err) {
+    await fs.promises.rm(stagingDir, { recursive: true, force: true });
+    throw err;
+  }
+  const cached = { url, channelIds, fetchedAt: Date.now() };
   epgShareCache.set(url, cached);
   return cached;
 }
@@ -374,31 +435,34 @@ async function clearEpgShareCache() {
 // Promise.allSettled entries, so a caller can surface exactly which
 // source(s) failed and why (the admin recache route does) without having
 // to separately re-derive the valid/ordered file list itself.
+//
+// One source at a time: each one briefly holds its entire decompressed
+// file (up to ~1.8GB) plus everything parsed from it, so refreshing several
+// in parallel stacked those peaks - enabling two big sources could double
+// the container's memory spike for no benefit on a background schedule.
 async function refreshEnabledSources(files) {
   const validFiles = (files || []).filter(isKnownSourceFile);
-  const settled = await Promise.allSettled(
-    validFiles.map(file => refreshEpgShareSource(sourceFileToUrl(file)))
-  );
-  const results = settled.map((result, i) => {
-    const file = validFiles[i];
-    if (result.status === 'rejected') {
-      console.error(`[EPGShare01] Failed to refresh ${file}:`, result.reason.message);
-      return { file, success: false, error: result.reason.message };
+  const results = [];
+  for (const file of validFiles) {
+    try {
+      const refreshed = await refreshEpgShareSource(sourceFileToUrl(file));
+      console.log(`[EPGShare01] Refreshed ${file}: ${refreshed.channelIds.length} channels`);
+      results.push({ file, success: true, channelCount: refreshed.channelIds.length });
+    } catch (err) {
+      console.error(`[EPGShare01] Failed to refresh ${file}:`, err.message);
+      results.push({ file, success: false, error: err.message });
     }
-    console.log(`[EPGShare01] Refreshed ${file}: ${result.value.channelIds.length} channels`);
-    return { file, success: true, channelCount: result.value.channelIds.length };
-  });
-
-  // Confirmed via /api/admin/diagnostics: parsing a source (gunzipping a
-  // file that can decompress to 700MB-1.8GB, then regex-scanning it - see
-  // fetchAndParseEpgShareSource) balloons Node's "external" native memory
-  // far more than it grows the actual JS heap, so V8's heap-pressure-driven
-  // GC scheduling has little reason to collect it - it can sit around
-  // fully reclaimable but uncollected indefinitely. Forcing a collection
-  // right here, once every source in this batch has finished, reclaims it
-  // immediately. A no-op unless the process was started with --expose-gc
-  // (see package.json's start script).
-  if (typeof global.gc === 'function') global.gc();
+    // Confirmed via /api/admin/diagnostics: parsing a source (gunzipping a
+    // file that can decompress to 700MB-1.8GB, then regex-scanning it - see
+    // streamSourceToDir) balloons Node's "external" native memory
+    // far more than it grows the actual JS heap, so V8's heap-pressure-driven
+    // GC scheduling has little reason to collect it - it can sit around
+    // fully reclaimable but uncollected indefinitely. Forcing a collection
+    // after each source reclaims it before the next one's download and
+    // decompression can stack on top of it. A no-op unless the process was
+    // started with --expose-gc (see package.json's start script).
+    if (typeof global.gc === 'function') global.gc();
+  }
 
   return results;
 }
@@ -485,7 +549,8 @@ module.exports = {
   refreshCatalog,
   getCachedCatalog,
   parseEpgShareXmltv,
-  fetchAndParseEpgShareSource,
+  streamSourceToDir,
+  channelCacheFileName,
   refreshEpgShareSource,
   refreshEnabledSources,
   getCachedEpgShareSource,
